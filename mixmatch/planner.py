@@ -15,6 +15,8 @@ import tempfile
 
 import numpy as np
 
+from .roles import LOW_END_ROLES
+
 from .analysis import TONAL_BANDS, band_label
 from .bands import CENTRES
 
@@ -156,7 +158,8 @@ class RulePlanner:
                 actions.append({"type": "limiter", "delta_db": float(np.clip(-loud, -2, 2)),
                                 "reason": f"master {loud:+.1f} LU vs reference"})
         for m in context.get("masking", [])[:1]:
-            if {m["role_a"], m["role_b"]} == {"kick", "bass"} or {m["role_a"], m["role_b"]} == {"kick", "sub"}:
+            other = {m["role_a"], m["role_b"]} - {"kick"}
+            if len(other) == 1 and other <= LOW_END_ROLES and "kick" in (m["role_a"], m["role_b"]):
                 bass = m["track_b"] if m["role_a"] == "kick" else m["track_a"]
                 actions.append({"type": "eq", "track": bass, "freq_hz": m["freq_hz"], "gain_db": -1.5, "q": 1.4,
                                 "shape": "bell", "reason": f"bass masks the kick at {m['freq_hz']} Hz"})

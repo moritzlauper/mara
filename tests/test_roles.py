@@ -57,3 +57,15 @@ def test_auto_entries_are_guessed_again_but_user_entries_stay(tmp_path):
     saved = json.loads(path.read_text())
     assert saved["18-Serum"] == {"role": "pad", "priority": 2, "note": "", "source": "auto"}
     assert saved["Kick"] == {"role": "kick", "priority": 5}
+
+
+def test_more_instruments_by_name():
+    from mixmatch.roles import ROLES, from_name
+    cases = {"808 Glide": "808", "Reese Bass": "synth_bass", "Crash": "cymbals", "Shaker Loop": "shaker",
+             "Top Loop": "drum_loop", "Vox Chop": "vocal_chop", "Choir": "choir", "Supersaw Lead": "supersaw",
+             "Arp 2": "arp", "Chord Stab": "chords", "Bell": "bell", "Organ": "organ", "Flute": "woodwinds",
+             "Marimba": "mallets", "Riser": "riser", "Impact": "impact", "Vinyl Crackle": "texture",
+             "Chord Minor Pluck": "pluck", "Basic Electric Drive Bass": "bass", "Basic Sub Sine": "sub"}
+    for name, role in cases.items():
+        assert from_name(name) == role, name
+        assert role in ROLES

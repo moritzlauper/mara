@@ -631,12 +631,12 @@ $("stop").onclick = () => post("/api/stop");
 $("taps").onclick = () => post("/api/taps");
 $("ab_before").onclick = async () => { const j = await post("/api/ab", {which: "before"}); if (!j.error) $("msg").textContent = `Before (${j.changed} parameters)`; };
 $("ab_after").onclick = async () => { const j = await post("/api/ab", {which: "after"}); if (!j.error) $("msg").textContent = `After (${j.changed} parameters)`; };
-const ROLES = ["kick","snare","clap","hats","percussion","drums_bus","sub","bass","lead_vocal","backing_vocal","vocal_fx","lead_synth","pluck","pad","keys","piano","guitar","strings","brass","fx","ambience","bus","other"];
+const ROLE_GROUPS = __ROLE_GROUPS__;
 async function loadRoles() {
   const roles = await (await fetch("/api/roles")).json(); const names = Object.keys(roles);
   if (!names.length) { $("roles").textContent = "No roles.json yet (written by the first run)."; return; }
-  $("roles").innerHTML = "<table>" + names.map(n => `<tr><td>${esc(n)}</td><td><select data-n="${esc(n)}">${ROLES.map(r =>
-    `<option ${r===roles[n].role?"selected":""}>${r}</option>`).join("")}</select></td><td><input data-p="${esc(n)}" type="number" min="1" max="5" value="${roles[n].priority}" style="width:52px"></td></tr>`).join("") + "</table>";
+  $("roles").innerHTML = "<table>" + names.map(n => `<tr><td>${esc(n)}</td><td><select data-n="${esc(n)}">${Object.entries(ROLE_GROUPS).map(([g, rs]) => `<optgroup label="${esc(g)}">` + rs.map(r =>
+    `<option ${r===roles[n].role?"selected":""}>${r}</option>`).join("") + "</optgroup>").join("")}</select></td><td><input data-p="${esc(n)}" type="number" min="1" max="5" value="${roles[n].priority}" style="width:52px"></td></tr>`).join("") + "</table>";
   $("save_roles").onclick = async () => {
     for (const n of names) { roles[n].role = document.querySelector(`[data-n="${CSS.escape(n)}"]`).value;
       roles[n].priority = +document.querySelector(`[data-p="${CSS.escape(n)}"]`).value; roles[n].source = "user"; }
@@ -755,3 +755,4 @@ loadRoles(); tick(); setInterval(tick, 1500);
 </body>
 </html>
 """
+PAGE = PAGE.replace("__ROLE_GROUPS__", json.dumps(__import__("mixmatch.roles", fromlist=["ROLE_GROUPS"]).ROLE_GROUPS))

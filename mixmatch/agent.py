@@ -611,7 +611,7 @@ class Agent:
                 if b in inside.get(a, ()) or a in inside.get(b, ()):
                     continue  # a group contains its own tracks: that is not masking
                 ra, rb = self.roles[a], self.roles[b]
-                if ra.role in ("fx", "ambience", "bus", "drums_bus") or rb.role in ("fx", "ambience", "bus", "drums_bus"):
+                if ra.role in roles_mod.BACKGROUND_ROLES or rb.role in roles_mod.BACKGROUND_ROLES:
                     continue
                 hits = masking(tracks[a], tracks[b])
                 if hits:
