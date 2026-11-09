@@ -422,9 +422,10 @@ class Agent:
             })
         ctx = {
             "section": section,
-            "mode": ("beat without vocals, vocals will be recorded later: the target comes from the references with "
-                     "their vocals removed. Keep room for the voice: 1–5 kHz must stay uncluttered and not harsh, never "
-                     "boost instruments there, prefer cutting synths and pads in that range")
+            "mode": ("beat without vocals, vocals may be recorded later: the target comes from the references with "
+                     "their vocals removed. The beat must sound complete on its own: remove harshness and resonances in "
+                     "1–5 kHz where they stick out, but keep presence and air; do not hollow out that range in advance, "
+                     "and do not boost instruments into it to imitate a voice. Do not add low end to match the target")
                     if self.beat else "song with vocals",
             "target": self.target.description if self.target else "reference tracks playing in the project",
             "objective": round(m["objective"], 2),

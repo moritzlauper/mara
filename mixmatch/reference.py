@@ -201,9 +201,14 @@ class ReferenceSet:
 
     def target(self, beat: bool, loudness_from: str = "full") -> Target:
         full = [r.full for r in self.refs]
+        extra = np.zeros(len(CENTRES))
         if beat and self.separate():
             basis, how = [r.inst for r in self.refs], "instrumental stems of the references (vocals removed)"
-            one_sided = []
+            # An instrumental cut out of a song is thinned where the voice sat and leans on its bass without it.
+            # A beat heard on its own needs that presence, and must not copy the bass: only too much low end counts,
+            # and 1–6 kHz gets extra tolerance.
+            one_sided = bands_between(20, 120)
+            extra[bands_between(1000, 6000)] = 2.5
         elif beat:
             basis, how = full, "full references; vocal range 200 Hz–5 kHz only counts where the beat is louder"
             one_sided = VOCAL_RANGE
@@ -220,7 +225,7 @@ class ReferenceSet:
             target = Stats(**{**target.__dict__, "plr": mean_full.plr, "peak_db": mean_full.peak_db})
         spread = np.std([s.shape_db for s in basis], axis=0) if len(basis) > 1 else np.zeros(len(CENTRES))
         return Target(stats=target, loudness=float(np.mean([s.loudness for s in loud_src])),
-                      tolerance=0.5 + spread / 2, one_sided=list(one_sided),
+                      tolerance=0.5 + spread / 2 + extra, one_sided=list(one_sided),
                       description=f"{len(basis)} reference(s), {how}; loudness from the "
                                   f"{'instrumentals' if loudness_from == 'instrumental' else 'full songs'}")
 
