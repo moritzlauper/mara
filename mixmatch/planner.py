@@ -73,6 +73,7 @@ How to work:
 - Respect the user's notes in the roles and never touch locked parameters.
 - Parameters marked "(automated)" follow automation in the arrangement (filter sweeps, build-ups): they are part of the arrangement, not the mix. Never change them; work around them.
 - If the context has a "task" (channel pass), follow it: actions only on that one track, and none if it sits well.
+- If the context has a "final_check", follow it: that is the last look at the master after every channel was done.
 - Set "done" to true only when the remaining differences are small and nothing useful is left to try.
 - Reasons: one short sentence each, concrete (which channel, which frequency, why).
 

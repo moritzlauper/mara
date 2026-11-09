@@ -433,7 +433,7 @@ class Agent:
             ],
         }
         if focus is None and section == "final check":
-            ctx["task"] = (
+            ctx["final_check"] = (
                 "Final check of the master after the channel pass. If the master is quieter than the target and the "
                 "limiter or clipper still has room (see «limiter», «clipper»), raise them first: limiter up to its "
                 "maximum, then the clipper. After that only small master corrections (a broad master EQ move of at most "
