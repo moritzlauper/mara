@@ -75,11 +75,31 @@ def from_name(name: str) -> str | None:
     return None
 
 
+# Devices whose names say nothing about the sound: Live's own containers and MixMatch itself.
+NEUTRAL_DEVICES = {"drum rack", "instrument rack", "audio effect rack", "mixmatch tap"}
+
+
 def from_devices(devices: list[dict]) -> str | None:
-    classes = " ".join(d.get("class_name", "") + " " + d.get("name", "") for d in devices).lower()
-    if "drumgroup" in classes or "drum rack" in classes:
-        return "drums_bus"
+    """Name hints in device and preset names, e.g. «Kick Tight», «Basic Sub Sine», «vocalchain»."""
+    for d in devices:
+        name = d.get("name", "")
+        if name.lower() not in NEUTRAL_DEVICES:
+            role = from_name(name)
+            if role:
+                return role
     return None
+
+
+def is_drum_rack(devices: list[dict]) -> bool:
+    classes = " ".join(d.get("class_name", "") + " " + d.get("name", "") for d in devices).lower()
+    return "drumgroup" in classes or "drum rack" in classes
+
+
+def says_nothing(track: dict) -> bool:
+    """Live's automatic names («3-Audio», «2-Drum Rack», «14-Serum») only repeat the track type or a device."""
+    m = re.match(r"^\d+[-\s]+(.*)$", track["name"].strip())
+    rest = (m.group(1) if m else track["name"]).strip().lower()
+    return rest in ("audio", "midi", "") or rest in {d.get("name", "").lower() for d in track.get("devices", [])}
 
 
 def from_sound(st: Stats | None) -> str | None:
@@ -107,8 +127,13 @@ def from_sound(st: Stats | None) -> str | None:
 
 
 def guess(track: dict, st: Stats | None) -> Role:
-    for source, role in (("name", from_name(track["name"])), ("devices", from_devices(track.get("devices", []))),
-                         ("sound", from_sound(st))):
+    devices = track.get("devices", [])
+    sources = [("name", None if says_nothing(track) else from_name(track["name"])),
+               ("devices", from_devices(devices)),
+               ("sound", from_sound(st)),
+               ("devices", "drums_bus" if is_drum_rack(devices) else None),
+               ("name", from_name(track["name"]))]
+    for source, role in sources:
         if role:
             return Role(track["key"], track["name"], role, DEFAULT_PRIORITY[role], source)
     return Role(track["key"], track["name"], "other", DEFAULT_PRIORITY["other"], "default")

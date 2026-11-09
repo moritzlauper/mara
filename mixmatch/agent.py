@@ -97,7 +97,8 @@ class Agent:
                 self.tap_of[t["key"]] = tap
         missing = [t["name"] for t in self.ex.set_state["tracks"]
                    if t["key"] not in self.tap_of and not t["name"].lower().startswith("ref")
-                   and not t.get("is_group") and t["kind"] != "return"]
+                   and not t.get("is_group") and t["kind"] != "return"
+                   and not (t["kind"] == "master" and any(tap.kind == "master" for tap in taps.values()))]
         self.log(f"Taps: {len(self.tap_of)} channels, {len(self.references)} reference(s)"
                  + (f"; no tap on: {', '.join(missing)}" if missing else ""))
 
