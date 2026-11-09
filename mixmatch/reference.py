@@ -143,8 +143,13 @@ def instrumental(path: str, log=print) -> str | None:
     target = os.path.join(out, "htdemucs", name, "no_vocals.wav")
     if not os.path.exists(target):
         log(f"  separating vocals from {os.path.basename(path)} (once, takes a minute) …")
-        subprocess.run([sys.executable, "-m", "demucs", "--two-stems", "vocals", "-n", "htdemucs", "-o", out, path],
-                       check=True, capture_output=True)
+        cmd = [sys.executable, "-m", "demucs", "--two-stems", "vocals", "-n", "htdemucs", "-o", out, path]
+        try:
+            subprocess.run(cmd, check=True, capture_output=True)
+        except subprocess.CalledProcessError:
+            # The GPU backend can crash (e.g. MPS on older macOS); the CPU is slower but works everywhere.
+            log("  GPU separation failed, separating on the CPU (a minute or two) …")
+            subprocess.run(cmd[:3] + ["-d", "cpu"] + cmd[3:], check=True, capture_output=True)
     return target if os.path.exists(target) else None
 
 
@@ -208,6 +213,11 @@ class ReferenceSet:
             basis, how, one_sided = full, "full references", []
         target = _mean_stats(basis)
         loud_src = basis if loudness_from == "instrumental" else full
+        if basis is not full and loudness_from != "instrumental":
+            # Loudness from the full songs, so the dynamics (peak to loudness) too: an instrumental measured on its
+            # own is quieter than the song and would ask for peaks the master cannot have at that loudness.
+            mean_full = _mean_stats(full)
+            target = Stats(**{**target.__dict__, "plr": mean_full.plr, "peak_db": mean_full.peak_db})
         spread = np.std([s.shape_db for s in basis], axis=0) if len(basis) > 1 else np.zeros(len(CENTRES))
         return Target(stats=target, loudness=float(np.mean([s.loudness for s in loud_src])),
                       tolerance=0.5 + spread / 2, one_sided=list(one_sided),

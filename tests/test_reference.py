@@ -45,3 +45,25 @@ def test_several_references_widen_the_tolerance_where_they_disagree(tmp_path):
     hi = [i for i in range(31) if i > 25]
     mid = [14, 15, 16]
     assert np.mean(t.tolerance[hi]) > np.mean(t.tolerance[mid])
+
+
+def test_beat_target_takes_dynamics_from_the_full_songs_when_loudness_does():
+    import numpy as np
+
+    from mixmatch.analysis import Stats
+    from mixmatch.reference import Reference, ReferenceSet
+
+    def st(loud, plr, width):
+        bands = np.full(31, loud - 15.0)
+        return Stats(frames=10, loudness=loud, bands_db=bands, shape_db=bands - loud, peak_db=loud + plr, plr=plr,
+                     width_db=width, low_side_db=-30.0, active=1.0)
+
+    rs = ReferenceSet.__new__(ReferenceSet)
+    rs.log = lambda *_: None
+    rs.refs = [Reference("song.wav", full=st(-7.5, 7.5, -15.0), inst=st(-11.0, 12.5, -11.8))]
+    rs.separate = lambda: True
+    t = rs.target(beat=True)
+    assert t.loudness == -7.5 and abs(t.stats.plr - 7.5) < 1e-9      # dynamics of the master as a whole
+    assert abs(t.stats.width_db + 11.8) < 1e-9                      # width and tonal balance from the instrumental
+    t_inst = rs.target(beat=True, loudness_from="instrumental")
+    assert t_inst.loudness == -11.0 and abs(t_inst.stats.plr - 12.5) < 1e-9
