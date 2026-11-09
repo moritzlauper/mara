@@ -76,12 +76,22 @@ def latest_pair(log_dir: str) -> tuple[str, str] | None:
     return None
 
 
+def latest_before(log_dir: str) -> str | None:
+    files = sorted(glob.glob(os.path.join(log_dir, "*-before.json")))
+    return files[-1] if files else None
+
+
 def switch(live, which: str, log_dir: str = "runs") -> int:
-    """Sets the open Live set to the «before» or «after» state of the newest run; returns the number of changes."""
-    pair = latest_pair(log_dir)
-    if pair is None:
-        raise RuntimeError("no run with before/after snapshots yet")
-    with open(pair[0] if which == "before" else pair[1]) as f:
+    """Sets the open Live set to the «before» or «after» state of the newest run; returns the number of changes.
+    «before» also works when a run stopped without its «after» snapshot (Live crashed, run stopped)."""
+    if which == "before":
+        path = latest_before(log_dir)  # the newest run, even if it has no «after» yet
+    else:
+        pair = latest_pair(log_dir)
+        path = pair[1] if pair else None
+    if path is None:
+        raise RuntimeError(f"no «{which}» snapshot yet")
+    with open(path) as f:
         target = json.load(f)
     changes = changes_to(target, live.get_set(), bypass_new=(which == "before"))
     for i in range(0, len(changes), 200):

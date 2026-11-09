@@ -336,11 +336,20 @@ class Commands:
                 "file": getattr(clip, "file_path", None) if clip is not None else None}
 
     def capture_cleanup(self, req):
-        """Delete the capture track; the recorded file stays in the project's Samples/Recorded folder."""
+        """Delete the capture track; the recorded file stays in the project's Samples/Recorded folder.
+
+        Never deletes a track that is still recording (that can crash Live): it stops the recording first and
+        answers {"pending": true}; the caller asks again a moment later."""
         tracks = list(self.song.tracks)
         index = int(req["track"])
         if 0 <= index < len(tracks) and tracks[index].name == "MixMatch Capture":
-            tracks[index].arm = False
+            track = tracks[index]
+            slot = list(track.clip_slots)[0]
+            if getattr(slot, "is_recording", False) or getattr(slot, "is_triggered", False):
+                track.arm = False
+                slot.stop()
+                return {"pending": True}
+            track.arm = False
             self.song.delete_track(index)
         self.song.back_to_arranger = False  # the session clip had taken over this track only; play the arrangement
         return {"tracks": len(list(self.song.tracks))}

@@ -119,7 +119,7 @@ def capture(live, start: float, length: float, tempo: float, log=print) -> str |
                 break
             time.sleep(0.5)
     finally:
-        live.request("capture_cleanup", track=cap["track"])
+        cleanup(live, cap["track"])
     if path is None:
         log("  recording the master did not finish")
     return path
@@ -144,8 +144,16 @@ def capture_end(live, track: int, timeout: float = 20.0) -> str | None:
                 break
             time.sleep(0.3)
     finally:
-        live.request("capture_cleanup", track=track)
+        cleanup(live, track)
     return path
+
+
+def cleanup(live, track: int, tries: int = 20) -> None:
+    """Deletes the capture track once its recording has really stopped."""
+    for _ in range(tries):
+        if not live.request("capture_cleanup", track=track).get("pending"):
+            return
+        time.sleep(0.25)
 
 
 def mastered(path: str) -> bool:

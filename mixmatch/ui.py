@@ -297,7 +297,7 @@ def make_handler(runner: Runner):
                                         "reference_files": references(workdir), "to_get": buy_list(workdir),
                                         "project_references": project_refs.get(), "live": project_refs.reachable,
                                         "ab": ab_state["which"],
-                                        "ab_ready": __import__("mixmatch.ab", fromlist=["latest_pair"]).latest_pair(
+                                        "ab_ready": __import__("mixmatch.ab", fromlist=["latest_before"]).latest_before(
                                             os.path.join(workdir, "runs")) is not None})
             if self.path == "/api/project":
                 from . import project

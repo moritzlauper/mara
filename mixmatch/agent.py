@@ -65,7 +65,8 @@ class Settings:
     jamendo: bool = False         # also try Creative Commons tracks from Jamendo
     audit: bool = True            # complete runs: remove effects that do nothing, bypass ones that harm the mix
     suggest: bool = True          # complete runs: write references to get and free ones (runs/…-buy.md)
-    fine: bool = True             # record the channel (or master) during the first measurement: narrow resonances
+    fine: bool = True             # record the master during its first measurement: narrow resonances
+    fine_channels: bool = False   # also record single channels (routing a capture track to a channel once crashed Live)
     audit_bars: int = 4           # A/B window per effect
 
 
@@ -790,7 +791,7 @@ class Agent:
         resonances. Falls back to a plain measurement when recording is not possible (simulator, old script)."""
         from . import autoref, fine
 
-        if not self.s.fine or key in self.resonances:
+        if not self.s.fine or key in self.resonances or (key != "m" and not self.s.fine_channels):
             return self.measure(scoring)
         try:
             beats = min(self.loop[1] if self.loop else 32.0, self.s.bars * 4.0)
