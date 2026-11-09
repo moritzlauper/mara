@@ -503,9 +503,10 @@ class Agent:
             bar = start / 4 + 1
             self.log(f"\n▶ {r.name} ({r.role}, priority {r.priority}), bars {bar:.0f}–{bar + length / 4:.0f}")
             self.play_loop(start, length)
+            self.begin_step(self.W_CHANNEL)
             self.section(f"channel {r.name}", deadline, focus=r.key, max_rounds=self.s.channel_rounds,
                          scoring="balance")
-            self.progress(self.W_CHANNEL, r.name)
+            self.finish_step(r.name)
 
     # ── 2. measure ──────────────────────────────────────────────────────────
     def measure(self, scoring: str = "full", retries: int = 6) -> dict:
@@ -809,9 +810,10 @@ class Agent:
                 break
             self.log(f"\n▶ {name}")
             self.play_loop(start, length)
+            self.begin_step(self.W_MASTER)
             self.section(name, deadline)
             if self.s.complete:
-                self.progress(self.W_MASTER, "master")
+                self.finish_step("master")
         if self.s.complete and scan is not None:
             self.channel_pass(scan, main[0] if self.s.focus == "loud" else None, deadline)
             if self.s.audit and self.env.now() < deadline:
@@ -820,8 +822,9 @@ class Agent:
             if self.env.now() < deadline:
                 self.log(f"\n━━ Final check: master, {name}")
                 self.play_loop(start, length)
+                self.begin_step(self.W_FINAL)
                 self.section("final check", deadline, max_rounds=self.s.final_rounds)
-                self.progress(self.W_FINAL, "done")
+                self.finish_step("done")
 
     def explain(self, m: dict) -> None:
         """The distance in plain words and real units, as one «explain» log line (JSON) for the interface."""
@@ -845,7 +848,7 @@ class Agent:
         self.log("  explain " + json.dumps(out, ensure_ascii=False))
 
     # Weights of the steps of a complete run, in «channel» units, for the progress bar and the time left.
-    W_PREP, W_MASTER, W_CHANNEL, W_AUDIT_GUESS, W_EFFECT, W_FINAL = 3.0, 5.0, 1.0, 6.0, 0.4, 3.0
+    W_PREP, W_MASTER, W_CHANNEL, W_AUDIT_GUESS, W_EFFECT, W_FINAL = 3.0, 7.0, 1.0, 6.0, 0.4, 3.0
 
     def progress(self, add: float = 0.0, step: str = "", total_add: float = 0.0) -> None:
         """One «progress» log line (JSON): units done of the expected total, with the wall clock, so the
@@ -854,6 +857,14 @@ class Agent:
         self._total = max(getattr(self, "_total", 0.0) + total_add, self._done)
         self.log("  progress " + json.dumps({"done": round(self._done, 2), "total": round(self._total, 2),
                                              "t": round(time.time(), 1), "step": step}, ensure_ascii=False))
+
+    def begin_step(self, weight: float) -> None:
+        """The units the next section may use up round by round; finish_step books what is left."""
+        self._budget = weight
+
+    def finish_step(self, step: str) -> None:
+        self.progress(getattr(self, "_budget", 0.0), step)
+        self._budget = 0.0
 
     def measure_fine(self, scoring: str, key: str) -> dict:
         """The first measurement of a section, recording the channel (or master) at the same time to find narrow
@@ -947,6 +958,10 @@ class Agent:
                 self.env.wait(self.s.settle)
                 stall += 1
             self._record(rnd)
+            if getattr(self, "_budget", 0.0) > 0:     # each round moves the progress bar a little
+                piece = self._budget / max(1, (max_rounds or self.s.max_rounds_per_section) - n + 1)
+                self._budget -= piece
+                self.progress(piece, name)
             if plan.get("done") or stall >= self.s.stall_rounds:
                 self.log("  no further improvement in this section" if stall else "  targets reached")
                 return

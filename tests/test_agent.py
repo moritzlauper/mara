@@ -405,3 +405,17 @@ def test_silent_mode_turns_the_main_fader_down_and_back():
     assert during and all(v == 0.0 for v in during)       # down while it worked …
     assert vol() == before                                  # … and back afterwards
     assert any(h.after is not None and not h.undone for h in history)   # it still measured and improved
+
+
+def test_progress_rises_round_by_round_and_ends_at_the_total(tmp_path):
+    song, hub, env, live = demo_project()
+    env.wait(5)
+    logs = []
+    agent = Agent(live, hub, RulePlanner(), Settings(minutes=None, complete=True, focus="loud", settle=1.0,
+                                                     roles_file=str(tmp_path / "r.json"), log_dir=str(tmp_path)),
+                  env=env, log=logs.append)
+    agent.run()
+    points = [json.loads(l.split("progress ", 1)[1]) for l in logs if l.strip().startswith("progress {")]
+    done = [p["done"] for p in points]
+    assert done == sorted(done) and len(set(done)) > 6          # it moves often, never back
+    assert abs(points[-1]["done"] - points[-1]["total"]) < 0.01  # 100% at the end

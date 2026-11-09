@@ -692,11 +692,12 @@ function progress(s) {
   const frac = Math.min(1, p.done / p.total); $("prog_bar").style.width = (frac*100).toFixed(1) + "%";
   let left = "";
   if (s.running && p0 && p.done > p0.done) {
-    const rate = (p.t - p0.t) / (p.done - p0.done), since = Math.max(0, Date.now()/1000 - p.t);
-    const secs = Math.max(0, rate * (p.total - p.done) - since), m = Math.round(secs / 60);
+    // seconds per unit from all the time so far, including the time since the last step: waiting raises it
+    const rate = (Date.now()/1000 - p0.t) / (p.done - p0.done);
+    const m = Math.round(rate * (p.total - p.done) / 60);
     left = m >= 60 ? ` · about ${Math.floor(m/60)} h ${m%60} min left` : ` · about ${Math.max(1, m)} min left`;
   } else if (s.running) left = " · estimating time …";
-  $("prog_text").textContent = `${Math.round(frac*100)}%${left}` + (s.running && p.step ? ` · next: ${p.step}` : "");
+  $("prog_text").textContent = `${Math.round(frac*100)}%${left}` + (s.running && s.section ? ` · ${s.section}` : "");
 }
 async function tick() {
   let s; try { s = await (await fetch("/api/state")).json(); } catch { return; }
