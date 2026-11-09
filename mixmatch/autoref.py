@@ -84,7 +84,8 @@ def jamendo_search(tags: list[str], client_id: str, per_tag: int = 8, log=print)
                 continue
             seen.add(t["id"])
             found.append({"id": t["id"], "artist": t["artist_name"], "title": t["name"], "tag": tag,
-                          "download": t["audiodownload"], "url": t.get("shareurl"), "license": t.get("license_ccurl")})
+                          "download": t["audiodownload"], "url": t.get("shareurl"), "license": t.get("license_ccurl"),
+                          "stream": t.get("audio")})
             kept += 1
             if kept >= per_tag:
                 break
@@ -197,7 +198,8 @@ def buy_list(recording: str, listener: Listener, harmony: dict | None = None, no
                          "why": f"Sounds closest to your track among {len(scored)} Jamendo tracks tagged "
                                 f"{', '.join(tags)} (similarity {score:.2f}). Creative Commons "
                                 f"({t['license'] or 'see page'}), download allowed.",
-                         "links": {"jamendo": t["url"], "download": t["download"]}})
+                         "links": {"jamendo": t["url"], "download": t["download"],
+                                   **({"preview": t["stream"]} if t.get("stream") else {})}})
     log(f"  to get (style: {result['style']}):")
     for s in result["suggestions"]:
         log(f"    {s['artist']} – {s['title']}: {s['links']['spotify']}  {s['links']['bandcamp']}")

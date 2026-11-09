@@ -555,13 +555,17 @@ async function tick() {
     });
   }
   const item = t => {
-    const dl = t.links.Download, page = Object.entries(t.links).find(([k]) => k !== "Spotify" && k !== "Download");
+    const dl = t.links.Download, page = Object.entries(t.links).find(([k]) => !["Spotify", "Download", "Preview"].includes(k));
+    const listen = t.free && (t.links.Preview || dl);
+    const player = listen ? `<br><audio controls preload="none" src="${esc(listen)}" style="width:100%;height:30px;margin-top:4px"></audio>` : "";
     const btn = t.free ? (dl ? `<button class="small" data-use="${esc(dl)}" data-name="${esc(t.title)}">Use</button>`
       : (page ? `<a href="${esc(page[1])}" target="_blank" rel="noopener"><button class="ghost small">Get</button></a>` : "")) : "";
     return `<li><b>${esc(t.title)}</b>${t.source ? ` <span class="pill">${esc(t.source)}</span>` : ""} ${btn}<br><span class="muted">${esc(t.why)}</span><br>` +
-      Object.entries(t.links).map(([k, u]) => `<a href="${esc(u)}" target="_blank" rel="noopener">${esc(k)}</a>`).join(" · ") + "</li>";
+      Object.entries(t.links).filter(([k]) => k !== "Preview").map(([k, u]) => `<a href="${esc(u)}" target="_blank" rel="noopener">${esc(k)}</a>`).join(" · ") + player + "</li>";
   };
   const buy = s.to_get.filter(t => !t.free), free = s.to_get.filter(t => t.free);
+  const getKey = JSON.stringify(s.to_get);
+  if (getKey !== lastGet) { lastGet = getKey;
   $("to_get").innerHTML = s.to_get.length ? (buy.length ? "<ul>" + buy.map(item).join("") + "</ul>" : "")
     + (free.length ? "<h2 style='margin-top:12px'>Free (no purchase)</h2><ul>" + free.map(item).join("") + "</ul>"
       + "<div class='row'><button id='import_dl' class='ghost small'>Import from Downloads</button><span class='muted'>after «Get»: newest audio or ZIP from the last hour</span></div>" : "") : "–";
@@ -571,11 +575,12 @@ async function tick() {
   });
   if ($("import_dl")) $("import_dl").onclick = async () => { const j = await post("/api/references/import");
     if (!j.error) { $("msg").textContent = j.added.length ? "Imported: " + j.added.join(", ") : "Nothing new in Downloads (last hour)."; lastRefs = ""; } };
+  }
   $("effects").innerHTML = s.effects.length ? "<ul>" + s.effects.map(e => `<li>${esc(e)}</li>`).join("") + "</ul>" : "–";
   const log = $("log"), atEnd = log.scrollTop + log.clientHeight >= log.scrollHeight - 5;
   log.textContent = s.log.join("\n"); if (atEnd) log.scrollTop = log.scrollHeight;
 }
-let lastRefs = "";
+let lastRefs = "", lastGet = "";
 const drop = $("drop");
 ["dragenter", "dragover"].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.add("over"); }));
 ["dragleave", "drop"].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.remove("over"); }));
