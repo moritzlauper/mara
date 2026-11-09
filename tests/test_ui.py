@@ -201,3 +201,22 @@ def test_checkpoint_for_the_continue_button(tmp_path):
     (tmp_path / "runs" / "checkpoint.json").write_text(_json.dumps(
         {"phase": "channels", "next_channel": "1-Group", "done": 12.0, "total": 48.0, "stamp": "x"}))
     assert checkpoint(str(tmp_path)) == {"phase": "channels", "next_channel": "1-Group", "stamp": "x", "percent": 25}
+
+
+def test_an_m4a_reference_becomes_a_wav(tmp_path):
+    import shutil
+    import subprocess
+
+    import numpy as np
+    import pytest
+    import soundfile as sf
+
+    from mixmatch.ui import duration_s, to_wav
+    if not shutil.which("afconvert"):
+        pytest.skip("afconvert is macOS only")
+    wav = tmp_path / "src.wav"
+    sf.write(wav, np.zeros((44100 * 2, 2), dtype="float32"), 44100)
+    m4a = tmp_path / "song.m4a"
+    subprocess.run(["afconvert", "-f", "m4af", "-d", "aac", str(wav), str(m4a)], check=True)
+    out = to_wav(str(m4a))
+    assert out.endswith("song.wav") and not m4a.exists() and abs(duration_s(out) - 2.0) < 0.1

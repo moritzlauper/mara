@@ -22,6 +22,26 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 PORT = 8765
 AUDIO = (".wav", ".aif", ".aiff", ".flac", ".mp3")
+CONVERT = (".m4a", ".aac", ".mp4", ".caf")   # AAC (e.g. bought on iTunes): turned into WAV with macOS afconvert
+
+
+def to_wav(path: str) -> str:
+    """Converts an AAC file to a 16-bit WAV beside it and removes the original; returns the WAV's path."""
+    import subprocess
+
+    out = os.path.splitext(path)[0] + ".wav"
+    r = subprocess.run(["afconvert", "-f", "WAVE", "-d", "LEI16", path, out], capture_output=True, text=True)
+    if r.returncode != 0 or not os.path.exists(out):
+        raise ValueError(f"could not convert {os.path.basename(path)}: {(r.stderr or '').strip()[:120]}")
+    os.remove(path)
+    return out
+
+
+def duration_s(path: str) -> float:
+    import soundfile as sf
+
+    info = sf.info(path)
+    return info.frames / info.samplerate
 
 
 class Runner:
@@ -234,8 +254,8 @@ def trash(path: str) -> str:
 def safe_reference(workdir: str, name: str) -> str:
     """Path of a file directly inside references/; refuses anything else (no ../, no other folders)."""
     base = os.path.basename(name or "")
-    if not base or base != name or not base.lower().endswith(AUDIO):
-        raise ValueError(f"not an audio file name: {name!r}")
+    if not base or base != name or not base.lower().endswith(AUDIO + CONVERT):
+        raise ValueError(f"not an audio file MixMatch can read: {name!r} (WAV, AIFF, FLAC, MP3 or M4A)")
     return os.path.join(workdir, "references", base)
 
 
@@ -482,7 +502,17 @@ def make_handler(runner: Runner, watcher: "DownloadWatcher | None" = None):
                         f.write(chunk)
                         left -= len(chunk)
                 os.replace(path + ".part", path)
-                self._send(200, {"saved": os.path.basename(path)})
+                if path.lower().endswith(CONVERT):
+                    path = to_wav(path)
+                out = {"saved": os.path.basename(path)}
+                try:
+                    secs = duration_s(path)
+                except Exception:   # unreadable here (e.g. an MP3 libsndfile cannot open): no hint, still saved
+                    secs = None
+                if secs is not None and secs < 60:
+                    out["warning"] = (f"only {secs:.0f} s long: a reference needs its loud part and enough music "
+                                      "to measure; a full track works much better")
+                self._send(200, out)
             except Exception as e:
                 self._send(400, {"error": str(e)})
 
@@ -786,11 +816,16 @@ const drop = $("drop");
 ["dragenter", "dragover"].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.add("over"); }));
 ["dragleave", "drop"].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.remove("over"); }));
 drop.addEventListener("drop", async e => {
-  for (const file of e.dataTransfer.files) {
-    drop.textContent = "Adding " + file.name + " …";
-    const r = await fetch("/api/references/" + encodeURIComponent(file.name), {method: "PUT", body: file});
-    const j = await r.json(); $("msg").textContent = j.error ? file.name + ": " + j.error : "Added " + j.saved;
-  }
+  const files = [...e.dataTransfer.files];
+  drop.textContent = `Adding ${files.length} file${files.length > 1 ? "s" : ""} …`;
+  const results = await Promise.all(files.map(async file => {   // all at once, each with its own answer
+    try {
+      const r = await fetch("/api/references/" + encodeURIComponent(file.name), {method: "PUT", body: file});
+      const j = await r.json();
+      return j.error ? `${file.name}: ${j.error}` : `Added ${j.saved}` + (j.warning ? ` (${j.warning})` : "");
+    } catch (err) { return `${file.name}: upload failed (${err.message || err})`; }
+  }));
+  $("msg").textContent = results.join(" · ");
   drop.textContent = "Drop audio files here to add them to references/"; lastRefs = ""; tick();
 });
 fetch("/api/project").then(r => r.json()).then(p => { $("desc").value = p.description || ""; });
