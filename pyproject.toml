@@ -20,5 +20,8 @@ mixmatch = "mixmatch.cli:main"
 [tool.setuptools]
 packages = ["mixmatch"]
 
+[tool.setuptools.package-data]
+mixmatch = ["static/fonts/*"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]

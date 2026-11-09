@@ -22,7 +22,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 PORT = 8765
 AUDIO = (".wav", ".aif", ".aiff", ".flac", ".mp3")
-CONVERT = (".m4a", ".aac", ".mp4", ".caf")   # AAC (e.g. bought on iTunes): turned into WAV with macOS afconvert
+CONVERT = (".m4a", ".aac", ".mp4", ".caf")
+FONTS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static", "fonts")   # AAC (e.g. bought on iTunes): turned into WAV with macOS afconvert
 
 
 def to_wav(path: str) -> str:
@@ -476,6 +477,19 @@ def make_handler(runner: Runner, watcher: "DownloadWatcher | None" = None):
         def do_GET(self):
             if self.path == "/":
                 return self._send(200, PAGE, "text/html")
+            if self.path.startswith("/fonts/"):   # bundled fonts (OFL), so the page needs no internet
+                name = os.path.basename(self.path)
+                path = os.path.join(FONTS, name)
+                if name.endswith((".woff2", ".css")) and os.path.isfile(path):
+                    with open(path, "rb") as f:
+                        data = f.read()
+                    self.send_response(200)
+                    self.send_header("Content-Type", "font/woff2" if name.endswith(".woff2") else "text/css")
+                    self.send_header("Content-Length", str(len(data)))
+                    self.send_header("Cache-Control", "max-age=86400")
+                    self.end_headers()
+                    return self.wfile.write(data)
+                return self._send(404, {"error": "not found"})
             if self.path == "/api/state":
                 path = runner.latest_log()
                 lines = open(path).readlines() if path and os.path.exists(path) else []
@@ -634,8 +648,7 @@ PAGE = r"""<!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>MixMatch</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=IBM+Plex+Sans:wght@400;600&family=Zilla+Slab:wght@600;700&display=swap">
+<link rel="stylesheet" href="/fonts/fonts.css">
 <style>
 :root{
   /* desktop of an old operating system, in MixMatch's own colours */
@@ -644,7 +657,7 @@ PAGE = r"""<!doctype html>
   --accent:#6d3fd1;--accent2:#e2479c;--lime:#c8f03a;--lime-edge:#5f7d00;--pink:#ff8cc8;--pink-edge:#c2287c;
   --good:#2f8f4e;--bad:#c4304b;--warn:#a86b00;
   --title:linear-gradient(90deg,#4b2aa0,#b2399a 70%,#e2479c);
-  --slab:"Zilla Slab",Georgia,serif;--mono:"IBM Plex Mono",ui-monospace,Menlo,monospace;--sans:"IBM Plex Sans",-apple-system,system-ui,sans-serif;
+  --slab:"Montagu Slab",Georgia,serif;--mono:"Roboto Mono",ui-monospace,Menlo,monospace;--sans:"Open Sans",-apple-system,system-ui,sans-serif;
 }
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:14px/1.45 -apple-system,system-ui,sans-serif}
 header{display:flex;align-items:center;gap:12px;padding:14px 20px;border-bottom:1px solid var(--line)}
@@ -714,6 +727,22 @@ pre{border-radius:0;background:var(--ink);color:#d8ffa0;font:12px/1.45 var(--mon
 .drop.over{background:var(--lime);color:var(--ink);border-color:var(--lime-edge)}
 a{color:var(--accent)}a:hover{background:var(--accent);color:#fff}
 td{border-bottom:1px solid var(--lo)}
+button.primary{display:block;width:100%;font:700 18px var(--slab);letter-spacing:.01em;padding:12px 16px;margin:4px 0 6px}
+button.danger{background:var(--pink);border-color:var(--pink-edge);font-size:14px;padding:8px 18px;margin-right:10px}
+#cont+#start.ghost{display:inline-block;width:auto;margin:0 0 6px}
+.hint{color:var(--muted);font-size:12.5px;margin:4px 0 10px}
+.now{display:flex;flex-direction:column;gap:2px;margin:2px 0 10px}.now b{font:700 18px var(--slab)}
+.bigprog{height:22px;background:#fff;border:2px solid;border-color:var(--lo) var(--hi) var(--hi) var(--lo);margin-bottom:4px}
+.bigprog b{display:block;height:100%;width:0;background:repeating-linear-gradient(90deg,var(--accent) 0 12px,transparent 12px 15px);transition:width .4s}
+details.opts{margin:10px 0;background:var(--face);border:2px solid;border-color:var(--hi) var(--lo) var(--lo) var(--hi);padding:0 10px}
+details.opts summary{cursor:pointer;font:600 12px var(--mono);text-transform:uppercase;letter-spacing:.06em;padding:7px 0}
+details.opts[open]{padding-bottom:8px}details.opts label{margin:6px 0}
+.compare{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:12px 0 8px;font:600 12px var(--mono);text-transform:uppercase;letter-spacing:.05em}
+.seg{display:inline-flex}.seg button{background:var(--face);border:2px solid;border-color:var(--hi) var(--lo) var(--lo) var(--hi);box-shadow:none;min-width:84px}
+.seg button+button{margin-left:-2px}.seg button.on{background:var(--accent);color:#fff;border-color:var(--ink);box-shadow:inset 2px 2px 0 rgba(0,0,0,.3)}
+.setup{border-top:1px solid var(--lo);padding-top:8px;margin-top:10px;font-size:12.5px;color:var(--muted)}
+button.link{background:none;border:0;box-shadow:none;padding:0;color:var(--accent);font:600 12.5px var(--mono);text-decoration:underline;cursor:pointer}
+button.link:active{transform:none}
 </style>
 </head>
 <body>
@@ -722,14 +751,27 @@ td{border-bottom:1px solid var(--lo)}
 <main>
 <section>
   <h2>Run</h2>
-  <div class="row"><label><input type="checkbox" id="auto_ref" checked> find references (auto)</label>
-  <label><input type="checkbox" id="refs" checked> use references/</label></div>
-  <div class="row"><label><input type="checkbox" id="quick"> master only (quick)</label>
-  <label><input type="checkbox" id="no_audit"> keep every effect</label></div>
-  <div class="row"><label title="The Main fader goes down while MixMatch works and comes back at the end. MixMatch measures before the fader, so the results are the same."><input type="checkbox" id="silent"> silent (no need to listen)</label></div>
-  <div class="row"><label>resume at track <input id="resume" size="14" placeholder="optional"></label></div>
-  <div class="row"><button id="start">Start</button><button id="cont" class="ghost" hidden>Continue</button><button id="stop" class="ghost">Stop</button><button id="taps" class="ghost">Set taps</button><button id="untaps" class="ghost" title="Takes every MixMatch tap out of the Live set">Remove taps</button></div>
-  <div class="row"><span class="muted">compare the last run:</span><button id="ab_before" class="ghost">Before</button><button id="ab_after" class="ghost">After</button></div>
+  <div id="run_idle">
+    <button id="cont" class="primary" hidden>Continue</button>
+    <button id="start" class="primary">Mix the whole song</button>
+    <p class="hint" id="start_hint">Plays the set, listens, and keeps only changes that measurably help.</p>
+  </div>
+  <div id="run_busy" hidden>
+    <div class="now"><b id="now_phase">Working …</b><span id="now_section" class="muted"></span></div>
+    <div class="bigprog"><b id="bigprog_bar"></b></div><div class="hint" id="bigprog_text"></div>
+    <button id="stop" class="danger">Stop</button>
+    <span class="hint">It can continue later from where it stopped.</span>
+  </div>
+  <details class="opts"><summary>Options</summary>
+    <label title="The Main fader goes down while MixMatch works and comes back at the end. It measures before the fader, so the results are the same."><input type="checkbox" id="silent" checked> silent: Main fader down while it works</label>
+    <label><input type="checkbox" id="refs" checked> use the files in references/</label>
+    <label><input type="checkbox" id="auto_ref" checked> look for more references by itself</label>
+    <label><input type="checkbox" id="quick"> master only (quick, about 15 min)</label>
+    <label><input type="checkbox" id="no_audit"> keep every effect (no check for useless ones)</label>
+  </details>
+  <div class="compare"><span>Compare the last run</span>
+    <div class="seg"><button id="ab_before">Before</button><button id="ab_after">After</button></div></div>
+  <div class="setup">Taps in Live: <button id="taps" class="link">set</button> · <button id="untaps" class="link" title="Takes every MixMatch tap out of the Live set">remove</button></div>
   <p class="muted" id="msg"></p>
 </section>
 <section>
@@ -770,8 +812,13 @@ async function post(path, body) {
   const r = await fetch(path, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body || {})});
   const j = await r.json(); $("msg").textContent = j.error || ""; return j;
 }
+const OPTS = ["silent", "refs", "auto_ref", "quick", "no_audit"];
+try { const saved = JSON.parse(localStorage.getItem("mm_opts") || "{}");   // remembered per browser, a convenience
+  for (const k of OPTS) if (k in saved) $(k).checked = saved[k]; } catch {}
+for (const k of OPTS) $(k).addEventListener("change", () => {
+  try { localStorage.setItem("mm_opts", JSON.stringify(Object.fromEntries(OPTS.map(o => [o, $(o).checked])))); } catch {} });
 $("start").onclick = () => post("/api/run", {auto_ref: $("auto_ref").checked, refs: $("refs").checked, quick: $("quick").checked,
-  no_audit: $("no_audit").checked, silent: $("silent").checked, resume: $("resume").value.trim()});
+  no_audit: $("no_audit").checked, silent: $("silent").checked});
 $("stop").onclick = () => post("/api/stop");
 $("cont").onclick = () => post("/api/run", {continue: true, refs: $("refs").checked, silent: $("silent").checked,
   no_audit: $("no_audit").checked});
@@ -822,18 +869,25 @@ function progress(s) {
     left = m >= 60 ? ` · about ${Math.floor(m/60)} h ${m%60} min left` : ` · about ${Math.max(1, m)} min left`;
   } else if (s.running) left = " · estimating time …";
   $("prog_text").textContent = `${Math.round(frac*100)}%${left}` + (s.running && s.section ? ` · ${s.section}` : "");
+  $("bigprog_bar").style.width = (frac*100).toFixed(1) + "%"; $("bigprog_text").textContent = `${Math.round(frac*100)}%${left}`;
 }
 async function tick() {
   let s; try { s = await (await fetch("/api/state")).json(); } catch { return; }
   $("status").textContent = s.running ? "running" : (s.done ? "finished" : "idle"); $("status").className = "pill" + (s.running ? " on" : "");
   $("phase").textContent = s.phase || ""; $("start").disabled = s.running;
-  const ck = s.checkpoint; $("cont").hidden = !ck || s.running;
-  if (ck) $("cont").textContent = `Continue at ${ck.next_channel || ck.phase}` + (ck.percent != null ? ` (${ck.percent}%)` : "");
+  $("run_idle").hidden = s.running; $("run_busy").hidden = !s.running;
+  const ck = s.checkpoint; $("cont").hidden = !ck;
+  if (ck) $("cont").textContent = `Continue at ${ck.next_channel || ck.phase}` + (ck.percent != null ? ` · ${ck.percent}%` : "");
+  $("start").textContent = ck ? "Start over" : "Mix the whole song";
+  $("start").className = ck ? "ghost" : "primary";
+  $("start_hint").textContent = ck ? "The last run stopped. Continue skips everything it already did."
+                                   : "Plays the set, listens, and keeps only changes that measurably help.";
+  $("now_phase").textContent = s.phase || "Preparing …"; $("now_section").textContent = s.section || "";
   if (s.auto_imported && s.auto_imported.length !== lastImported) {
     if (lastImported >= 0 && s.auto_imported.length) $("msg").textContent = "Picked up from Downloads: " + s.auto_imported.slice(-3).join(", ");
     lastImported = s.auto_imported.length; lastRefs = ""; }
   for (const w of ["before", "after"]) { const b = $("ab_" + w); b.disabled = s.running || !s.ab_ready;
-    b.className = s.ab === w ? "" : "ghost"; }
+    b.className = s.ab === w ? "on" : ""; }
   $("live").textContent = s.live === null ? "Live …" : (s.live ? "Live connected" : "Live busy or closed (exporting?)");
   $("live").className = "pill" + (s.live ? " on" : "");
   $("distance").textContent = s.distance != null ? s.distance.toFixed(2) : "–"; $("section").textContent = s.section || "";
