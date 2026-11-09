@@ -358,3 +358,30 @@ def test_without_a_reference_a_stereo_low_end_still_counts():
     agent.understand()
     m = agent.measure("balance")
     assert m["cmp"] is None and m["parts"]["low_side"] > 0          # the demo bass is stereo down low
+
+
+
+def test_without_a_reference_the_audit_keeps_a_deliberate_eq():
+    """Like the live set: no reference, and the masking happens to be lower with the EQ off."""
+    song, hub, env, live = demo_project()
+    from mixmatch.actions import Executor
+
+    ex = Executor(live, log=lambda *_: None)
+    ex.refresh()
+    ex.apply([{"type": "eq", "track": "t1", "freq_hz": 80, "gain_db": -3.0, "q": 1.0, "shape": "bell", "reason": "t"}])
+    env.wait(5)
+    logs = []
+    agent = Agent(live, hub, RulePlanner(), Settings(minutes=1, settle=1.0), env=env, log=logs.append)
+    agent.understand()
+    real, calls = agent.measure, []
+
+    def masking_only(scoring="full", retries=6):
+        m = real(scoring, retries)
+        calls.append(1)
+        return {**m, "cmp": None, "objective": 2.35 if len(calls) % 2 else 2.22}
+
+    agent.measure = masking_only
+    agent.audit_one((0.0, 16.0), "t1", "Bass", "EQ Eight", "eq8")
+    bass_eq = next(d for d in song.tracks[1].devices if d.class_name == "Eq8")
+    assert bass_eq.p("Device On").value == 1
+    assert not any("better without it" in l for l in logs)

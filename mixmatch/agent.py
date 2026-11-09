@@ -307,8 +307,22 @@ class Agent:
         band = float(np.max(np.abs((b.bands_db - a.bands_db)[audible] - (b.loudness - a.loudness)))) if audible.any() else 0.0
         level, plr, width = b.loudness - a.loudness, b.plr - a.plr, b.width_db - a.width_db
         nothing = abs(level) < 0.3 and band < 0.5 and abs(plr) < 0.3 and abs(width) < 0.5
-        harmful = any(t in cls or t in dev_name.lower() for t in self.MIXING_TOOLS) and \
-            off["objective"] < on["objective"] - max(self.s.min_gain, 0.1)
+        # «Better without» needs a reference: the balance between channels alone (masking) says nothing about how
+        # an EQ shapes a sound, and a deliberate curve would be thrown away on noise. It must also hold twice.
+        margin = max(self.s.min_gain, 0.2)
+        harmful = (not nothing and on.get("cmp") is not None
+                   and any(t in cls or t in dev_name.lower() for t in self.MIXING_TOOLS)
+                   and off["objective"] < on["objective"] - margin)
+        if harmful:
+            self.ex.undo(rr)
+            again = self.measure(scoring)
+            self.ex._set(rr := RoundResult(), key, idx, "Device On", value=0)
+            off2 = self.measure(scoring)
+            harmful = off2["objective"] < again["objective"] - margin
+            if not harmful:
+                self.log(f"  {dev_name} on {track_name}: better without it only once "
+                         f"({on['objective']:.2f} → {off['objective']:.2f}, then {again['objective']:.2f} → "
+                         f"{off2['objective']:.2f}), kept")
         what = f"level {level:+.1f} dB, tone ±{band:.1f} dB, PLR {plr:+.1f}, width {width:+.1f}"
         if nothing:
             verdict = f"  ⊘ bypassed {dev_name} on {track_name}: does nothing here ({what})"
