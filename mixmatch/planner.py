@@ -215,11 +215,37 @@ class ClaudeCodePlanner:
         raise RuntimeError(f"claude -p ({model}): {error}")
 
 
+LIMIT_WORDS = ("limit", "quota", "usage", "rate")
+
+
+class FallbackPlanner:
+    """Claude Code first; when it reports a usage limit, the API (Claude Haiku 5.5) for the rest of the run."""
+
+    def __init__(self, primary, secondary, log=print):
+        self.primary, self.secondary, self.log = primary, secondary, log
+        self.using = primary
+        self.model = f"{primary.model}; API ({secondary.model}) if the subscription hits a limit"
+
+    def plan(self, context: dict) -> dict:
+        if self.using is self.primary:
+            try:
+                return self.primary.plan(context)
+            except RuntimeError as e:
+                if not any(w in str(e).lower() for w in LIMIT_WORDS):
+                    raise
+                self.log(f"  ⚠ Claude Code: {str(e)[:120]}; continuing with the API ({self.secondary.model})")
+                self.using = self.secondary
+        return self.secondary.plan(context)
+
+
 def make_planner(kind: str = "auto"):
-    """auto: the local Claude Code if installed (subscription), else the API with ANTHROPIC_API_KEY, else rules."""
+    """auto: the local Claude Code if installed (subscription), falling back to the API with ANTHROPIC_API_KEY
+    (Haiku) at a usage limit; else the API; else rules."""
     if kind == "rules":
         return RulePlanner()
     if kind in ("auto", "claude-code") and shutil.which("claude"):
+        if kind == "auto" and os.environ.get("ANTHROPIC_API_KEY"):
+            return FallbackPlanner(ClaudeCodePlanner(), ClaudePlanner())
         return ClaudeCodePlanner()
     if kind == "claude-code":
         raise SystemExit("Claude Code (the claude command) is not installed or not on the PATH.")

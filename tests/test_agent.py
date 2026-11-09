@@ -295,3 +295,32 @@ def test_effect_audit_removes_a_neutral_eq_and_bypasses_a_harmful_one(tmp_path):
     assert bass_eq.p("Device On").value == 0                                       # bypassed, not deleted
     assert any("removed EQ Eight on Kick" in l for l in logs)
     assert any("bypassed EQ Eight on Bass: the mix is better without it" in l for l in logs)
+
+
+def test_fallback_planner_switches_to_the_api_at_a_usage_limit():
+    import pytest
+
+    from mixmatch.planner import FallbackPlanner
+
+    class Code:
+        model = "code"
+
+        def __init__(self, error):
+            self.error, self.calls = error, 0
+
+        def plan(self, ctx):
+            self.calls += 1
+            raise RuntimeError(self.error)
+
+    class Api:
+        model = "claude-haiku-5-5"
+
+        def plan(self, ctx):
+            return {"assessment": "api", "done": True, "actions": []}
+
+    code, logs = Code("claude -p (opus): You've hit your session limit · resets 7:50pm"), []
+    p = FallbackPlanner(code, Api(), log=logs.append)
+    assert p.plan({})["assessment"] == "api" and p.plan({})["assessment"] == "api"
+    assert code.calls == 1 and any("continuing with the API" in l for l in logs)      # switched once, for good
+    with pytest.raises(RuntimeError):                                                    # other errors still stop
+        FallbackPlanner(Code("Not logged in"), Api(), log=lambda *_: None).plan({})
