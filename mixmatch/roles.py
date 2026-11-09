@@ -126,10 +126,32 @@ def from_sound(st: Stats | None) -> str | None:
     return None
 
 
-def guess(track: dict, st: Stats | None) -> Role:
+def from_midi(notes: list | None) -> str | None:
+    """What a part plays, from its MIDI notes ([track, pitch, start, duration, velocity]).
+
+    Low single notes: bass. Chords held for a bar or so: pad. Short chords: pluck (stabs). Single notes higher
+    up: a lead or hook. Anything with too few notes says nothing.
+    """
+    if not notes or len(notes) < 8:
+        return None
+    pitches = np.array([n[1] for n in notes], dtype=float)
+    durations = np.array([n[3] for n in notes], dtype=float)
+    poly = len(notes) / max(1, len({round(float(n[2]), 2) for n in notes}))   # notes per onset
+    pitch, length = float(np.median(pitches)), float(np.median(durations))
+    if pitch < 40 and poly < 1.3:
+        return "bass"
+    if poly >= 2.0:
+        return "pad" if length >= 1.5 else "pluck"
+    if poly < 1.5:
+        return "pad" if length >= 2.0 else "lead_synth"
+    return "keys"
+
+
+def guess(track: dict, st: Stats | None, notes: list | None = None) -> Role:
     devices = track.get("devices", [])
     sources = [("name", None if says_nothing(track) else from_name(track["name"])),
                ("devices", from_devices(devices)),
+               ("midi", from_midi(notes)),
                ("sound", from_sound(st)),
                ("devices", "drums_bus" if is_drum_rack(devices) else None),
                ("name", from_name(track["name"]))]
@@ -139,15 +161,24 @@ def guess(track: dict, st: Stats | None) -> Role:
     return Role(track["key"], track["name"], "other", DEFAULT_PRIORITY["other"], "default")
 
 
+def _is_users(entry: dict) -> bool:
+    """Set by the user: saved in the interface (source «user»), or an older entry that is not the «other» fallback."""
+    source = entry.get("source")
+    return source == "user" or (source is None and entry.get("role") not in (None, "other"))
+
+
 def apply_overrides(roles: dict[str, Role], path: str) -> None:
-    """roles.json: {"Track name": {"role": "pad", "priority": 2, "note": "keep it in the back"}}."""
+    """roles.json: {"Track name": {"role": "pad", "priority": 2, "note": "…", "source": "user"}}.
+
+    Only the user's entries override; entries MixMatch wrote itself («auto») are guessed again each run.
+    """
     if not os.path.exists(path):
         return
     with open(path) as f:
         overrides = json.load(f)
     for r in roles.values():
         o = overrides.get(r.name)
-        if not o:
+        if not o or not _is_users(o):
             continue
         if o.get("role") in ROLES:
             r.role = o["role"]
@@ -157,8 +188,16 @@ def apply_overrides(roles: dict[str, Role], path: str) -> None:
 
 
 def save_template(roles: dict[str, Role], path: str) -> None:
-    """Writes the detected roles so the user can correct them."""
-    data = {r.name: {"role": r.role, "priority": r.priority, "note": r.note} for r in roles.values()}
+    """Writes the roles so the user can correct them: their own entries kept, the rest marked «auto»."""
+    existing = {}
+    if os.path.exists(path):
+        with open(path) as f:
+            existing = json.load(f)
+    data = {}
+    for r in roles.values():
+        old = existing.get(r.name)
+        data[r.name] = old if old and _is_users(old) else {"role": r.role, "priority": r.priority, "note": r.note,
+                                                           "source": "auto"}
     with open(path, "w") as f:
         json.dump(data, f, indent=2, ensure_ascii=False)
 

@@ -18,3 +18,42 @@ def test_plain_drum_rack_is_a_drum_bus():
 
 def test_user_names_win_over_devices():
     assert guess(track("Snare Top", "Kick Toner"), None).role == "snare"
+
+
+def test_roles_from_midi():
+    from mixmatch.roles import from_midi
+
+    def notes(chords, length, step=4.0):
+        return [["t", p, i * step, length, 100] for i, chord in enumerate(chords) for p in chord]
+
+    pad = notes([(51, 58, 63)] * 10, 4.0)
+    stabs = notes([(51, 54, 58, 61, 63)] * 10, 0.25, step=0.5)
+    hook = notes([(84 + i % 5,) for i in range(20)], 0.25, step=0.5)
+    bass = notes([(27,)] * 12, 0.25, step=1)
+    assert [from_midi(x) for x in (pad, stabs, hook, bass)] == ["pad", "pluck", "lead_synth", "bass"]
+    assert from_midi(notes([(60,)], 1.0)) is None                       # too few notes to say
+
+
+def test_serum_tracks_get_roles_from_midi():
+    pad = [["t0", p, i * 4.0, 4.0, 100] for i in range(10) for p in (51, 58, 63)]
+    r = guess(track("18-Serum", "Serum", "EQ Eight"), None, pad)
+    assert (r.role, r.source) == ("pad", "midi")
+
+
+def test_auto_entries_are_guessed_again_but_user_entries_stay(tmp_path):
+    import json
+
+    from mixmatch.roles import Role, apply_overrides, save_template
+
+    path = tmp_path / "roles.json"
+    path.write_text(json.dumps({"18-Serum": {"role": "other", "priority": 2},          # old fallback: not the user's
+                                "Kick": {"role": "kick", "priority": 5},               # older entry: the user's
+                                "Pad": {"role": "keys", "priority": 3, "source": "auto"}}))
+    roles = {"a": Role("a", "18-Serum", "pad", 2, "midi"), "b": Role("b", "Kick", "snare", 4, "name"),
+             "c": Role("c", "Pad", "pad", 2, "name")}
+    apply_overrides(roles, str(path))
+    assert [roles[k].role for k in "abc"] == ["pad", "kick", "pad"]
+    save_template(roles, str(path))
+    saved = json.loads(path.read_text())
+    assert saved["18-Serum"] == {"role": "pad", "priority": 2, "note": "", "source": "auto"}
+    assert saved["Kick"] == {"role": "kick", "priority": 5}

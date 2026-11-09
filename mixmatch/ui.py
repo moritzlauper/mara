@@ -374,7 +374,7 @@ async function loadRoles() {
     `<option ${r===roles[n].role?"selected":""}>${r}</option>`).join("")}</select></td><td><input data-p="${esc(n)}" type="number" min="1" max="5" value="${roles[n].priority}" style="width:52px"></td></tr>`).join("") + "</table>";
   $("save_roles").onclick = async () => {
     for (const n of names) { roles[n].role = document.querySelector(`[data-n="${CSS.escape(n)}"]`).value;
-      roles[n].priority = +document.querySelector(`[data-p="${CSS.escape(n)}"]`).value; }
+      roles[n].priority = +document.querySelector(`[data-p="${CSS.escape(n)}"]`).value; roles[n].source = "user"; }
     await post("/api/roles", roles); $("msg").textContent = "Roles saved; the next run uses them.";
   };
 }

@@ -193,14 +193,22 @@ class Agent:
             paths = list(dict.fromkeys((self.refset.paths if self.refset else []) + in_project))
             self.refset = ReferenceSet(paths, log=self.log)
         since = self.env.now() - 60
+        notes: dict[str, list] = {}
+        try:
+            for n in self.live.request("midi_notes", start=0, end=1e9)["notes"]:
+                notes.setdefault(n[0], []).append(n)
+        except Exception:
+            pass  # no MIDI (or an older remote script): names, devices and sound only
         for t in self.ex.set_state["tracks"]:
             if t["key"] == "m" or t["key"] not in self.tap_of:
                 continue
-            self.roles[t["key"]] = roles_mod.guess(t, stats(self.tap_of[t["key"]].window(since, self.env.now())))
+            self.roles[t["key"]] = roles_mod.guess(t, stats(self.tap_of[t["key"]].window(since, self.env.now())),
+                                                   notes.get(t["key"]))
+        first = not os.path.exists(self.s.roles_file)
         roles_mod.apply_overrides(self.roles, self.s.roles_file)
-        if not os.path.exists(self.s.roles_file):
-            roles_mod.save_template(self.roles, self.s.roles_file)
-            self.log(f"Wrote {self.s.roles_file}: correct the roles there if needed, they are read at the next start.")
+        roles_mod.save_template(self.roles, self.s.roles_file)
+        if first:
+            self.log(f"Wrote {self.s.roles_file}: correct the roles there (or in mixmatch ui), they are read at the next start.")
         for r in self.roles.values():
             self.log(f"  {r.name:<24} {r.role:<14} priority {r.priority}  ({r.source})")
         has_vocals = any(r.role in VOCAL_ROLES for r in self.roles.values())
