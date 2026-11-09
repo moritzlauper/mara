@@ -115,12 +115,16 @@ def mastered(path: str) -> bool:
         return False
 
 
-def buy_list(recording: str, listener: Listener, log=print) -> list[dict]:
+def buy_list(recording: str, listener: Listener, harmony: dict | None = None, note: str = "",
+             log=print) -> list[dict]:
     """Claude's suggestions of real tracks to get (Bandcamp often has «name your price»), with search links."""
     from .style import describe, suggest
 
     try:
-        result = suggest(describe(recording, listener))
+        desc = describe(recording, listener)
+        if harmony:  # Live's MIDI beats the audio estimate
+            desc["harmony"] = {k: harmony[k] for k in ("key", "mode", "chords", "source")}
+        result = suggest(desc, note=note)
     except Exception as e:
         log(f"  no suggestions from Claude ({str(e)[:100]})")
         return []
@@ -132,7 +136,7 @@ def buy_list(recording: str, listener: Listener, log=print) -> list[dict]:
 
 def find(live, start: float, length: float, tempo: float, library: str | None = "~/Music", count: int = 3,
          references: str = "references", jamendo: bool = False, suggest: bool = True,
-         log=print) -> tuple[list[dict], list[dict]]:
+         harmony: dict | None = None, note: str = "", log=print) -> tuple[list[dict], list[dict]]:
     """The `count` references that sound closest to the project, as {path, source, artist, title, …}."""
     log("\n━━ Finding references")
     recording = capture(live, start, length, tempo, log)
@@ -191,5 +195,5 @@ def find(live, start: float, length: float, tempo: float, library: str | None = 
         log(f"  ✓ {c['score']:.2f}  {name}  [{c['source']}]{extra}")
     if not picked:
         log("  no mastered song close enough was found in references/ or your library")
-    to_get = buy_list(recording, listener, log) if suggest else []
+    to_get = buy_list(recording, listener, harmony, note, log) if suggest else []
     return picked, to_get

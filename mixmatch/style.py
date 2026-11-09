@@ -296,13 +296,21 @@ def describe(path: str, listener: Listener) -> dict:
     from .analysis import band_label, stats
     from .reference import file_frames, loudest_part
 
+    from . import harmony
+
     mono = load_mono(path)
     emb = listener.file(path)
     st = stats(loudest_part(file_frames(path)))
+    bpm = tempo(mono)
+    h = harmony.from_audio(mono, SR, bpm)
+    moods = ["happy", "euphoric", "bright", "playful", "dark", "melancholic", "aggressive", "dreamy", "chill"]
+    mood_sims = listener.text(moods) @ emb
     return {
+        "harmony": {"key": h["key"], "mode": h["mode"], "chords": h["chords"][:12], "source": h["source"]},
+        "mood_clap": [moods[i] for i in np.argsort(-mood_sims)[:3]],
         "file": os.path.basename(path),
         "styles_clap": [{"style": s, "score": round(v, 3)} for s, v in styles(listener, emb, 8)],
-        "tempo_bpm": tempo(mono),
+        "tempo_bpm": bpm,
         "loudness_lufs": round(st.loudness, 1),
         "plr_db": round(st.plr, 1),
         "width_db": round(st.width_db, 1),
@@ -329,8 +337,8 @@ SUGGEST_SCHEMA = {
     "additionalProperties": False,
 }
 
-SUGGEST_SYSTEM = """You suggest reference tracks for mixing. You get measurements of the user's track: style guesses from an audio model (CLAP scores, higher is closer), tempo, loudness, dynamics, width and tonal balance, plus the user's own description.
-Name the style in a few words, then suggest 8 real, released tracks that a producer of this style would mix against: well mixed and mastered, close in style, tempo and energy, ideally available on Bandcamp or Beatport. Only tracks you are sure exist. For each, one short sentence why it fits."""
+SUGGEST_SYSTEM = """You suggest reference tracks for mixing. You get measurements of the user's track: style and mood guesses from an audio model (CLAP; it knows hyperpop and newer styles poorly), key, major or minor and chords, tempo, loudness, dynamics, width and tonal balance, plus the user's own description, which always wins over the audio model.
+Name the style in a few words, then suggest 8 real, released tracks that a producer of this style would mix against: well mixed and mastered, close in style, mood, tempo and energy (a similar key or the same major/minor colour is a plus), ideally available on Bandcamp or Beatport. Only tracks you are sure exist. For each, one short sentence why it fits."""
 
 
 def suggest(desc: dict, note: str = "", model: str = "opus") -> dict:

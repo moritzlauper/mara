@@ -262,6 +262,27 @@ class Commands:
         self.song.move_device(devices[req["device"]], track, int(req["to"]))
         return {"devices": [d.name for d in track.devices]}
 
+    # ── harmony: MIDI notes of the arrangement ──────────────────────────────
+    def midi_notes(self, req):
+        """Unmuted notes of the arrangement MIDI clips of every track in [start, end) beats; drum racks left out."""
+        start, end = float(req.get("start", 0.0)), float(req.get("end", 1e9))
+        out = []
+        for key, kind, track in self._tracks():
+            if kind != "track" or getattr(track, "is_foldable", False) or not getattr(track, "has_midi_input", False):
+                continue
+            if any(getattr(d, "can_have_drum_pads", False) for d in track.devices):
+                continue
+            for clip in getattr(track, "arrangement_clips", []):
+                if not clip.is_midi_clip or clip.end_time <= start or clip.start_time >= end:
+                    continue
+                for n in clip.get_notes_extended(0, 128, clip.start_marker, clip.end_marker - clip.start_marker):
+                    if getattr(n, "mute", False):
+                        continue
+                    t = clip.start_time + (n.start_time - clip.start_marker)
+                    if start <= t < end and t < clip.end_time:
+                        out.append([key, n.pitch, round(t, 4), round(n.duration, 4), n.velocity])
+        return {"notes": out}
+
     # ── capturing the master (for listening with CLAP) ──────────────────────
     def capture_start(self, req):
         """New audio track recording the master (input «Resampling», monitoring off) into its first clip slot."""

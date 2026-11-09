@@ -110,6 +110,7 @@ class Agent:
         self.target = None
         self.target_no_vocals = None        # used in parts where the vocal channels are silent
         self.loop: tuple[float, float] | None = None   # (start, length) of the loop the agent plays
+        self.harmony: dict | None = None                # key and chords, from Live's MIDI clips
         self.beat = False
         self.logfile = None
 
@@ -189,6 +190,23 @@ class Agent:
         loop = self.ex.set_state["loop"]
         return [("loop", loop["start"], loop["length"])]
 
+    def read_harmony(self, sections: list[tuple[str, float, float]]) -> None:
+        """Key and chords of the song from its MIDI clips (exact); quietly skipped if there are none."""
+        from . import harmony
+
+        start = min(s[1] for s in sections)
+        end = max(s[1] + s[2] for s in sections)
+        try:
+            notes = self.live.request("midi_notes", start=start, end=end)["notes"]
+        except Exception:
+            return
+        if len(notes) < 8:
+            return
+        self.harmony = harmony.from_notes(notes, start, end)
+        self.harmony["bass_hz"] = harmony.bass_frequencies(self.harmony["tonic"])
+        chords = " – ".join(self.harmony["chords"][:8]) + (" …" if len(self.harmony["chords"]) > 8 else "")
+        self.log(f"Key: {self.harmony['key']} ({self.harmony['mode']}, from MIDI) · chords: {chords}")
+
     def find_references(self, part: tuple[str, float, float]) -> None:
         """Listens to the loudest part and picks references from the library and Jamendo (see autoref)."""
         from . import autoref
@@ -197,7 +215,7 @@ class Agent:
         _, start, length = part
         tempo = self.ex.set_state.get("tempo") or 120
         picked, to_get = autoref.find(self.live, start, min(length, 64.0), tempo, library=self.s.library,
-                                      jamendo=self.s.jamendo, log=self.log)
+                                      jamendo=self.s.jamendo, harmony=self.harmony, log=self.log)
         stamp = time.strftime("%Y%m%d-%H%M%S")
         os.makedirs(self.s.log_dir, exist_ok=True)
         if to_get:
@@ -472,6 +490,9 @@ class Agent:
                          "max_gain_db": CLIPPER_MAX_GAIN_DB} if self.ex.clipper() else "none installed"),
             "loudness_note": ("limiter and clipper are at their maximum: the remaining loudness gap is accepted and "
                               "does not count; do not raise faders to chase loudness") if self.loudness_exhausted() else "",
+            "harmony": ({"key": self.harmony["key"], "bass_hz": self.harmony["bass_hz"],
+                         "note": "kick, sub and bass sit on the tonic and fifth; masking there matters most"}
+                        if self.harmony else None),
             "installed_plugins": self.ex.plugins[:80],
             "channels": channels,
             "masking": m["masking"][:8],
@@ -538,6 +559,7 @@ class Agent:
 
     def _run(self, deadline: float) -> None:
         sections = self.sections()
+        self.read_harmony(sections)
         scan = self.scan(sections) if self.s.complete else None
         if scan is not None and not self.beat and self.s.mode == "auto":
             vocals = [k for k, r in self.roles.items() if r.role in VOCAL_ROLES]

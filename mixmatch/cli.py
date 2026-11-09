@@ -115,6 +115,8 @@ def cmd_suggest_refs(args):
     desc = describe(args.track, listener)
     print(f"\nYour track: about {desc['tempo_bpm']} BPM, {desc['loudness_lufs']} LUFS in its loudest part")
     print("Sounds like: " + ", ".join(f"{s['style']} ({s['score']:.2f})" for s in desc["styles_clap"][:5]))
+    print(f"Mood: {', '.join(desc['mood_clap'])} · key: {desc['harmony']['key']} ({desc['harmony']['mode']}, estimate) · "
+          f"chords: {' – '.join(desc['harmony']['chords'][:8])}")
 
     if args.library:
         files = library_files(args.library)
