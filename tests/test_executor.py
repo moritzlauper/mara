@@ -52,3 +52,22 @@ def test_limiter_and_bass_mono_on_master():
     devs = {d.class_name: d for d in song.master_track.devices}
     assert abs(devs["Limiter"].p("Gain").value - 1.5) < 0.06 and abs(devs["Limiter"].p("Ceiling").value + 1) < 0.06
     assert devs["StereoGain"].p("Bass Mono").value == 1
+
+
+def test_automated_parameters_are_left_alone():
+    from mixmatch.actions import Executor
+    from mixmatch.sim import demo_project
+
+    song, hub, env, live = demo_project()
+    ex = Executor(live, log=lambda *_: None)
+    ex.refresh()
+    next(p for p in ex.track("t0")["mixer"] if p["name"] == "Volume")["automated"] = True
+    rr = ex.apply([{"type": "volume", "track": "t0", "delta_db": -1.0, "reason": "test"}])
+    assert not rr.changes and "automated" in rr.skipped[0]["error"]
+
+
+def test_live_12_parameter_names():
+    from mixmatch.actions import _aliases
+
+    assert _aliases("3 Resonance A") == ["3 Resonance A", "3 Q A"]
+    assert _aliases("Gain") == ["Gain", "Input Gain"]

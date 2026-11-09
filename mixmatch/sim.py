@@ -148,6 +148,9 @@ class Song:
                 t.devices.remove(device)
         track.devices.insert(index, device)
 
+    def continue_playing(self):
+        self.is_playing = True
+
     def start_playing(self):
         self.is_playing = True
 
@@ -169,11 +172,8 @@ class Browser:
         self.user_library = Item("User Library", [Item("MixMatch", [Item("MixMatch Tap.amxd")])])
 
     def load_item(self, item):
-        # Like Live: insert after the selected device of the track, else at the front.
-        view = self.song.view
-        devices = view.selected_track.devices
-        at = devices.index(view.selected_device) + 1 if view.selected_device in devices else 0
-        devices.insert(at, FACTORIES[item.name.lower()]())
+        # Like Live: always appended to the chain of the selected track.
+        self.song.view.selected_track.devices.append(FACTORIES[item.name.lower()]())
 
 
 # ── sound model ────────────────────────────────────────────────────────────
@@ -272,6 +272,11 @@ class SimEnv:
         steps = max(1, int(round(seconds * 10)))
         for _ in range(steps):
             self.t += 0.1
+            song = self.song
+            if song.is_playing:  # the song position moves like in Live, wrapping at the loop end
+                song.current_song_time += 0.1 * song.tempo / 60
+                if song.loop and song.current_song_time >= song.loop_start + song.loop_length:
+                    song.current_song_time -= song.loop_length
             for i, tr in enumerate(self.song.tracks):
                 f = self._frame(*track_output(tr, fader=False))
                 self.hub.taps[i + 1].frames.append(f)

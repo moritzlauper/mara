@@ -67,6 +67,7 @@ How to work:
 - Beat mode (see "mode"): the mix is an instrumental and the target comes from the references with their vocals removed. A beat that will get vocals later must leave room in the vocal range; never boost instruments into 1–5 kHz to imitate a vocal.
 - Several references: the target is their average and "largest_tonal_differences_db" already ignores differences within their spread, so only chase what is listed there.
 - Respect the user's notes in the roles and never touch locked parameters.
+- Parameters marked "(automated)" follow automation in the arrangement (filter sweeps, build-ups): they are part of the arrangement, not the mix. Never change them; work around them.
 - Set "done" to true only when the remaining differences are small and nothing useful is left to try.
 - Reasons: one short sentence each, concrete (which channel, which frequency, why).
 
@@ -85,8 +86,8 @@ def device_summary(track: dict) -> list[dict]:
     """Only what helps a decision: device names and their (non-default looking) parameters, compact."""
     out = []
     for d in track.get("devices", []):
-        params = [f"{p['name']}={p['display']}" for p in d["params"]
-                  if not p["name"].startswith("Device On")][:40]
+        params = [f"{p['name']}={p['display']}" + (" (automated)" if p.get("automated") else "")
+                  for p in d["params"] if not p["name"].startswith("Device On")][:40]
         out.append({"index": d["index"], "name": d["name"], "params": params})
     return out
 

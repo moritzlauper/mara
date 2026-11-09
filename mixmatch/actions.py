@@ -22,6 +22,19 @@ from dataclasses import dataclass, field
 from .bands import RATIO
 from .display import parse_display
 
+def _aliases(name):
+    """Parameter names differ between Live versions: EQ Eight «1 Resonance A» is «1 Q A» in Live 12,
+    the Limiter's «Gain» is «Input Gain»."""
+    if not isinstance(name, str):
+        return [name]
+    out = [name]
+    if name.endswith(" Resonance A"):
+        out.append(name[: -len("Resonance A")] + "Q A")
+    if name == "Gain":
+        out.append("Input Gain")
+    return out
+
+
 MAX_STEP = {"volume": 2.0, "eq": 3.0, "limiter": 2.0, "pan": 15.0, "width": 25.0}
 EQ_GAIN_LIMIT = 12.0
 VOLUME_CEILING_DB = 6.0
@@ -76,9 +89,10 @@ class Executor:
     def _param(self, key: str, device, name) -> dict | None:
         t = self.track(key)
         params = t["mixer"] if device == "mixer" else t["devices"][device]["params"]
-        for p in params:
-            if p["name"].lower() == str(name).lower() or p["index"] == name:
-                return p
+        for candidate in _aliases(name):
+            for p in params:
+                if p["name"].lower() == str(candidate).lower() or p["index"] == candidate:
+                    return p
         return None
 
     def _device(self, key: str, *names: str) -> int | None:
@@ -106,8 +120,10 @@ class Executor:
         p = self._param(key, device, name)
         if p is None:
             raise KeyError(f"{key}: no parameter {name!r} on {device}")
-        res = self.live.set(key, device, name, target=target, value=value)
-        rr.changes.append(Change(key, device, name, p["value"], res))
+        if p.get("automated"):
+            raise PermissionError(f"{key} {device} {p['name']} is automated; MixMatch leaves automation alone")
+        res = self.live.set(key, device, p["name"], target=target, value=value)
+        rr.changes.append(Change(key, device, p["name"], p["value"], res))
         self.last_set[(key, device, name)] = res["value"]
         p["value"], p["display"] = res["value"], res["display"]
         return res

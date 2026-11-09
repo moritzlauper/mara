@@ -81,12 +81,22 @@ def test_loudest_window_finds_the_drop():
     from mixmatch.agent import loudest_window
     from mixmatch.taps import Frame
 
-    tempo, t0 = 120.0, 100.0                       # 2 beats per second, 64 beats = 32 s
-    frames = []
-    for i in range(320):                           # 10 frames per second
-        t = t0 + i * 0.1
-        level = 0.5 if 16 <= t - t0 < 24 else 0.05  # beats 32–48 are loud
-        frames.append(Frame(t, level, level / 4, 0.0, level * 2, [level / 5] * 31))
-    offset, loudness = loudest_window(frames, t0, tempo, total_beats=64, length_beats=16)
+    positioned = []
+    for i in range(640):                           # 64 beats, 10 frames per beat
+        beat = i / 10
+        level = 0.5 if 32 <= beat < 48 else 0.05   # beats 32–48 are loud
+        positioned.append((beat, Frame(i, level, level / 4, 0.0, level * 2, [level / 5] * 31)))
+    offset, loudness = loudest_window(positioned, total_beats=64, length_beats=16)
     assert offset == 32
     assert loudness > -20
+
+
+def test_loud_focus_uses_the_real_song_position():
+    song, hub, env, live = demo_project()
+    song.cue_points = []
+    song.loop, song.loop_start, song.loop_length = True, 0.0, 32.0
+    env.wait(2)
+    agent = Agent(live, hub, RulePlanner(), Settings(focus_bars=4, settle=1.0), env=env, log=lambda *_: None)
+    agent.ex.refresh()
+    name, start, length = agent.loudest_part(agent.sections())
+    assert name == "loudest part" and length == 16 and 0 <= start <= 16

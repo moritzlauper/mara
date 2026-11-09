@@ -68,6 +68,7 @@ def _param_info(index, p):
         "max": p.max,
         "display": _display(p),
         "quantized": bool(getattr(p, "is_quantized", False)),
+        "automated": int(getattr(p, "automation_state", 0)) != 0,  # 1 playing, 2 overridden by a manual change
         "items": [str(v) for v in getattr(p, "value_items", [])] if getattr(p, "is_quantized", False) else [],
     }
 
@@ -208,17 +209,10 @@ class Commands:
         taps = [i for i, d in enumerate(devices) if d.name == TAP]
         at = taps[0] if taps and _stem(req["name"]) != TAP.lower() else len(devices)
         self.song.view.selected_track = track
-        # Live inserts after the selected device.
-        if at > 0:
-            self.song.view.select_device(devices[at - 1])
-            self.browser.load_item(item)
-        elif not devices:
-            self.browser.load_item(item)
-        else:  # only the tap is there: load after it, then move the new device to the front
-            self.song.view.select_device(devices[0])
-            self.browser.load_item(item)
-            new = list(track.devices)[1]
-            self.song.move_device(new, track, 0)
+        self.browser.load_item(item)  # Live appends at the end of the chain of the selected track
+        if at < len(devices):
+            new = list(track.devices)[-1]
+            self.song.move_device(new, track, at)
         return {"index": at}
 
     def delete_device(self, req):
@@ -229,6 +223,11 @@ class Commands:
             raise CommandError("unknown device %r" % index)
         track.delete_device(index)
         return {"devices": len(list(track.devices))}
+
+    def re_enable_automation(self, _):
+        """Let automation play again after a parameter was changed by hand (Live's «Re-Enable Automation»)."""
+        self.song.re_enable_automation()
+        return {"ok": True}
 
     def transport(self, req):
         # Live refuses a loop that reaches past the end of the song, also for a moment in between:
@@ -241,12 +240,14 @@ class Commands:
             self.song.loop_length = float(req["loop_length"])
         if "loop" in req:
             self.song.loop = bool(req["loop"])
-        if "time" in req:
-            self.song.current_song_time = float(req["time"])
-        if req.get("play") is True:
-            self.song.start_playing()
+        # Live resumes where it last stopped, whatever current_song_time says while stopped,
+        # and start_playing() begins at the start marker. So: start first, then jump.
+        if req.get("play") is True and not self.song.is_playing:
+            self.song.continue_playing()
         elif req.get("play") is False:
             self.song.stop_playing()
+        if "time" in req:
+            self.song.current_song_time = float(req["time"])
         return {"is_playing": self.song.is_playing, "song_time": self.song.current_song_time}
 
     # ── helpers ─────────────────────────────────────────────────────────────

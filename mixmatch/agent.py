@@ -17,6 +17,8 @@ import os
 import time
 from dataclasses import dataclass, field, replace
 
+import numpy as np
+
 from . import roles as roles_mod
 from .actions import Executor
 from .analysis import Comparison, compare, masking, objective, stats
@@ -149,11 +151,22 @@ class Agent:
         self.log(f"Looking for the loudest {self.s.focus_bars} bars: playing {total / 4:.0f} bars once "
                  f"({total * 60 / tempo:.0f} s) …")
         self.live.transport(loop_start=start, loop_length=total, loop=True, time=start, play=True)
-        t0 = self.env.now()
-        self.env.wait(total * 60 / tempo)
+        # Live does not jump to the start at once, so the position is read back instead of assumed.
+        t0, marks, last = self.env.now(), [], -1.0
+        deadline = t0 + total * 60 / tempo + 10
+        while self.env.now() < deadline:
+            pos = self.live.transport()["song_time"]
+            if marks and pos < last - 1:      # wrapped around: one pass is done
+                break
+            marks.append((self.env.now(), pos))
+            last = pos
+            self.env.wait(0.25)
         master_tap = next((t for t in self.hub.snapshot() if t.kind == "master"), None)
         frames = master_tap.window(t0, self.env.now()) if master_tap else []
-        found = loudest_window(frames, t0, tempo, total, length)
+        times, beats = [m[0] for m in marks], [m[1] - start for m in marks]
+        positioned = [(float(np.interp(f.t, times, beats)), f) for f in frames
+                      if marks and times[0] <= f.t <= times[-1] and beats[0] - 0.5 <= np.interp(f.t, times, beats)]
+        found = loudest_window(positioned, total, length)
         if found is None:
             self.log("  the master stayed silent; working on the whole range")
             return sections[0]
@@ -235,7 +248,8 @@ class Agent:
             t = self.ex.track(key)
             channels.append({
                 "track": key, "name": r.name, "role": r.role, "priority": r.priority, "note": r.note,
-                "volume": next((p["display"] for p in t["mixer"] if p["name"] == "Volume"), None),
+                "volume": next((p["display"] + (" (automated)" if p.get("automated") else "")
+                                for p in t["mixer"] if p["name"] == "Volume"), None),
                 "pan": next((p["display"] for p in t["mixer"] if p["name"] == "Pan"), None),
                 "measured": st.summary() if st else "silent in this section",
                 "loudness_vs_master_lu": round(st.loudness - m["master"].loudness, 1) if st and m["master"] else None,
@@ -362,18 +376,16 @@ def post_fader(st, gain_db: float):
     return replace(st, loudness=st.loudness + gain_db, bands_db=st.bands_db + gain_db, peak_db=st.peak_db + gain_db)
 
 
-def loudest_window(frames, t0: float, tempo: float, total_beats: float, length_beats: float,
+def loudest_window(positioned, total_beats: float, length_beats: float,
                    step_beats: float = 4.0) -> tuple[float, float] | None:
     """Offset in beats (from the start of the range) and loudness of the loudest window, on a one-bar grid.
 
-    `frames` were recorded while the range played once from its start at time `t0`.
+    `positioned` are (beat offset, frame) pairs recorded while the range played once.
     """
-    spb = 60.0 / tempo
     best = None
     offset = 0.0
     while offset + length_beats <= total_beats + 1e-9:
-        a, b = t0 + offset * spb, t0 + (offset + length_beats) * spb
-        st = stats([f for f in frames if a <= f.t < b])
+        st = stats([f for b, f in positioned if offset <= b < offset + length_beats])
         if st is not None and (best is None or st.loudness > best[1]):
             best = (offset, st.loudness)
         offset += step_beats
