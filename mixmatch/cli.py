@@ -122,7 +122,7 @@ def cmd_run(args):
         time.sleep(args.wait)
         Agent(live, hub, planner, Settings(minutes=args.minutes, assist=args.assist, roles_file=args.roles,
                                            mode=args.mode, loudness_from=args.loudness_from,
-                                           focus=args.focus, focus_bars=args.focus_bars),
+                                           focus=args.focus, focus_bars=args.focus_bars, complete=not args.quick),
               references=refset).run()
     finally:
         live.transport(play=False)
@@ -154,12 +154,15 @@ def main(argv=None):
         s.add_argument("--loudness-from", choices=["full", "instrumental"], default="full",
                        help="beat mode: loudness target from the full songs (default) or their instrumentals")
         s.add_argument("--roles", default="roles.json", help="file with channel roles (written on first start)")
-        s.add_argument("--minutes", type=float, default=10.0)
+        s.add_argument("--minutes", type=float, default=None,
+                       help="upper time limit; without it a run goes through every channel until it is complete")
         s.add_argument("--wait", type=float, default=6.0, help="seconds of playback before starting")
     sub.choices["taps"].add_argument("--replace", action="store_true",
                                      help="remove existing taps first and put fresh ones (after rebuilding the device)")
     sub.choices["run"].add_argument("--assist", action="store_true", help="ask before every round")
-    sub.choices["run"].add_argument("--focus", choices=["sections", "loud"], default="sections",
+    sub.choices["run"].add_argument("--quick", action="store_true",
+                                    help="only match the master to the reference, no pass over every channel")
+    sub.choices["run"].add_argument("--focus", choices=["sections", "loud"], default="loud",
                                     help="loud: find the loudest part of the song once and work only there, "
                                          "like the references are measured at their loudest part")
     sub.choices["run"].add_argument("--focus-bars", type=int, default=16, help="length of the loudest part in bars")

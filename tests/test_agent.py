@@ -100,3 +100,37 @@ def test_loud_focus_uses_the_real_song_position():
     agent.ex.refresh()
     name, start, length = agent.loudest_part(agent.sections())
     assert name == "loudest part" and length == 16 and 0 <= start <= 16
+
+
+class ChannelStub:
+    """Master phase: nothing to do. Channel pass: a small cut on the focus track plus a stray action elsewhere."""
+
+    def __init__(self):
+        self.tasks = []
+
+    def plan(self, ctx):
+        if "task" not in ctx:
+            return {"assessment": "master fine", "done": True, "actions": []}
+        focus = ctx["channels"][0]["track"]
+        self.tasks.append(focus)
+        if self.tasks.count(focus) > 1:
+            return {"assessment": "sits well", "done": True, "actions": []}
+        return {"assessment": "trim", "done": False, "actions": [
+            {"type": "eq", "track": focus, "freq_hz": 250, "gain_db": -1.0, "q": 1.0, "shape": "bell", "reason": "mud"},
+            {"type": "volume", "track": "m" if focus != "m" else "t0", "delta_db": 1.0, "reason": "stray"},
+        ]}
+
+
+def test_complete_run_visits_every_channel_and_ends_with_a_final_check(tmp_path):
+    song, hub, env, live = demo_project()
+    env.wait(2)
+    logs, stub = [], ChannelStub()
+    agent = Agent(live, hub, stub, Settings(minutes=None, complete=True, focus="loud", settle=1.0,
+                                            roles_file=str(tmp_path / "roles.json"), log_dir=str(tmp_path)),
+                  env=env, log=logs.append)
+    agent.run()
+    assert set(stub.tasks) == set(agent.roles)                       # every channel got its turn
+    assert any("Final check" in l for l in logs)
+    assert any("not now" in l for l in logs)                         # stray actions are dropped in the pass
+    channel_rounds = [h for h in agent.history if h.section.startswith("channel ")]
+    assert channel_rounds and all(a["track"] in agent.roles for h in channel_rounds for a in h.applied)

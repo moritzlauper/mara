@@ -41,7 +41,7 @@ class RealEnv:
 
 @dataclass
 class Settings:
-    minutes: float = 10.0
+    minutes: float | None = 10.0  # upper limit; None = until the run is complete
     bars: int = 4                 # measurement window per round
     settle: float = 1.5           # seconds after a change before measuring (reverb tails, compressor release)
     max_rounds_per_section: int = 12
@@ -54,6 +54,20 @@ class Settings:
     log_dir: str = "runs"
     focus: str = "sections"       # sections: work through cue points / loop | loud: only the loudest part
     focus_bars: int = 16          # length of the loudest part
+    complete: bool = False        # after the master: one pass over every channel, then a final master check
+    channel_bars: int = 8         # loop length when a channel is worked on outside the loudest part
+    channel_rounds: int = 2       # rounds per channel in the channel pass
+    final_rounds: int = 4         # rounds of the final master check
+
+
+@dataclass
+class Scan:
+    """The range played once: every frame of the master and of each channel, with its song position."""
+
+    start: float                  # beat where the range starts
+    total: float                  # length in beats
+    master: list                  # (beat offset, frame)
+    channels: dict                # track key → [(beat offset, frame)]
 
 
 @dataclass
@@ -138,19 +152,12 @@ class Agent:
         loop = self.ex.set_state["loop"]
         return [("loop", loop["start"], loop["length"])]
 
-    def loudest_part(self, sections: list[tuple[str, float, float]]) -> tuple[str, float, float]:
-        """Plays the whole range once and returns the loudest `focus_bars` bars, measured at the master.
-
-        The references are judged by their loudest part (drop, chorus), so the mix should be too.
-        """
+    def scan(self, sections: list[tuple[str, float, float]]) -> Scan | None:
+        """Plays the whole range once and records where the master and every channel play, and how loud."""
         start = min(s[1] for s in sections)
         total = max(s[1] + s[2] for s in sections) - start
         tempo = self.ex.set_state.get("tempo") or 120
-        length = min(total, self.s.focus_bars * 4.0)
-        if length >= total:
-            return sections[0]
-        self.log(f"Looking for the loudest {self.s.focus_bars} bars: playing {total / 4:.0f} bars once "
-                 f"({total * 60 / tempo:.0f} s) …")
+        self.log(f"Listening to the whole song once: {total / 4:.0f} bars ({total * 60 / tempo:.0f} s) …")
         self.live.transport(loop_start=start, loop_length=total, loop=True, time=start, play=True)
         # Live does not jump to the start at once, so the position is read back instead of assumed.
         t0, marks, last = self.env.now(), [], -1.0
@@ -162,22 +169,79 @@ class Agent:
             marks.append((self.env.now(), pos))
             last = pos
             self.env.wait(0.25)
-        master_tap = next((t for t in self.hub.snapshot() if t.kind == "master"), None)
-        frames = master_tap.window(t0, self.env.now()) if master_tap else []
+        if len(marks) < 2:
+            return None
         times, beats = [m[0] for m in marks], [m[1] - start for m in marks]
-        positioned = [(float(np.interp(f.t, times, beats)), f) for f in frames
-                      if marks and times[0] <= f.t <= times[-1] and beats[0] - 0.5 <= np.interp(f.t, times, beats)]
-        found = loudest_window(positioned, total, length)
+
+        def positioned(tap):
+            out = []
+            for f in tap.window(t0, self.env.now()):
+                if times[0] <= f.t <= times[-1]:
+                    b = float(np.interp(f.t, times, beats))
+                    if b >= beats[0] - 0.5:
+                        out.append((b, f))
+            return out
+
+        master_tap = next((t for t in self.hub.snapshot() if t.kind == "master"), None)
+        return Scan(start, total, positioned(master_tap) if master_tap else [],
+                    {k: positioned(tap) for k, tap in self.tap_of.items()})
+
+    def loudest_part(self, sections: list[tuple[str, float, float]], scan: Scan | None = None) -> tuple[str, float, float]:
+        """The loudest `focus_bars` bars, measured at the master.
+
+        The references are judged by their loudest part (drop, chorus), so the mix should be too.
+        """
+        start = min(s[1] for s in sections)
+        total = max(s[1] + s[2] for s in sections) - start
+        length = min(total, self.s.focus_bars * 4.0)
+        if length >= total:
+            return sections[0]
+        scan = scan or self.scan(sections)
+        found = loudest_window(scan.master, scan.total, length) if scan else None
         if found is None:
             self.log("  the master stayed silent; working on the whole range")
             return sections[0]
         offset, loudness = found
-        bar = (start + offset) / 4 + 1
+        bar = (scan.start + offset) / 4 + 1
         self.log(f"  loudest part: bars {bar:.0f}–{bar + length / 4:.0f}, {loudness:.1f} LUFS")
-        return ("loudest part", start + offset, length)
+        return ("loudest part", scan.start + offset, length)
+
+    def channel_region(self, key: str, scan: Scan, main: tuple[str, float, float] | None) -> tuple[float, float] | None:
+        """Where to work on a channel: the loudest part if it plays there, else its own loudest bars."""
+        frames = scan.channels.get(key, [])
+        if main is not None:
+            _, s, length = main
+            st = stats([f for b, f in frames if s - scan.start <= b < s - scan.start + length])
+            if st is not None and st.active >= 0.5:
+                return s, length
+        length = min(self.s.channel_bars * 4.0, scan.total)
+        found = loudest_window(frames, scan.total, length)
+        if found is None:
+            return None
+        return scan.start + found[0], length
+
+    def channel_pass(self, scan: Scan, main: tuple[str, float, float] | None, deadline: float) -> None:
+        """Every channel once, most important first: level, EQ, masking, width, dynamics, each where it plays."""
+        order = sorted(self.roles.values(), key=lambda r: (-r.priority, r.name))
+        self.log(f"\n━━ Channel pass: {len(order)} channels")
+        for r in order:
+            if self.env.now() >= deadline:
+                self.log("  time is up")
+                return
+            region = self.channel_region(r.key, scan, main)
+            if region is None:
+                self.log(f"\n▶ {r.name}: silent in the whole song, skipped")
+                continue
+            start, length = region
+            bar = start / 4 + 1
+            self.log(f"\n▶ {r.name} ({r.role}, priority {r.priority}), bars {bar:.0f}–{bar + length / 4:.0f}")
+            self.live.transport(loop_start=start, loop_length=length, loop=True, time=start, play=True)
+            self.section(f"channel {r.name}", deadline, focus=r.key, max_rounds=self.s.channel_rounds,
+                         scoring="balance")
 
     # ── 2. measure ──────────────────────────────────────────────────────────
-    def measure(self) -> dict:
+    def measure(self, scoring: str = "full") -> dict:
+        """`scoring` «balance» leaves out loudness and dynamics: a quiet part need not sound like the drop."""
         self.env.wait(self.window_seconds())
         end = self.env.now()
         start = end - self.window_seconds()
@@ -205,7 +269,9 @@ class Agent:
         masks = self._maskings(tracks)
         penalty = sum(m["severity"] * min(m["priority_a"], m["priority_b"]) / 5 for m in masks[:4])
         scored = cmp
-        if cmp and cmp.loudness_diff < 0 and self.limiter_at_cap():
+        if cmp and scoring == "balance":
+            scored = replace(cmp, loudness_diff=0.0, plr_diff=0.0)
+        elif cmp and cmp.loudness_diff < 0 and self.limiter_at_cap():
             # The limiter is as far as it may go: the rest of the loudness gap is accepted, not chased with faders.
             scored = replace(cmp, loudness_diff=0.0)
         return {"master": master, "ref": ref, "tracks": tracks, "cmp": cmp, "masking": masks,
@@ -256,7 +322,7 @@ class Agent:
         return sorted(out, key=lambda m: -m["severity"] * (m["priority_a"] + m["priority_b"]))
 
     # ── 3. decide ───────────────────────────────────────────────────────────
-    def context(self, section: str, m: dict) -> dict:
+    def context(self, section: str, m: dict, focus: str | None = None) -> dict:
         cmp: Comparison | None = m["cmp"]
         channels = []
         for key, r in self.roles.items():
@@ -296,43 +362,70 @@ class Agent:
                 for h in self.history[-10:]
             ],
         }
+        if focus is not None:
+            r = self.roles[focus]
+            ctx["task"] = (
+                f"Channel pass: work only on track {focus} «{r.name}» (role {r.role}, priority {r.priority}"
+                + (f", note: {r.note}" if r.note else "") + "). Check, in this order: its level against its role and "
+                "priority; EQ (cut what it does not need: rumble below its range, mud, harshness, resonances; make room "
+                "where it masks or is masked by a more important channel); width and pan (low end mono); dynamics "
+                "(load a Compressor only if it clearly needs control). 0 to 3 actions, all on this track. If it already "
+                "sits well, return no actions and done=true. Master loudness is not a goal in this pass.")
+            ctx["channels"].sort(key=lambda c: c["track"] != focus)
         return ctx
 
     # ── 4. the loop ─────────────────────────────────────────────────────────
     def run(self) -> list[Round]:
         os.makedirs(self.s.log_dir, exist_ok=True)
         self.logfile = open(os.path.join(self.s.log_dir, time.strftime("%Y%m%d-%H%M%S") + ".jsonl"), "w")
-        deadline = self.env.now() + self.s.minutes * 60
+        deadline = self.env.now() + self.s.minutes * 60 if self.s.minutes else math.inf
         self.understand()
         if not self.references and not self.target:
             self.log("No reference found. Name the reference tracks «REF …» and put a tap on them; "
                      "until then only the balance between channels is worked on.")
         sections = self.sections()
-        if self.s.focus == "loud":
-            sections = [self.loudest_part(sections)]
-        for name, start, length in sections:
+        scan = self.scan(sections) if self.s.complete else None
+        main = [self.loudest_part(sections, scan)] if self.s.focus == "loud" else sections
+        if self.s.complete:
+            self.log(f"\n━━ Master against the reference")
+        for name, start, length in main:
             if self.env.now() >= deadline:
                 break
             self.log(f"\n▶ {name}")
             self.live.transport(loop_start=start, loop_length=length, loop=True, time=start, play=True)
             self.section(name, deadline)
+        if self.s.complete and scan is not None:
+            self.channel_pass(scan, main[0] if self.s.focus == "loud" else None, deadline)
+            name, start, length = main[0]
+            if self.env.now() < deadline:
+                self.log(f"\n━━ Final check: master, {name}")
+                self.live.transport(loop_start=start, loop_length=length, loop=True, time=start, play=True)
+                self.section("final check", deadline, max_rounds=self.s.final_rounds)
         self.log("\nDone. " + self.report())
         self.logfile.close()
         return self.history
 
-    def section(self, name: str, deadline: float) -> None:
-        m = self.measure()
+    def section(self, name: str, deadline: float, focus: str | None = None, max_rounds: int | None = None,
+                scoring: str = "full") -> None:
+        m = self.measure(scoring)
         best, stall = m["objective"], 0
-        for n in range(1, self.s.max_rounds_per_section + 1):
+        for n in range(1, (max_rounds or self.s.max_rounds_per_section) + 1):
             if self.env.now() >= deadline:
                 self.log("  time is up")
                 return
             self.ex.refresh()
-            plan = self.planner.plan(self.context(name, m))
+            plan = self.planner.plan(self.context(name, m, focus))
             self.log(f"  round {n}: {plan.get('assessment', '')}")
             actions = plan.get("actions", [])
+            if focus is not None:
+                other = [a for a in actions if a.get("track") != focus]
+                actions = [a for a in actions if a.get("track") == focus]
+                for a in other:
+                    self.log(f"    – not now: {a['type']} {a.get('track') or 'master'} (channel pass is on {focus})")
             if not actions:
-                if plan.get("done"):
+                if focus is not None:
+                    self.log("  sits well, nothing to change")
+                elif plan.get("done"):
                     self.log("  targets reached for this section")
                 return
             for a in actions:
@@ -348,7 +441,7 @@ class Agent:
                     return
                 continue
             self.env.wait(self.s.settle)
-            after = self.measure()
+            after = self.measure(scoring)
             rnd = Round(name, n, best, after["objective"], plan, rr.applied, rr.skipped)
             if after["objective"] < best - self.s.min_gain:
                 self.log(f"    ✓ {best:.2f} → {after['objective']:.2f}")
@@ -358,7 +451,7 @@ class Agent:
                 rnd.undone = True
                 self.log(f"    ↺ undone: {best:.2f} → {after['objective']:.2f}")
                 self.env.wait(self.s.settle)
-                m = self.measure()
+                m = self.measure(scoring)
                 best = min(best, m["objective"])
                 stall += 1
             else:  # no measurable effect: keep it, but it does not count as progress

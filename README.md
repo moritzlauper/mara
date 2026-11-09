@@ -3,8 +3,19 @@
 A mixing agent for Ableton Live. It listens to your project while it plays,
 compares it with reference tracks and adjusts the mix step by step: volumes,
 EQ, width, bass in mono, compression and the limiter on the master. It works
-for several minutes in rounds (listen, compare, decide, adjust, check) and
-undoes every round that made things worse.
+in rounds (listen, compare, decide, adjust, check) and undoes every round that
+made things worse.
+
+A run is complete by default:
+
+1. It plays the song once and notes where each channel plays and how loud.
+2. It matches the master to the references at the song's loudest 16 bars.
+3. It goes through every channel, most important first, each looped where it
+   plays: level, EQ, masking, width, dynamics, or nothing if it sits well.
+   Loudness does not count here, a quiet part need not sound like the drop.
+4. It checks the master once more at the loudest part.
+
+`--quick` does only step 2, `--minutes` sets an upper time limit.
 
 Nothing has to be exported. Everything happens in the open Live set.
 
@@ -65,6 +76,8 @@ your beat with the references **without their vocals**:
 ### Safety
 
 * Small steps only: at most ±2 dB volume, ±3 dB EQ, +2 dB limiter per round.
+* The limiter gain stops at +6 dB; past that, the loudness gap is accepted.
+* Automated parameters (filter sweeps, build-ups) are never touched.
 * Every round is measured; a round that makes the distance to the target worse
   is undone, and Claude sees that in the history.
 * Touch a fader or knob yourself and that parameter is locked for the rest of
@@ -111,7 +124,8 @@ your beat with the references **without their vocals**:
 mixmatch refs ~/refs/song1.wav ~/refs/song2.mp3       # analyse references once (and split vocals)
 mixmatch taps                                         # put the tap on every channel and the master
 mixmatch check                                        # connection, taps, roles; writes roles.json
-mixmatch run --ref ~/refs/ --minutes 10               # mix (folder = all audio files in it)
+mixmatch run --ref ~/refs/                            # complete run (folder = all audio files in it)
+mixmatch run --ref ~/refs/ --quick                    # only the master against the references
 mixmatch run --ref a.wav --ref b.wav --mode beat      # beat without vocals
 mixmatch run --ref a.wav --focus loud                 # work on the loudest 16 bars (drop, chorus) only
 mixmatch run --ref a.wav --assist                     # suggest, ask before each round
