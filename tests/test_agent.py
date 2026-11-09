@@ -183,3 +183,17 @@ def test_a_failing_planner_stops_the_run_cleanly(tmp_path):
                                                log_dir=str(tmp_path)), env=env, log=logs.append)
     agent.run()
     assert any("planner failed" in l and "credit" in l for l in logs) and any(l.startswith("\nDone.") for l in logs)
+
+
+def test_resume_skips_the_master_and_earlier_channels(tmp_path):
+    song, hub, env, live = demo_project()
+    env.wait(2)
+    logs, stub = [], ChannelStub()
+    agent = Agent(live, hub, stub, Settings(minutes=None, complete=True, focus="loud", settle=1.0, resume="Pad",
+                                            roles_file=str(tmp_path / "r.json"), log_dir=str(tmp_path)),
+                  env=env, log=logs.append)
+    agent.run()
+    names = {agent.roles[k].name for k in stub.tasks}
+    assert "Pad" in names and "Kick" not in names                # Pad has the lowest priority: it is last
+    assert not any("Master against the reference" in l for l in logs)
+    assert any("Final check" in l for l in logs)

@@ -101,7 +101,7 @@ class ClaudePlanner:
     def __init__(self, model: str = MODEL, effort: str = "medium"):
         import anthropic
 
-        self.client = anthropic.Anthropic()
+        self.client = anthropic.Anthropic(max_retries=6)  # a run takes long; ride out short network drops
         self.model = model
         self.effort = effort
 

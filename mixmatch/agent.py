@@ -58,6 +58,7 @@ class Settings:
     channel_bars: int = 8         # loop length when a channel is worked on outside the loudest part
     channel_rounds: int = 2       # rounds per channel in the channel pass
     final_rounds: int = 4         # rounds of the final master check
+    resume: str | None = None     # track name: skip the master phase and start the channel pass there
 
 
 @dataclass
@@ -252,7 +253,14 @@ class Agent:
     def channel_pass(self, scan: Scan, main: tuple[str, float, float] | None, deadline: float) -> None:
         """Every channel once, most important first: level, EQ, masking, width, dynamics, each where it plays."""
         order = sorted(self.roles.values(), key=lambda r: (-r.priority, r.name))
-        self.log(f"\n━━ Channel pass: {len(order)} channels")
+        if self.s.resume:
+            names = [r.name for r in order]
+            if self.s.resume not in names:
+                raise ValueError(f"--resume: no channel named {self.s.resume!r}")
+            order = order[names.index(self.s.resume):]
+            self.log(f"\n━━ Channel pass, resumed at {self.s.resume}: {len(order)} channels left")
+        else:
+            self.log(f"\n━━ Channel pass: {len(order)} channels")
         for r in order:
             if self.env.now() >= deadline:
                 self.log("  time is up")
@@ -433,9 +441,9 @@ class Agent:
                     self.target = self.refset.target(True, self.s.loudness_from)
                     self.log(f"Target: {self.target.description}, {self.target.loudness:.1f} LUFS")
         main = [self.loudest_part(sections, scan)] if self.s.focus == "loud" else sections
-        if self.s.complete:
+        if self.s.complete and not self.s.resume:
             self.log(f"\n━━ Master against the reference")
-        for name, start, length in main:
+        for name, start, length in ([] if self.s.resume else main):
             if self.env.now() >= deadline:
                 break
             self.log(f"\n▶ {name}")

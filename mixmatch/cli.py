@@ -122,7 +122,7 @@ def cmd_run(args):
         time.sleep(args.wait)
         Agent(live, hub, planner, Settings(minutes=args.minutes, assist=args.assist, roles_file=args.roles,
                                            mode=args.mode, loudness_from=args.loudness_from,
-                                           focus=args.focus, focus_bars=args.focus_bars, complete=not args.quick),
+                                           focus=args.focus, focus_bars=args.focus_bars, complete=not args.quick, resume=args.resume),
               references=refset).run()
     finally:
         live.transport(play=False)
@@ -160,6 +160,8 @@ def main(argv=None):
     sub.choices["taps"].add_argument("--replace", action="store_true",
                                      help="remove existing taps first and put fresh ones (after rebuilding the device)")
     sub.choices["run"].add_argument("--assist", action="store_true", help="ask before every round")
+    sub.choices["run"].add_argument("--resume", metavar="TRACK",
+                                    help="continue a stopped run: channel pass from this track on, then the final check")
     sub.choices["run"].add_argument("--quick", action="store_true",
                                     help="only match the master to the reference, no pass over every channel")
     sub.choices["run"].add_argument("--focus", choices=["sections", "loud"], default="loud",
