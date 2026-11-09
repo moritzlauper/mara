@@ -212,3 +212,21 @@ def test_a_group_does_not_mask_its_own_tracks():
     m = agent.measure()
     pairs = {frozenset((x["track_a"], x["track_b"])) for x in m["masking"]}
     assert frozenset((keys[group.name], keys[member.name])) not in pairs
+
+
+def test_a_silent_master_stops_the_run_instead_of_looking_perfect(tmp_path, monkeypatch):
+    from mixmatch import sim
+
+    song, hub, env, live = demo_project()
+    env.wait(2)
+    real = sim.master_output
+    def silent(song_, refs):                             # audio engine off: the master tap reports silence
+        spec, *rest = real(song_, refs)
+        return (spec - 300, *rest)
+    monkeypatch.setattr(sim, "master_output", silent)
+    logs, stub = [], ChannelStub()
+    agent = Agent(live, hub, stub, Settings(minutes=None, settle=1.0, roles_file=str(tmp_path / "r.json"),
+                                            log_dir=str(tmp_path)), env=env, log=logs.append)
+    agent.run()
+    assert any("master stayed silent" in l for l in logs)
+    assert not any(h.after == 0 for h in agent.history)

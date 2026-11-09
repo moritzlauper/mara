@@ -87,6 +87,10 @@ class PlannerFailed(Exception):
     pass
 
 
+class MasterSilent(Exception):
+    """The master tap reports nothing: Live is not playing, exporting, or its audio engine is off."""
+
+
 class Agent:
     def __init__(self, live, hub, planner, settings: Settings | None = None, env=None, log=print, ask=input,
                  references=None):
@@ -277,14 +281,28 @@ class Agent:
                          scoring="balance")
 
     # ── 2. measure ──────────────────────────────────────────────────────────
-    def measure(self, scoring: str = "full") -> dict:
-        """`scoring` «balance» leaves out loudness and dynamics: a quiet part need not sound like the drop."""
-        self.wait_for_loop_start()
-        self.env.wait(self.window_seconds())
-        end = self.env.now()
-        start = end - self.window_seconds()
-        master_tap = next((t for t in self.hub.snapshot() if t.kind == "master"), None)  # «Main» in Live 12
-        master = stats(master_tap.window(start, end)) if master_tap else None
+    def measure(self, scoring: str = "full", retries: int = 6) -> dict:
+        """`scoring` «balance» leaves out loudness and dynamics: a quiet part need not sound like the drop.
+
+        A silent master is never a result: MixMatch waits and measures again, and gives up with MasterSilent.
+        """
+        for attempt in range(retries + 1):
+            self.wait_for_loop_start()
+            self.env.wait(self.window_seconds())
+            end = self.env.now()
+            start = end - self.window_seconds()
+            master_tap = next((t for t in self.hub.snapshot() if t.kind == "master"), None)  # «Main» in Live 12
+            master = stats(master_tap.window(start, end)) if master_tap else None
+            if master_tap is None or (master is not None and master.active >= 0.5):
+                break  # a master that plays in less than half the window (audio dropped out) does not count
+            if attempt == retries:
+                raise MasterSilent("the master stayed silent")
+            self.log("  ⚠ the master is silent (Live stopped, exporting, or audio engine off?): waiting …")
+            self.env.wait(10)
+            try:
+                self.live.transport(play=True)
+            except Exception:
+                pass  # Live busy (e.g. exporting): try again after the next wait
         gains = self.fader_gains()
         tracks = {k: post_fader(stats(tap.window(start, end)), gains.get(k, 0.0)) for k, tap in self.tap_of.items()}
         if self.target:
@@ -477,6 +495,9 @@ class Agent:
             self._run(deadline)
         except PlannerFailed as e:
             self.log(f"\nStopped: the planner failed ({e}). Everything kept so far stays in the set.")
+        except MasterSilent:
+            self.log("\nStopped: the master stayed silent for over a minute, so nothing could be measured. "
+                     "Everything kept so far stays in the set; continue with --resume once Live plays again.")
         self.log("\nDone. " + self.report())
         self.logfile.close()
         return self.history
