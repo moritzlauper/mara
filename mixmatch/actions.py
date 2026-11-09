@@ -56,10 +56,10 @@ EQ_GAIN_LIMIT = 12.0
 VOLUME_CEILING_DB = 6.0
 LIMITER_CEILING_DB = -1.0
 LIMITERS = ("limiter", "pro-l 2")   # Live's Limiter or FabFilter Pro-L 2 on the master
-LIMITER_MAX_GAIN_DB = 4.0   # about 3–4 dB of peak gain reduction: still clean; more starts to pump and distort
+LIMITER_MAX_GAIN_DB = 5.0   # about 4–5 dB of peak gain reduction: loud but still holding together
 # Clippers before the master limiter, as (plugin, drive parameter); the first installed one is used.
 CLIPPERS = (("Classic Clipper", "Gain"),)
-CLIPPER_MAX_GAIN_DB = 3.0   # more hard clipping gets audible on kick and bass
+CLIPPER_MAX_GAIN_DB = 4.0   # the clipper takes the transients, it copes with them better than the limiter
 SHAPES = {"bell": ["bell"], "low_shelf": ["low shelf", "lowshelf"], "high_shelf": ["high shelf", "highshelf"],
           "low_cut": ["low cut 12", "lowcut 12", "low cut", "lowcut", "12 db"], "notch": ["notch"]}
 

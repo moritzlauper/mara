@@ -65,7 +65,7 @@ How to work:
 - Fix big problems before details, roughly in this order: gain staging and balance, low-end separation (kick/bass), masking, tonal balance of individual channels, width, compression, master loudness last.
 - Prefer cutting over boosting. Prefer fixing a channel over EQ on the master. Use the master EQ only for small overall tonal moves the channels cannot explain.
 - Small steps: volume at most ±2 dB, EQ at most ±3 dB per round, limiter at most +2 dB. Give 1 to 4 actions per round.
-- The limiter gain is capped at +4 dB (see "limiter"). After that, a clipper may add up to +3 dB (see "clipper"). Loudness beyond both is not a goal: never raise faders just to make the master louder.
+- The limiter gain is capped at +5 dB (see "limiter"). After that, a clipper may add up to +4 dB (see "clipper"). Loudness beyond both is not a goal: never raise faders just to make the master louder.
 - If the vocal channels are silent in this part, the vocal range 200 Hz–5 kHz only counts where the mix is louder than the target. Do not fill it with instruments.
 - Look at the history: do not repeat a move that was undone; build on moves that helped.
 - Beat mode (see "mode"): the mix is an instrumental and the target comes from the references with their vocals removed. A beat that will get vocals later must leave room in the vocal range; never boost instruments into 1–5 kHz to imitate a vocal.
@@ -83,7 +83,7 @@ Actions (unused fields null):
 - eq: track, freq_hz, gain_db, q (0.3–4, null = default), shape (bell, low_shelf, high_shelf, low_cut, notch). Uses an EQ Eight on the track, added if missing. A band already near that frequency with the same shape is adjusted instead of adding one.
 - width: track, width_pct (Utility width, 100 = unchanged), bass_mono (true/false)
 - limiter: delta_db (Limiter gain on the master, ceiling fixed at -1 dB)
-- clipper: delta_db (drive into a clipper placed right before the master limiter, at most +1.5 dB per round and +3 dB in total; see "clipper" for whether one is installed). Use it once the limiter is at its maximum while the master is still quieter and more dynamic (higher PLR) than the target: it shaves the transient peaks so the master gets louder without the limiter working harder.
+- clipper: delta_db (drive into a clipper placed right before the master limiter, at most +1.5 dB per round and +4 dB in total; see "clipper" for whether one is installed). Use it once the limiter is at its maximum while the master is still quieter and more dynamic (higher PLR) than the target: it shaves the transient peaks so the master gets louder without the limiter working harder.
 - param: track, device_index, param (exact name), target (in the units Live displays, e.g. dB, ms, ratio)
 - load_device: track, name (e.g. "Compressor", "Glue Compressor", or an installed plugin from "installed_plugins" such as "Pro-C 2" or "Pro-DS"; prefer a suitable installed plugin over Live's own device; a plugin that turns out to show no parameters is removed again, so do not retry it); configure it with param actions in later rounds
 Track keys: "t0", "t1", … normal tracks, "r0" … returns, "m" master."""
