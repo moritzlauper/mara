@@ -346,3 +346,15 @@ def test_a_round_without_measurable_effect_is_undone():
     assert agent.history and agent.history[-1].undone
     assert any("undone, no measurable change" in l for l in logs)
     assert abs(vol(live.get_set()) - vol(before)) < 1e-9
+
+
+def test_without_a_reference_a_stereo_low_end_still_counts():
+    song, hub, env, live = demo_project()
+    song.tracks = [t for t in song.tracks if not t.name.startswith("REF")]
+    for i, t in enumerate(song.tracks):
+        hub.on_name(i + 1, "track", t.name)
+    env.wait(5)
+    agent = Agent(live, hub, RulePlanner(), Settings(minutes=0.5, settle=1.0), env=env, log=lambda *a: None)
+    agent.understand()
+    m = agent.measure("balance")
+    assert m["cmp"] is None and m["parts"]["low_side"] > 0          # the demo bass is stereo down low

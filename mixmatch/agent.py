@@ -538,9 +538,17 @@ class Agent:
         elif cmp and cmp.loudness_diff < 0 and self.loudness_exhausted():
             # Limiter (and clipper) as far as they may go: the rest of the gap is accepted, not chased with faders.
             scored = replace(cmp, loudness_diff=0.0)
+        if scored:
+            obj, parts = objective(scored, penalty), objective_parts(scored, penalty)
+        else:
+            # No reference: the balance between channels alone would not see a stereo low end, so it counts against
+            # a fixed limit (low end side about 20 dB under mid, where mastered songs sit).
+            parts = {"masking": penalty}
+            if master is not None:
+                parts["low_side"] = max(0.0, master.low_side_db - LOW_SIDE_LIMIT_DB) * 0.5
+            obj = sum(parts.values())
         return {"master": master, "ref": ref, "tracks": tracks, "cmp": cmp, "masking": masks,
-                "objective": objective(scored, penalty) if scored else penalty,
-                "parts": objective_parts(scored, penalty) if scored else {"masking": penalty}}
+                "objective": obj, "parts": parts}
 
     def limiter_at_cap(self) -> bool:
         gain = self.ex.limiter_gain() if self.ex.set_state else None
@@ -895,6 +903,9 @@ class Agent:
         first, last = self.history[0].before, min((h.after for h in kept), default=self.history[0].before)
         return (f"{len(self.history)} rounds, {len(kept)} kept, {undone} undone. "
                 f"Distance to target {first:.2f} → {last:.2f}.")
+
+
+LOW_SIDE_LIMIT_DB = -20.0   # without a reference: low end side this far under mid counts as mono enough
 
 
 def _parts(parts: dict) -> str:
