@@ -116,15 +116,16 @@ class Executor:
 
     # ── applying ────────────────────────────────────────────────────────────
     def _set(self, rr: RoundResult, key: str, device, name, target: float | None = None, value: float | None = None):
-        if (key, device, name) in self.locks:
-            raise PermissionError(f"{key} {device} {name} is locked (changed by hand)")
         p = self._param(key, device, name)
         if p is None:
             raise KeyError(f"{key}: no parameter {name!r} on {device}")
+        name = p["name"]  # the real name, also when an alias («Resonance A» → «Q A») was asked for
+        if (key, device, name) in self.locks:
+            raise PermissionError(f"{key} {device} {name} is locked (changed by hand)")
         if p.get("automated"):
-            raise PermissionError(f"{key} {device} {p['name']} is automated; MixMatch leaves automation alone")
-        res = self.live.set(key, device, p["name"], target=target, value=value)
-        rr.changes.append(Change(key, device, p["name"], p["value"], res))
+            raise PermissionError(f"{key} {device} {name} is automated; MixMatch leaves automation alone")
+        res = self.live.set(key, device, name, target=target, value=value)
+        rr.changes.append(Change(key, device, name, p["value"], res))
         self.last_set[(key, device, name)] = res["value"]
         p["value"], p["display"] = res["value"], res["display"]
         return res

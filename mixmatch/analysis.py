@@ -58,7 +58,8 @@ class Stats:
             "width_db": round(self.width_db, 1),
             "low_side_db": round(self.low_side_db, 1),
             "active": round(self.active, 2),
-            "tonal_balance_db": {band_label(i): round(float(self.shape_db[i]), 1) for i in range(0, BAND_COUNT, 2)},
+            # Only the bands the objective scores (30 Hz–16 kHz): above that is air and taste, not measured progress.
+            "tonal_balance_db": {band_label(i): round(float(self.shape_db[i]), 1) for i in TONAL_BANDS[::2]},
         }
 
 

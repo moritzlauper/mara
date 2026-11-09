@@ -84,3 +84,21 @@ def test_limiter_gain_is_capped():
         ex.apply([{"type": "limiter", "delta_db": 2.0, "reason": "test"}])
         ex.refresh()
     assert abs(ex.limiter_gain() - LIMITER_MAX_GAIN_DB) < 0.1
+
+
+def test_undo_with_live_12_names_does_not_lock():
+    from mixmatch.actions import Executor
+    from mixmatch.sim import demo_project
+
+    song, hub, env, live = demo_project()
+    live.load_device("t0", "EQ Eight")
+    for prm in song.tracks[0].devices[-1].parameters:   # rename like Live 12 does
+        prm.name = prm.name.replace("Resonance A", "Q A")
+    ex = Executor(live, log=lambda *_: None)
+    ex.refresh()
+    rr = ex.apply([{"type": "eq", "track": "t0", "freq_hz": 300, "gain_db": -2, "q": 1.5, "shape": "bell",
+                    "reason": "test"}])
+    assert any(c.param.endswith("Q A") for c in rr.changes)
+    ex.undo(rr)
+    ex.refresh()
+    assert not ex.locks
