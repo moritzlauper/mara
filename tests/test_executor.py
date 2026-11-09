@@ -258,3 +258,22 @@ def test_master_eq_cuts_at_most_three_db_in_sum():
     assert not rr.changes and any("master EQ would cut" in s for s in map(str, rr.skipped))
     rr = ex.apply([shelf(8000, 1.0)])                      # a boost is always fine
     assert rr.changes
+
+
+def test_a_switched_off_eq_is_left_alone():
+    from mixmatch.actions import Executor
+    from mixmatch.sim import demo_project
+
+    song, hub, env, live = demo_project()
+    ex = Executor(live, log=lambda *_: None)
+    ex.refresh()
+    ex.apply([{"type": "eq", "track": "t1", "freq_hz": 250, "gain_db": -2, "q": 1, "shape": "bell", "reason": "t"}])
+    ex.refresh()
+    eq = next(d for d in ex.track("t1")["devices"] if d["class_name"] == "Eq8")
+    live.batch([{"track": "t1", "device": eq["index"], "param": "Device On", "value": 0.0}])   # the user turns it off
+    ex.refresh()
+    count = len(ex.track("t1")["devices"])
+    rr = ex.apply([{"type": "eq", "track": "t1", "freq_hz": 250, "gain_db": -2, "q": 1, "shape": "bell", "reason": "t"}])
+    assert not rr.changes and any("switched off" in str(s) for s in rr.skipped)
+    ex.refresh()
+    assert len(ex.track("t1")["devices"]) == count                                             # no second EQ

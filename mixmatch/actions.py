@@ -274,6 +274,11 @@ class Executor:
 
     def _ensure_device(self, key: str, name: str, *classes: str) -> int:
         idx = self._device(key, *(c.lower() for c in classes))
+        if idx is not None:
+            dev = self.track(key)["devices"][idx]
+            on = next((p["value"] for p in dev["params"] if p["name"] == "Device On"), 1.0)
+            if on < 0.5:   # switched off on purpose: neither use it nor add a second one beside it
+                raise RuntimeError(f"{dev['name']} on {self.track(key)['name']} is switched off, so it stays alone")
         if idx is None:
             plugin = self.plugin_named(name)
             count = len(self.track(key)["devices"])
