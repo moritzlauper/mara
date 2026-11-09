@@ -163,8 +163,9 @@ def safe_reference(workdir: str, name: str) -> str:
     return os.path.join(workdir, "references", base)
 
 
-def project_references() -> list[dict]:
-    """Reference tracks inside the open Live set (read-only, quick); empty when Live is not reachable."""
+def project_references() -> list[dict] | None:
+    """Reference tracks inside the open Live set (read-only, quick); None when Live does not answer
+    (not open, or busy, e.g. exporting)."""
     try:
         from .live_client import LiveClient
 
@@ -175,7 +176,7 @@ def project_references() -> list[dict]:
         finally:
             live.close()
     except Exception:
-        return []
+        return None
 
 
 def references(workdir: str) -> list[str]:
@@ -187,14 +188,26 @@ def references(workdir: str) -> list[str]:
 
 # ── HTTP ────────────────────────────────────────────────────────────────────
 class _Cached:
-    """Asks Live at most every few seconds (the page polls more often)."""
+    """Asks Live at most every few seconds (the page polls more often), in the background so a busy Live never
+    blocks the page. When Live does not answer, the last answer stays and `reachable` turns False."""
 
     def __init__(self, fn, seconds: float = 4.0):
-        self.fn, self.seconds, self.at, self.value = fn, seconds, 0.0, []
+        self.fn, self.seconds, self.at, self.value, self.reachable = fn, seconds, 0.0, [], None
+        self.busy = False
+
+    def _refresh(self):
+        try:
+            value = self.fn()
+            self.reachable = value is not None
+            if value is not None:
+                self.value = value
+        finally:
+            self.busy = False
 
     def get(self):
-        if time.time() - self.at > self.seconds:
-            self.value, self.at = self.fn(), time.time()
+        if not self.busy and time.time() - self.at > self.seconds:
+            self.busy, self.at = True, time.time()
+            threading.Thread(target=self._refresh, daemon=True).start()
         return self.value
 
 
@@ -227,7 +240,7 @@ def make_handler(runner: Runner):
                 state = parse_log(lines)
                 return self._send(200, {**state, "running": runner.running(), "log": [l.rstrip() for l in lines[-200:]],
                                         "reference_files": references(workdir), "to_get": buy_list(workdir),
-                                        "project_references": project_refs.get()})
+                                        "project_references": project_refs.get(), "live": project_refs.reachable})
             if self.path == "/api/roles":
                 path = os.path.join(workdir, "roles.json")
                 return self._send(200, json.load(open(path)) if os.path.exists(path) else {})
@@ -347,7 +360,7 @@ button.small{padding:2px 8px;font-size:12px}button.danger{background:var(--bad);
 </style>
 </head>
 <body>
-<header><h1>MixMatch</h1><span id="status" class="pill">idle</span><span id="phase" class="muted"></span></header>
+<header><h1>MixMatch</h1><span id="status" class="pill">idle</span><span id="live" class="pill">Live …</span><span id="phase" class="muted"></span></header>
 <main>
 <section>
   <h2>Run</h2>
@@ -419,6 +432,8 @@ async function tick() {
   let s; try { s = await (await fetch("/api/state")).json(); } catch { return; }
   $("status").textContent = s.running ? "running" : (s.done ? "finished" : "idle"); $("status").className = "pill" + (s.running ? " on" : "");
   $("phase").textContent = s.phase || ""; $("start").disabled = s.running;
+  $("live").textContent = s.live === null ? "Live …" : (s.live ? "Live connected" : "Live busy or closed (exporting?)");
+  $("live").className = "pill" + (s.live ? " on" : "");
   $("distance").textContent = s.distance != null ? s.distance.toFixed(2) : "–"; $("section").textContent = s.section || "";
   chart(s.history);
   const parts = Object.entries(s.parts || {}); const top = Math.max(1, ...parts.map(p => p[1]));

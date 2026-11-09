@@ -76,3 +76,14 @@ def test_references_can_be_added_and_removed_to_the_trash(tmp_path, monkeypatch)
         assert (tmp_path / "trash" / "song one.wav").exists()
     finally:
         server.shutdown()
+
+
+def test_cached_keeps_the_last_answer_when_live_is_busy():
+    from mixmatch.ui import _Cached
+
+    answers = iter([[{"track": "ref", "file": "a.wav"}], None])
+    c = _Cached(lambda: next(answers))
+    c._refresh()
+    assert c.value == [{"track": "ref", "file": "a.wav"}] and c.reachable is True
+    c._refresh()                                           # Live busy: the last answer stays
+    assert c.value == [{"track": "ref", "file": "a.wav"}] and c.reachable is False
