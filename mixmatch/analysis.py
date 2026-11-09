@@ -176,6 +176,21 @@ def masking(a: Stats, b: Stats, lo: float = 30, hi: float = 8000) -> list[tuple[
     return sorted(out, key=lambda x: -x[1])
 
 
+def objective_parts(cmp: Comparison | None, maskings: float = 0.0, target_lufs_tolerance: float = 0.5) -> dict:
+    """The parts the objective adds up, to show where the remaining distance comes from."""
+    if cmp is None:
+        return {"masking": maskings}
+    return {
+        "tonal": float(np.sqrt(np.mean(cmp.tonal_excess[TONAL_BANDS] ** 2))),
+        "loudness": max(0.0, abs(cmp.loudness_diff) - target_lufs_tolerance),
+        "clipping": max(0.0, cmp.peak_db + 1.0) * 4,  # anything above −1 dBFS true-peak-ish is punished hard
+        "low_side": max(0.0, cmp.low_side_diff) * 0.5,
+        "width": abs(cmp.width_diff) * 0.2,
+        "dynamics": abs(cmp.plr_diff) * 0.3,
+        "masking": maskings,
+    }
+
+
 def objective(cmp: Comparison | None, maskings: float = 0.0, target_lufs_tolerance: float = 0.5) -> float:
     """How far the mix is from the goal, as one number (lower is better).
 
@@ -183,10 +198,4 @@ def objective(cmp: Comparison | None, maskings: float = 0.0, target_lufs_toleran
     """
     if cmp is None:
         return math.inf
-    tonal = float(np.sqrt(np.mean(cmp.tonal_excess[TONAL_BANDS] ** 2)))
-    loud = max(0.0, abs(cmp.loudness_diff) - target_lufs_tolerance)
-    clip = max(0.0, cmp.peak_db + 1.0) * 4  # anything above −1 dBFS true-peak-ish is punished hard
-    low_side = max(0.0, cmp.low_side_diff) * 0.5
-    width = abs(cmp.width_diff) * 0.2
-    dyn = abs(cmp.plr_diff) * 0.3
-    return tonal + loud + clip + low_side + width + dyn + maskings
+    return sum(objective_parts(cmp, maskings, target_lufs_tolerance).values())

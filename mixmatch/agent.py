@@ -21,7 +21,7 @@ import numpy as np
 
 from . import roles as roles_mod
 from .actions import CLIPPER_MAX_GAIN_DB, LIMITER_MAX_GAIN_DB, Executor
-from .analysis import Comparison, compare, masking, objective, stats
+from .analysis import Comparison, compare, masking, objective, objective_parts, stats
 from .bands import CENTRES
 from .display import parse_display
 from .planner import device_summary
@@ -313,7 +313,8 @@ class Agent:
             # Limiter (and clipper) as far as they may go: the rest of the gap is accepted, not chased with faders.
             scored = replace(cmp, loudness_diff=0.0)
         return {"master": master, "ref": ref, "tracks": tracks, "cmp": cmp, "masking": masks,
-                "objective": objective(scored, penalty) if scored else penalty}
+                "objective": objective(scored, penalty) if scored else penalty,
+                "parts": objective_parts(scored, penalty) if scored else {"masking": penalty}}
 
     def limiter_at_cap(self) -> bool:
         gain = self.ex.limiter_gain() if self.ex.set_state else None
@@ -505,6 +506,7 @@ class Agent:
                 scoring: str = "full") -> None:
         m = self.measure(scoring)
         best, stall = m["objective"], 0
+        self.log(f"  distance {best:.2f}   ({_parts(m['parts'])})")
         for n in range(1, (max_rounds or self.s.max_rounds_per_section) + 1):
             if self.env.now() >= deadline:
                 self.log("  time is up")
@@ -545,7 +547,7 @@ class Agent:
             after = self.measure(scoring)
             rnd = Round(name, n, best, after["objective"], plan, rr.applied, rr.skipped)
             if after["objective"] < best - self.s.min_gain:
-                self.log(f"    ✓ {best:.2f} → {after['objective']:.2f}")
+                self.log(f"    ✓ {best:.2f} → {after['objective']:.2f}   ({_parts(after['parts'])})")
                 best, m, stall = after["objective"], after, 0
             elif after["objective"] > best + self.s.min_gain:
                 self.ex.undo(rr)
@@ -578,6 +580,12 @@ class Agent:
         first, last = self.history[0].before, min((h.after for h in kept), default=self.history[0].before)
         return (f"{len(self.history)} rounds, {len(kept)} kept, {undone} undone. "
                 f"Distance to target {first:.2f} → {last:.2f}.")
+
+
+def _parts(parts: dict) -> str:
+    """«tonal 0.9 · loudness 0.5 · …», largest first, small ones left out."""
+    big = sorted(((v, k) for k, v in parts.items() if v >= 0.05), reverse=True)
+    return " · ".join(f"{k} {v:.2f}" for v, k in big) or "nothing left"
 
 
 def post_fader(st, gain_db: float):
