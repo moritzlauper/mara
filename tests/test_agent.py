@@ -158,3 +158,17 @@ def test_a_vocal_track_that_never_plays_means_beat_mode(tmp_path):
                   env=env, log=logs.append)
     agent.run()
     assert agent.beat and any("treating it as a beat" in l for l in logs)
+
+
+def test_a_failing_planner_stops_the_run_cleanly(tmp_path):
+    class Broke:
+        def plan(self, ctx):
+            raise RuntimeError("Your credit balance is too low")
+
+    song, hub, env, live = demo_project()
+    env.wait(2)
+    logs = []
+    agent = Agent(live, hub, Broke(), Settings(minutes=1, settle=1.0, roles_file=str(tmp_path / "r.json"),
+                                               log_dir=str(tmp_path)), env=env, log=logs.append)
+    agent.run()
+    assert any("planner failed" in l and "credit" in l for l in logs) and any(l.startswith("\nDone.") for l in logs)

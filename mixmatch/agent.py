@@ -82,6 +82,10 @@ class Round:
     undone: bool = False
 
 
+class PlannerFailed(Exception):
+    pass
+
+
 class Agent:
     def __init__(self, live, hub, planner, settings: Settings | None = None, env=None, log=print, ask=input,
                  references=None):
@@ -409,6 +413,15 @@ class Agent:
         if not self.references and not self.target:
             self.log("No reference found. Name the reference tracks «REF …» and put a tap on them; "
                      "until then only the balance between channels is worked on.")
+        try:
+            self._run(deadline)
+        except PlannerFailed as e:
+            self.log(f"\nStopped: the planner failed ({e}). Everything kept so far stays in the set.")
+        self.log("\nDone. " + self.report())
+        self.logfile.close()
+        return self.history
+
+    def _run(self, deadline: float) -> None:
         sections = self.sections()
         scan = self.scan(sections) if self.s.complete else None
         if scan is not None and not self.beat and self.s.mode == "auto":
@@ -435,9 +448,6 @@ class Agent:
                 self.log(f"\n━━ Final check: master, {name}")
                 self.play_loop(start, length)
                 self.section("final check", deadline, max_rounds=self.s.final_rounds)
-        self.log("\nDone. " + self.report())
-        self.logfile.close()
-        return self.history
 
     def section(self, name: str, deadline: float, focus: str | None = None, max_rounds: int | None = None,
                 scoring: str = "full") -> None:
@@ -448,7 +458,10 @@ class Agent:
                 self.log("  time is up")
                 return
             self.ex.refresh()
-            plan = self.planner.plan(self.context(name, m, focus))
+            try:
+                plan = self.planner.plan(self.context(name, m, focus))
+            except Exception as e:  # e.g. no API credit left, network down: stop cleanly, keep what was done
+                raise PlannerFailed(str(e)) from e
             self.log(f"  round {n}: {plan.get('assessment', '')}")
             actions = plan.get("actions", [])
             if focus is not None:
