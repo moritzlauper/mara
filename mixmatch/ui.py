@@ -748,6 +748,18 @@ details.opts[open]{padding-bottom:8px}details.opts label{margin:6px 0}
 .setup{border-top:1px solid var(--lo);padding-top:8px;margin-top:10px;font-size:12.5px;color:var(--muted)}
 button.link{background:none;border:0;box-shadow:none;padding:0;color:var(--accent);font:600 12.5px var(--mono);text-decoration:underline;cursor:pointer}
 button.link:active{transform:none}
+.verdict{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap}.verdict b{font:700 32px/1.1 var(--slab);color:var(--accent)}
+.score{font:12px var(--mono);color:var(--muted)}
+.scale{position:relative;height:12px;margin:10px 0 3px;background:linear-gradient(90deg,var(--lime),#f3e27a 45%,var(--pink));
+  border:2px solid;border-color:var(--lo) var(--hi) var(--hi) var(--lo)}
+.scale i{position:absolute;top:-6px;width:4px;height:20px;margin-left:-2px;background:var(--ink);transition:left .5s}
+.scale-labels{display:flex;justify-content:space-between;font:11px var(--mono);color:var(--muted)}
+.phase-row{display:grid;grid-template-columns:1fr auto auto;gap:12px;padding:5px 0;border-bottom:1px dotted var(--lo);font-size:13px}
+.phase-row .good{color:var(--good);font-weight:600}.mono{font-family:var(--mono)}
+h3.sub{font:600 12px var(--mono);text-transform:uppercase;letter-spacing:.06em;margin:16px 0 6px}
+.part{margin:0 0 10px}.part-head{display:grid;grid-template-columns:minmax(150px,auto) 1fr;gap:10px;align-items:center;font-weight:600;font-size:13.5px}
+.part-head i{display:block;height:9px;background:var(--title)}.part-why{font-size:12.5px;color:var(--muted);margin:3px 0 0}
+ul.part-why{padding-left:18px}ul.part-why li{margin:2px 0}
 </style>
 </head>
 <body>
@@ -780,11 +792,15 @@ button.link:active{transform:none}
   <p class="muted" id="msg"></p>
 </section>
 <section>
-  <h2>Distance to target</h2>
-  <div class="big" id="distance">–</div><div class="muted" id="section"></div>
-  <div class="muted" style="font-size:12px">0 = measures like the reference · lower is better · points, not dB</div>
-  <svg id="chart" viewBox="0 0 300 90" preserveAspectRatio="none"></svg><div id="chartlabels" class="chartlabels"></div>
-  <div class="parts" id="parts"></div>
+  <h2>How close to the reference</h2>
+  <div class="verdict"><b id="verdict">No run yet</b><span id="distance" class="score" title="Distance in points: 0 = measures like the reference"></span></div>
+  <div class="scale"><i id="scale_mark"></i></div>
+  <div class="scale-labels"><span>like the reference</span><span>far off</span></div>
+  <p class="hint" id="scope"></p>
+  <div id="phases"></div>
+  <h3 class="sub">What is still different</h3>
+  <div class="parts" id="parts"><span class="muted">–</span></div>
+  <svg id="chart" hidden></svg><div id="chartlabels" hidden></div>
 </section>
 <section>
   <h2>Song</h2>
@@ -844,6 +860,7 @@ async function loadRoles() {
   };
 }
 function chart(values, phases, runs) {
+  return;   // replaced by the phase rows in «How close to the reference»
   if (values.length < 2) { $("chart").innerHTML = ""; $("chartlabels").innerHTML = ""; return; }
   phases = phases || []; runs = runs || [];
   const max = Math.max(...values) * 1.05, w = 300, h = 90, x = i => (i/(values.length-1))*w, y = v => h - (v/max)*h;
@@ -860,6 +877,47 @@ function chart(values, phases, runs) {
     from = i;
   }
   $("chart").innerHTML = svg; $("chartlabels").innerHTML = labels;
+}
+const PART_NAMES = {masking: "Instruments covering each other", tonal: "Tone balance", loudness: "Loudness",
+  dynamics: "Punch (dynamics)", width: "Stereo width", low_side: "Bass in stereo", clipping: "Clipping"};
+const PHASE_NAMES = {master: "Master", channels: "Single channels", effects: "Effects", final: "Final check", setup: "Start"};
+function verdict(d) {
+  return d == null ? ["No run yet", 0] : d < 1 ? ["Very close", d / 6] : d < 2.5 ? ["Close", d / 6]
+       : d < 4 ? ["Audible differences", d / 6] : ["Still far off", Math.min(1, d / 6)];
+}
+function why(k, text) {
+  if (k === "masking" && text.includes("↔")) {   // «A ↔ B at 254 Hz, …» → one plain sentence per pair
+    return "<ul class='part-why'>" + text.split(", ").map(x =>
+      `<li>${esc(x.replace(" ↔ ", " and ").replace(/ at (\d+) Hz/, " overlap at $1 Hz"))}</li>`).join("") + "</ul>";
+  }
+  return `<div class="part-why">${esc(text)}</div>`;
+}
+function closeness(s) {
+  const [word, pos] = verdict(s.distance);
+  $("verdict").textContent = word; $("distance").textContent = s.distance != null ? s.distance.toFixed(2) + " points" : "";
+  $("scale_mark").style.left = (pos * 100).toFixed(1) + "%";
+  const phase = (s.history_phase || []).slice(-1)[0];
+  $("scope").textContent = phase === "channels"
+    ? `Now on ${(s.section || "a channel").replace(/_/g, " ")}. While MARA works on single channels, loudness and punch are left out: that part of the song need not sound like the drop.`
+    : (s.section ? `Now on the master, ${s.section}. Tone, loudness, punch and width are compared with the references.` : "");
+  // one row per phase: where it started and where it is now
+  const rows = [], hist = s.history || [], ph = s.history_phase || [];
+  for (let i = 0; i < hist.length; i++) {
+    const last = rows[rows.length - 1];
+    if (last && last.phase === ph[i]) { last.now = hist[i]; last.best = Math.min(last.best, hist[i]); }
+    else rows.push({phase: ph[i], start: hist[i], now: hist[i], best: hist[i]});
+  }
+  $("phases").innerHTML = rows.filter(r => r.phase !== "setup").map(r => {
+    const gain = r.start > 0 ? Math.round(100 * (r.start - r.best) / r.start) : 0;
+    return `<div class="phase-row"><span>${esc(PHASE_NAMES[r.phase] || r.phase)}</span>` +
+      `<span class="mono">${r.start.toFixed(2)} → ${r.best.toFixed(2)}</span>` +
+      `<span class="${gain > 0 ? "good" : "muted"}">${gain > 0 ? gain + "% closer" : "no change yet"}</span></div>`;
+  }).join("");
+  const parts = Object.entries(s.parts || {}).filter(([, v]) => v >= 0.05).sort((a, b) => b[1] - a[1]);
+  const top = Math.max(1, ...parts.map(p => p[1])), ex = s.explain || {};
+  $("parts").innerHTML = parts.length ? parts.map(([k, v]) =>
+    `<div class="part"><div class="part-head"><span>${esc(PART_NAMES[k] || k)}</span><i style="width:${(v/top)*100}%"></i></div>` +
+    (ex[k] ? why(k, ex[k]) : "") + "</div>").join("") : "<span class='muted'>Nothing worth mentioning.</span>";
 }
 function progress(s) {
   const p = s.progress, p0 = s.progress_start, el = $("prog");
@@ -895,12 +953,7 @@ async function tick() {
     b.className = s.ab === w ? "on" : ""; }
   $("live").textContent = s.live === null ? "Live …" : (s.live ? "Live connected" : "Live busy or closed (exporting?)");
   $("live").className = "pill" + (s.live ? " on" : "");
-  $("distance").textContent = s.distance != null ? s.distance.toFixed(2) : "–"; $("section").textContent = s.section || "";
-  chart(s.history, s.history_phase, s.history_run); progress(s);
-  const parts = Object.entries(s.parts || {}); const top = Math.max(1, ...parts.map(p => p[1]));
-  const ex = s.explain || {};
-  $("parts").innerHTML = parts.map(([k, v]) => `<div class="bar"><span>${esc(k)}</span><i style="width:${(v/top)*100}%"></i><span>${v.toFixed(2)}</span></div>` +
-    (ex[k] ? `<div class="muted" style="font-size:12px;margin:-2px 0 6px 98px">${esc(ex[k])}</div>` : "")).join("");
+  closeness(s); progress(s);
   $("song").innerHTML = [s.key && `<div><b>${esc(s.key)}</b></div>`, s.style && `<div class="muted">sounds like ${esc(s.style)}</div>`].filter(Boolean).join("") || "No run yet.";
   $("events").innerHTML = s.events.slice().reverse().map(e => `<div class="ev ${e.kind}">${esc(e.text)}</div>`).join("");
   const refsKey = JSON.stringify(s.reference_files) + JSON.stringify(s.project_references) + s.references.length;
