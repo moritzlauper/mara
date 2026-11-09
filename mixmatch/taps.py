@@ -34,6 +34,7 @@ class Tap:
     name: str = ""
     kind: str = "track"
     frames: deque = field(default_factory=lambda: deque(maxlen=3000))  # ~5 minutes at 10 fps
+    lock: threading.Lock = field(default_factory=threading.Lock, repr=False, compare=False)  # the hub's lock
 
     @property
     def is_reference(self) -> bool:
@@ -41,7 +42,9 @@ class Tap:
 
     def window(self, since: float, until: float | None = None) -> list[Frame]:
         until = until or time.time()
-        return [f for f in self.frames if since <= f.t <= until]
+        with self.lock:   # frames arrive on another thread: copy them in one go
+            frames = list(self.frames)
+        return [f for f in frames if since <= f.t <= until]
 
 
 class TapHub:
@@ -54,7 +57,7 @@ class TapHub:
 
     def _tap(self, tap_id: int) -> Tap:
         if tap_id not in self.taps:
-            self.taps[tap_id] = Tap(tap_id)
+            self.taps[tap_id] = Tap(tap_id, lock=self.lock)
         return self.taps[tap_id]
 
     def on_name(self, tap_id, kind, *name):

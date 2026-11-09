@@ -85,3 +85,28 @@ def test_reference_clips_are_read_from_a_muted_reference_track(tmp_path):
     ref.mute, ref.arrangement_clips = True, [Clip()]
     clips = live.request("reference_clips")["clips"]
     assert [c["file"] for c in clips] == [str(path)] and clips[0]["track"] == ref.name
+
+
+def test_reading_a_tap_while_frames_arrive():
+    import threading
+    import time as _time
+
+    from mixmatch.taps import FRAME_LEN, TapHub
+
+    hub = TapHub()
+    hub.on_frame(1, *([0.1] * FRAME_LEN))
+    stop = False
+
+    def feed():
+        while not stop:
+            hub.on_frame(1, *([0.1] * FRAME_LEN))
+
+    th = threading.Thread(target=feed)
+    th.start()
+    try:
+        tap = hub.snapshot()[0]
+        for _ in range(3000):
+            tap.window(0, _time.time() + 10)      # used to raise «deque mutated during iteration»
+    finally:
+        stop = True
+        th.join()
