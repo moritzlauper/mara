@@ -284,8 +284,11 @@ def similar(listener: Listener, emb: np.ndarray, files: list[str], top: int = 10
 def search_links(artist: str, title: str) -> dict:
     from urllib.parse import quote_plus
 
+    from urllib.parse import quote
+
     q = quote_plus(f"{artist} {title}")
-    return {"bandcamp": f"https://bandcamp.com/search?q={q}", "beatport": f"https://www.beatport.com/search?q={q}"}
+    return {"spotify": f"https://open.spotify.com/search/{quote(f'{artist} {title}')}",
+            "bandcamp": f"https://bandcamp.com/search?q={q}", "beatport": f"https://www.beatport.com/search?q={q}"}
 
 
 def describe(path: str, listener: Listener) -> dict:

@@ -55,3 +55,7 @@ def test_hyperpop_maps_to_an_existing_jamendo_tag():
     from mixmatch.autoref import JAMENDO_TAGS
 
     assert JAMENDO_TAGS["hyperpop"] == "futurebass"
+
+
+def test_search_links_include_spotify():
+    assert search_links("Burial", "Near Dark")["spotify"] == "https://open.spotify.com/search/Burial%20Near%20Dark"

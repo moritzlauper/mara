@@ -206,7 +206,8 @@ class Agent:
                         "the next run uses them.\n\n")
                 for s in to_get:
                     f.write(f"- **{s['artist']} – {s['title']}**: {s['why']}  \n  "
-                            f"[Bandcamp]({s['links']['bandcamp']}) · [Beatport]({s['links']['beatport']})\n")
+                            f"[Spotify]({s['links']['spotify']}) · [Bandcamp]({s['links']['bandcamp']}) · "
+                            f"[Beatport]({s['links']['beatport']})\n")
             self.log(f"  list with links: {os.path.join(self.s.log_dir, stamp + '-buy.md')}")
         if not picked:
             return

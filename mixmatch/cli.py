@@ -127,7 +127,8 @@ def cmd_suggest_refs(args):
         result = suggest(desc, note=args.note or "")
         print(f"Style: {result['style']}")
         for s in result["suggestions"]:
-            print(f"\n  {s['artist']} – {s['title']}\n    {s['why']}\n    {s['links']['bandcamp']}\n    {s['links']['beatport']}")
+            print(f"\n  {s['artist']} – {s['title']}\n    {s['why']}\n    listen: {s['links']['spotify']}\n"
+                  f"    get:    {s['links']['bandcamp']}\n            {s['links']['beatport']}")
     print("\nPut the references you pick (WAV, AIFF, FLAC or MP3) into references/ and run mixmatch run.")
 
 

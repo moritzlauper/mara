@@ -126,7 +126,7 @@ def buy_list(recording: str, listener: Listener, log=print) -> list[dict]:
         return []
     log(f"  to get (style: {result['style']}):")
     for s in result["suggestions"]:
-        log(f"    {s['artist']} – {s['title']}: {s['links']['bandcamp']}")
+        log(f"    {s['artist']} – {s['title']}: {s['links']['spotify']}  {s['links']['bandcamp']}")
     return [{**s, "style": result["style"]} for s in result["suggestions"]]
 
 
