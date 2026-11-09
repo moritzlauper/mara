@@ -35,10 +35,29 @@ JAMENDO_TAGS = {
     "drill": "hiphop", "phonk": "hiphop", "boom bap hip hop": "hiphop", "lo-fi hip hop": "lofi",
     "r&b": "rnb", "pop": "pop", "indie pop": "indiepop", "bedroom pop": "indiepop",
     "house": "house", "deep house": "deephouse", "tech house": "techhouse", "techno": "techno", "trance": "trance",
-    "uk garage": "garage", "2-step": "garage", "future garage": "garage", "dubstep": "dubstep", "riddim": "dubstep",
+    "uk garage": "2step", "2-step": "2step", "future garage": "2step",   # Jamendo's «garage» is garage rock "dubstep": "dubstep", "riddim": "dubstep",
     "electro house": "electrohouse", "synthwave": "synthwave", "vaporwave": "vaporwave", "ambient": "ambient",
     "idm": "idm", "glitch": "glitch", "chiptune": "chiptune", "jersey club": "club", "footwork": "footwork",
 }
+
+
+# Words in the user's description → Jamendo tags (they win over the audio model)
+DESCRIPTION_TAGS = {
+    "hyperpop": ["futurebass", "edm", "electronic"], "pc music": ["futurebass", "edm"], "bubblegum": ["edm", "pop"],
+    "future bass": ["futurebass", "edm"], "drum and bass": ["drumnbass"], "dnb": ["drumnbass"], "jungle": ["jungle"],
+    "garage": ["2step"], "2-step": ["2step"], "chill": ["chillstep"], "lofi": ["lofi"], "lo-fi": ["lofi"],
+    "house": ["house"], "techno": ["techno"], "trap": ["trap"], "hip hop": ["hiphop"], "pop": ["pop"],
+    "ambient": ["ambient"], "dubstep": ["dubstep"], "synthwave": ["synthwave"],
+}
+
+
+def jamendo_tags(description: str, clap_styles: list[str], limit: int = 4) -> list[str]:
+    import re
+
+    words = description.lower()
+    tags = [t for key, ts in DESCRIPTION_TAGS.items() if re.search(r"\b" + re.escape(key) + r"\b", words) for t in ts]
+    tags += [JAMENDO_TAGS.get(s, "electronic") for s in clap_styles]
+    return list(dict.fromkeys(tags))[:limit] or ["electronic"]
 
 
 def jamendo_client_id() -> str | None:
@@ -155,10 +174,21 @@ def buy_list(recording: str, listener: Listener, harmony: dict | None = None, no
     free = list(result.get("free_suggestions", []))
     client_id = jamendo_client_id()
     if client_id:
-        tags = list(dict.fromkeys(JAMENDO_TAGS.get(s, "electronic") for s, _ in styles(listener, listener.file(recording), 3)))
-        for t in jamendo_search(tags, client_id, per_tag=2, log=log):
+        project = listener.file(recording)
+        tags = jamendo_tags(note, [s for s, _ in styles(listener, project, 3)])
+        scored = []
+        for t in jamendo_search(tags, client_id, per_tag=5, log=log):
+            path = jamendo_file(t, log)
+            if path:
+                try:
+                    scored.append((float(listener.file(path) @ project), t))   # listened to, not just tagged
+                except Exception:
+                    continue
+        for score, t in sorted(scored, key=lambda x: -x[0])[:3]:
             free.append({"artist": t["artist"], "title": t["title"], "source": "Jamendo",
-                         "why": f"Creative Commons ({t['license'] or 'see page'}), download allowed; tagged {t['tag']}.",
+                         "why": f"Sounds closest to your track among {len(scored)} Jamendo tracks tagged "
+                                f"{', '.join(tags)} (similarity {score:.2f}). Creative Commons "
+                                f"({t['license'] or 'see page'}), download allowed.",
                          "links": {"jamendo": t["url"], "download": t["download"]}})
     log(f"  to get (style: {result['style']}):")
     for s in result["suggestions"]:

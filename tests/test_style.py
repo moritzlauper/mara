@@ -51,10 +51,13 @@ def test_jamendo_search_keeps_only_allowed_downloads(monkeypatch):
     assert [t["title"] for t in found] == ["ok"] and found[0]["license"] == "http://cc/by"
 
 
-def test_hyperpop_maps_to_an_existing_jamendo_tag():
-    from mixmatch.autoref import JAMENDO_TAGS
+def test_jamendo_tags_follow_the_description_first():
+    from mixmatch.autoref import JAMENDO_TAGS, jamendo_tags
 
     assert JAMENDO_TAGS["hyperpop"] == "futurebass"
+    assert JAMENDO_TAGS["future garage"] == "2step"                       # «garage» on Jamendo is garage rock
+    assert jamendo_tags("Hyperpop, happy and bright", ["future garage", "techno"]) == ["futurebass", "edm", "electronic", "2step"]
+    assert jamendo_tags("", ["uk garage"]) == ["2step"]
 
 
 def test_search_links_include_spotify():
