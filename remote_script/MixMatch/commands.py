@@ -263,6 +263,23 @@ class Commands:
         self.song.move_device(devices[req["device"]], track, int(req["to"]))
         return {"devices": [d.name for d in track.devices]}
 
+    # ── reference tracks inside the project ─────────────────────────────────
+    def reference_clips(self, req):
+        """Audio files of the clips on tracks named «ref»/«reference» (arrangement and session), muted or not."""
+        import re
+
+        out = []
+        for key, kind, track in self._tracks():
+            if kind != "track" or not re.search(r"(^|[^a-z])ref(erence)?([^a-z]|$)", track.name.strip().lower()):
+                continue
+            clips = list(getattr(track, "arrangement_clips", []))
+            clips += [slot.clip for slot in getattr(track, "clip_slots", []) if getattr(slot, "has_clip", False)]
+            for clip in clips:
+                path = getattr(clip, "file_path", None) if getattr(clip, "is_audio_clip", False) else None
+                if path and path not in [o["file"] for o in out]:
+                    out.append({"track": track.name, "key": key, "file": path})
+        return {"clips": out}
+
     # ── harmony: MIDI notes of the arrangement ──────────────────────────────
     def midi_notes(self, req):
         """Unmuted notes of the arrangement MIDI clips of every track in [start, end) beats; drum racks left out."""

@@ -60,6 +60,11 @@ the same way as your mix, using their loudest part (drop or chorus). You can
 give several: the target is their average, and where they disagree with each
 other the tolerance gets wider, so no single song dictates the sound.
 
+Reference tracks can also live inside the Live set: a track with «ref» or
+«reference» in its name (e.g. «REF Wish You Well») counts as a reference as
+soon as an audio clip is on it. MixMatch reads the clip's file directly, so the
+track can stay muted, and it never mixes that track.
+
 ### Beats without vocals
 
 If your project has no vocal channel (or with `--mode beat`), MixMatch compares

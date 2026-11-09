@@ -11,6 +11,13 @@ from .bands import BAND_COUNT
 FRAME_LEN = 5 + BAND_COUNT
 
 
+def is_reference_name(name: str) -> bool:
+    """«REF Song», «Reference», «31-Ref», «[ref] x»: «ref» or «reference» as a word of its own."""
+    import re
+
+    return re.search(r"(^|[^a-z])ref(erence)?([^a-z]|$)", name.strip().lower()) is not None
+
+
 @dataclass
 class Frame:
     t: float
@@ -30,8 +37,7 @@ class Tap:
 
     @property
     def is_reference(self) -> bool:
-        n = self.name.strip().lower()
-        return n.startswith("ref") or n.startswith("[ref]")
+        return is_reference_name(self.name)
 
     def window(self, since: float, until: float | None = None) -> list[Frame]:
         until = until or time.time()

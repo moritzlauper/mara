@@ -76,7 +76,11 @@ def add_taps(live, log=print, replace: bool = False) -> int:
     `replace` first removes existing taps, e.g. after the device was rebuilt.
     """
     added = 0
+    from .taps import is_reference_name
+
     for t in live.get_set()["tracks"]:
+        if t["kind"] == "track" and is_reference_name(t["name"]):
+            continue  # reference tracks are read from their files, not measured
         old = [d["index"] for d in t["devices"] if d["name"] == TAP]
         if old and not replace:
             continue

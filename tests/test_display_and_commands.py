@@ -34,11 +34,12 @@ def test_add_taps_appends_to_channels_and_master_only():
 
     song, hub, env, live = demo_project()
     live.load_device("t0", "EQ Eight")
-    assert add_taps(live, log=lambda *_: None) == len(song.tracks) + 1
+    channels = [tr for tr in song.tracks if not tr.name.startswith("REF")]
+    assert add_taps(live, log=lambda *_: None) == len(channels) + 1          # no tap on the reference track
     assert song.tracks[0].devices[-1].name == "MixMatch Tap"   # after the EQ, not in front of it
     assert song.master_track.devices[-1].name == "MixMatch Tap"
     assert add_taps(live, log=lambda *_: None) == 0             # second run adds nothing
-    assert add_taps(live, log=lambda *_: None, replace=True) == len(song.tracks) + 1
+    assert add_taps(live, log=lambda *_: None, replace=True) == len(channels) + 1
     assert [d.name for d in song.tracks[0].devices] == ["EQ Eight", "MixMatch Tap"]
 
 
@@ -58,3 +59,29 @@ def test_load_device_through_browser():
     song, hub, env, live = demo_project()
     assert live.load_device("t1", "EQ Eight") == 0
     assert song.tracks[1].devices[0].class_name == "Eq8"
+
+
+def test_reference_track_names():
+    from mixmatch.taps import is_reference_name
+
+    for name in ("REF Song", "Reference", "31-Ref", "[ref] Wish You Well", "my reference track"):
+        assert is_reference_name(name), name
+    for name in ("Prefix Pad", "Refrain Vox", "Reflections", "Kick"):
+        assert not is_reference_name(name), name
+
+
+def test_reference_clips_are_read_from_a_muted_reference_track(tmp_path):
+    import numpy as np
+    import soundfile as sf
+
+    song, hub, env, live = demo_project()
+    path = tmp_path / "wish.wav"
+    sf.write(path, np.zeros((8000, 2), np.float32), 8000)
+
+    class Clip:
+        is_audio_clip, file_path = True, str(path)
+
+    ref = next(tr for tr in song.tracks if tr.name.startswith("REF"))
+    ref.mute, ref.arrangement_clips = True, [Clip()]
+    clips = live.request("reference_clips")["clips"]
+    assert [c["file"] for c in clips] == [str(path)] and clips[0]["track"] == ref.name

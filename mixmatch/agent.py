@@ -23,6 +23,7 @@ from . import roles as roles_mod
 from .actions import CLIPPER_MAX_GAIN_DB, CLIPPERS, LIMITER_MAX_GAIN_DB, LIMITERS, Executor, RoundResult, neutral_device
 from .analysis import Comparison, compare, masking, objective, objective_parts, stats
 from .bands import CENTRES
+from .taps import is_reference_name
 from .display import parse_display
 from .planner import device_summary
 
@@ -152,6 +153,11 @@ class Agent:
         taps = self.hub.by_name()
         self.tap_of, self.references = {}, []
         for t in self.ex.set_state["tracks"]:
+            if is_reference_name(t["name"]) and t["kind"] == "track":
+                tap = taps.get((t["kind"], t["name"]))
+                if tap is not None:
+                    self.references.append(tap)
+                continue  # a reference track is never mixed
             tap = taps.get((t["kind"], t["name"]))
             if tap is None or t["kind"] == "master":
                 continue
@@ -160,15 +166,32 @@ class Agent:
             else:
                 self.tap_of[t["key"]] = tap
         missing = [t["name"] for t in self.ex.set_state["tracks"]
-                   if t["key"] not in self.tap_of and not t["name"].lower().startswith("ref")
+                   if t["key"] not in self.tap_of and not is_reference_name(t["name"])
                    and not t.get("is_group") and t["kind"] != "return"
                    and not (t["kind"] == "master" and any(tap.kind == "master" for tap in taps.values()))]
         self.log(f"Taps: {len(self.tap_of)} channels, {len(self.references)} reference(s)"
                  + (f"; no tap on: {', '.join(missing)}" if missing else ""))
 
+    def project_references(self) -> list[str]:
+        """Audio files on the project's reference tracks («REF …», «Reference»), muted or not."""
+        try:
+            clips = self.live.request("reference_clips")["clips"]
+        except Exception:
+            return []
+        files = [c["file"] for c in clips if os.path.exists(c["file"])]
+        for c in clips:
+            self.log(f"Reference in the project: {os.path.basename(c['file'])} (track «{c['track']}»)")
+        return files
+
     def understand(self) -> None:
         self.ex.refresh()
         self.match_taps()
+        in_project = self.project_references()
+        if in_project:
+            from .reference import ReferenceSet
+
+            paths = list(dict.fromkeys((self.refset.paths if self.refset else []) + in_project))
+            self.refset = ReferenceSet(paths, log=self.log)
         since = self.env.now() - 60
         for t in self.ex.set_state["tracks"]:
             if t["key"] == "m" or t["key"] not in self.tap_of:
