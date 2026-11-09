@@ -50,7 +50,7 @@ class Settings:
     min_gain: float = 0.05        # a round must improve the objective by at least this much
     assist: bool = False          # ask before applying
     mode: str = "auto"            # beat (no vocals) | song | auto (beat if no vocal channel is found)
-    loudness_from: str = "full"   # beat mode: loudness target from the full references or their instrumentals
+    loudness_from: str = "full"   # kept for old callers; the target always comes from the full references
     roles_file: str = "roles.json"
     log_dir: str = "runs"
     focus: str = "sections"       # sections: work through cue points / loop | loud: only the loudest part
@@ -544,7 +544,8 @@ class Agent:
                     self.target_no_vocals = self.refset.target(True, self.s.loudness_from)
                 target = self.target_no_vocals
             ref = target.stats
-            cmp = compare(master, ref, target.loudness, target.tolerance, target.one_sided) if master else None
+            cmp = compare(master, ref, target.loudness, target.tolerance, target.one_sided,
+                          offset=target.offset, anchor=target.anchor) if master else None
         else:
             taps = self.references
             if self.beat and any("inst" in t.name.lower() for t in taps):
@@ -661,10 +662,11 @@ class Agent:
             })
         ctx = {
             "section": section,
-            "mode": ("beat without vocals, vocals may be recorded later: the target comes from the references with "
-                     "their vocals removed. The beat must sound complete on its own: remove harshness and resonances in "
-                     "1–5 kHz where they stick out, but keep presence and air; do not hollow out that range in advance, "
-                     "and do not boost instruments into it to imitate a voice. Do not add low end to match the target")
+            "mode": ("beat without vocals, vocals may be recorded later: the target is the full reference songs. "
+                     "Low end, air above 5 kHz, width and dynamics should match them; in 200 Hz–5 kHz the beat may sit "
+                     "up to 4 dB under the song (room for a vocal), which the tonal numbers already account for. "
+                     "The beat must sound complete on its own: remove harshness and resonances where they stick out, "
+                     "keep presence and air, and do not boost instruments into the vocal range to imitate a voice")
                     if self.beat else "song with vocals",
             "target": self.target.description if self.target else "reference tracks playing in the project",
             "objective": round(m["objective"], 2),

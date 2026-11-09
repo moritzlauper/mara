@@ -13,33 +13,6 @@ def test_profile_of_a_file_is_cached_and_plausible(tmp_path):
     assert profile(path).loudness == st.loudness  # second call comes from the cache
 
 
-def test_beat_mode_without_demucs_ignores_missing_vocals(tmp_path, monkeypatch):
-    import mixmatch.reference as ref
-    monkeypatch.setattr(ref, "demucs_available", lambda: False)
-    song = write_audio(str(tmp_path / "song.wav"), vocals=True)
-    beat = profile(write_audio(str(tmp_path / "beat.wav"), vocals=False, seed=3))
-    t = ReferenceSet([song], log=lambda *_: None).target(beat=True)
-    assert t.one_sided == VOCAL_RANGE
-    cmp = compare(beat, t.stats, t.loudness, t.tolerance, t.one_sided)
-    assert (cmp.tonal_diff[VOCAL_RANGE] < -1).any()      # the beat lacks the vocal energy …
-    assert (cmp.tonal_excess[VOCAL_RANGE] >= 0).all()   # … but that is not counted as a fault
-
-
-def test_beat_mode_uses_instrumental_stems_when_available(tmp_path, monkeypatch):
-    import mixmatch.reference as ref
-    inst = write_audio(str(tmp_path / "inst.wav"), vocals=False, seed=5)
-    monkeypatch.setattr(ref, "demucs_available", lambda: True)
-    monkeypatch.setattr(ref, "instrumental", lambda path, log=None: inst)
-    song = write_audio(str(tmp_path / "song.wav"), vocals=True)
-    rs = ReferenceSet([song], log=lambda *_: None)
-    t = rs.target(beat=True)
-    assert "instrumental" in t.description
-    assert t.one_sided == bands_between(20, 120)            # only the low end is one-sided, not the vocal range
-    assert abs(t.loudness - rs.refs[0].full.loudness) < 1e-9          # loudness from the full song
-    t2 = rs.target(beat=True, loudness_from="instrumental")
-    assert abs(t2.loudness - rs.refs[0].inst.loudness) < 1e-9
-
-
 def test_several_references_widen_the_tolerance_where_they_disagree(tmp_path):
     bright = write_audio(str(tmp_path / "a.wav"), tilt=3, seed=1)
     dark = write_audio(str(tmp_path / "b.wav"), tilt=-3, seed=2)
@@ -49,66 +22,44 @@ def test_several_references_widen_the_tolerance_where_they_disagree(tmp_path):
     assert np.mean(t.tolerance[hi]) > np.mean(t.tolerance[mid])
 
 
-def test_beat_target_takes_dynamics_from_the_full_songs_when_loudness_does():
-    import numpy as np
-
+def _beat_case(vocal_db):
+    """A song (flat) and a beat that matches it outside the vocal range and sits `vocal_db` off inside it."""
     from mixmatch.analysis import Stats
-    from mixmatch.reference import Reference, ReferenceSet
+    from mixmatch.reference import Reference
 
-    def st(loud, plr, width):
-        bands = np.full(31, loud - 15.0)
-        return Stats(frames=10, loudness=loud, bands_db=bands, shape_db=bands - loud, peak_db=loud + plr, plr=plr,
-                     width_db=width, low_side_db=-30.0, active=1.0)
-
-    rs = ReferenceSet.__new__(ReferenceSet)
-    rs.log = lambda *_: None
-    rs.refs = [Reference("song.wav", full=st(-7.5, 7.5, -15.0), inst=st(-11.0, 12.5, -11.8))]
-    rs.separate = lambda: True
-    t = rs.target(beat=True)
-    assert t.loudness == -7.5 and abs(t.stats.plr - 7.5) < 1e-9      # dynamics of the master as a whole
-    assert abs(t.stats.width_db + 11.8) < 1e-9                      # width and tonal balance from the instrumental
-    t_inst = rs.target(beat=True, loudness_from="instrumental")
-    assert t_inst.loudness == -11.0 and abs(t_inst.stats.plr - 12.5) < 1e-9
-
-
-def test_beat_target_against_stems_never_asks_for_more_bass_and_tolerates_presence():
-    import numpy as np
-
-    from mixmatch.analysis import Stats
-    from mixmatch.bands import bands_between
-    from mixmatch.reference import Reference, ReferenceSet
-
-    def st(loud):
-        bands = np.full(31, loud - 15.0)
+    def st(bands, loud):
         return Stats(frames=10, loudness=loud, bands_db=bands, shape_db=bands - loud, peak_db=loud + 7, plr=7.0,
-                     width_db=-12.0, low_side_db=-30.0, active=1.0)
+                     width_db=-10.0, low_side_db=-25.0, active=1.0)
 
+    song = np.full(31, -22.0)
+    beat = song.copy()
+    beat[VOCAL_RANGE] += vocal_db
     rs = ReferenceSet.__new__(ReferenceSet)
     rs.log = lambda *_: None
-    rs.refs = [Reference("song.wav", full=st(-7.5), inst=st(-11.0))]
-    rs.separate = lambda: True
+    rs.refs = [Reference("song.wav", full=st(song, -7.5), inst=None)]
+    rs.separate = lambda: (_ for _ in ()).throw(AssertionError("no vocal split any more"))
     t = rs.target(beat=True)
-    assert set(bands_between(20, 120)) <= set(t.one_sided)
-    assert all(t.tolerance[i] >= 3.0 for i in bands_between(1000, 6000))
+    # the beat is quieter without the vocal energy: its shape relative to loudness shifts
+    return t, compare(st(beat, -7.5 + min(0.0, vocal_db) * 0.8), t.stats, t.loudness, t.tolerance, t.one_sided,
+                      offset=t.offset, anchor=t.anchor)
 
 
+def test_beat_with_room_for_a_vocal_is_on_target():
+    t, cmp = _beat_case(-3.0)                                   # 3 dB under the song in the vocal range
+    assert np.abs(cmp.tonal_excess).max() < 1e-6
 
-def test_beat_target_lets_the_air_be_as_bright_as_the_full_song():
-    import numpy as np
 
-    from mixmatch.analysis import Stats
-    from mixmatch.bands import bands_between
-    from mixmatch.reference import Reference, ReferenceSet
+def test_beat_louder_than_the_song_in_the_vocal_range_counts():
+    t, cmp = _beat_case(+2.0)
+    assert cmp.tonal_excess[VOCAL_RANGE].max() > 1.0
 
-    def st(loud, air_db=0.0):
-        bands = np.full(31, loud - 15.0)
-        bands[bands_between(6000, 16000)] += air_db
-        return Stats(frames=10, loudness=loud, bands_db=bands, shape_db=bands - loud, peak_db=loud + 7, plr=7.0,
-                     width_db=-12.0, low_side_db=-30.0, active=1.0)
 
-    rs = ReferenceSet.__new__(ReferenceSet)
-    rs.log = lambda *_: None
-    rs.refs = [Reference("song.wav", full=st(-7.5), inst=st(-11.0, air_db=-3.0))]   # the stem is 3 dB darker up top
-    rs.separate = lambda: True
-    t = rs.target(beat=True)
-    assert all(t.tolerance[i] >= 3.0 for i in bands_between(6000, 16000))
+def test_hollowed_out_beat_counts():
+    t, cmp = _beat_case(-8.0)
+    assert cmp.tonal_excess[VOCAL_RANGE].min() < -3.0
+
+
+def test_beat_target_takes_everything_from_the_full_song():
+    t, cmp = _beat_case(0.0)
+    assert t.loudness == -7.5 and abs(t.stats.plr - 7.0) < 1e-9 and abs(t.stats.width_db + 10.0) < 1e-9
+    assert "full references" in t.description and not t.one_sided

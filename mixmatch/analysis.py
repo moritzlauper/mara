@@ -143,8 +143,14 @@ class Comparison:
 
 
 def compare(mix: Stats, ref: Stats, loudness: float | None = None, tolerance: np.ndarray | None = None,
-            one_sided: list[int] = ()) -> Comparison:
+            one_sided: list[int] = (), offset: np.ndarray | None = None, anchor: list[int] = ()) -> Comparison:
+    """`anchor`: bands whose mean difference is taken as level 0 (instead of equal loudness);
+    `offset`: per band, how much more (+) or less (−) the mix is expected to have than the reference."""
     diff = tonal_difference(mix, ref)
+    if len(anchor):
+        diff = diff - float(np.mean(diff[list(anchor)]))
+    if offset is not None:
+        diff = diff - offset
     tol = np.zeros(BAND_COUNT) if tolerance is None else tolerance
     excess = np.sign(diff) * np.maximum(0.0, np.abs(diff) - tol)
     for i in one_sided:

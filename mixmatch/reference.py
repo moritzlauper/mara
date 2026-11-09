@@ -5,13 +5,13 @@ from your project has to be exported. Each one is measured the way the taps
 measure your mix (third-octave bands, mid/side, 100 ms frames), using its
 loudest part (drop or chorus), not the intro.
 
-Beat mode: your beat has no vocals, the references do. Comparing them directly
-would push the agent to fill the vocal range with instruments. So each
-reference is split with Demucs into vocals and instrumental, once, cached: the
-tonal balance, width and dynamics come from the instrumental, the loudness
-target from the full song (beats are usually mastered as loud as songs; change
-with `loudness_from="instrumental"`). Without Demucs the vocal range
-(200 Hz–5 kHz) only counts where the beat is louder than the reference.
+Beat mode: your beat has no vocals, the references do. The target is still the
+full song, the real master: a vocal split (Demucs) changes the rest of the song
+too (darker highs, narrower, heavier bass) and the mix would chase those
+artefacts. Instead the comparison is anchored where the voice does not sit
+(below 200 Hz, above 5 kHz: the same instruments in song and beat), and in the
+vocal range 200 Hz–5 kHz the beat may sit up to 4 dB under the song. That is the
+room for a vocal; louder than the song, or hollower than that, counts.
 
 Several references: the target is their average, and where they disagree, the
 tolerance gets wider (half their spread per band), so no single track dictates
@@ -29,7 +29,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from .analysis import Stats, stats
+from .analysis import TONAL_BANDS, Stats, stats
 from .bands import CENTRES, bands_between
 from .taps import Frame
 
@@ -38,6 +38,7 @@ HOP = 0.1          # seconds, like the taps
 BLOCK = 3.0        # seconds per block when looking for the loudest part
 LOUDEST_SHARE = 0.3
 VOCAL_RANGE = bands_between(200, 5000)
+VOCAL_ROOM_DB = 4.0   # beat mode: how far under the song the vocal range may sit
 
 
 # ── measuring a file like a tap would ──────────────────────────────────────
@@ -170,6 +171,8 @@ class Target:
     tolerance: np.ndarray             # per band, dB of difference that does not count
     one_sided: list[int] = field(default_factory=list)  # bands where only "mix louder than reference" counts
     description: str = ""
+    offset: np.ndarray | None = None  # per band: expected mix minus reference (beat mode: room for a vocal)
+    anchor: list[int] = field(default_factory=list)     # bands that set the level of the comparison
 
 
 def _mean_stats(items: list[Stats]) -> Stats:
@@ -201,37 +204,27 @@ class ReferenceSet:
         return all(r.inst for r in self.refs)
 
     def target(self, beat: bool, loudness_from: str = "full") -> Target:
+        """The combined target. `loudness_from` is kept for old callers: everything comes from the full songs."""
         full = [r.full for r in self.refs]
-        extra = np.zeros(len(CENTRES))
-        if beat and self.separate():
-            basis, how = [r.inst for r in self.refs], "instrumental stems of the references (vocals removed)"
-            # An instrumental cut out of a song is thinned where the voice sat and leans on its bass without it.
-            # A beat heard on its own needs that presence, and must not copy the bass: only too much low end counts,
-            # and 1–6 kHz gets extra tolerance.
-            one_sided = bands_between(20, 120)
-            extra[bands_between(1000, 6000)] = 2.5
-            # Above 6 kHz there is hardly any voice: the separation still darkens the air (it gives the vocal stem
-            # breath, sibilance and reverb). So the beat may be as bright up there as the full song.
-            air = bands_between(6000, 16000)
-            gap = np.mean([r.full.shape_db - r.inst.shape_db for r in self.refs], axis=0)
-            extra[air] = np.maximum(extra[air], gap[air])
-        elif beat:
-            basis, how = full, "full references; vocal range 200 Hz–5 kHz only counts where the beat is louder"
-            one_sided = VOCAL_RANGE
-            self.log("  Demucs not installed (pip install demucs): comparing against the full references, "
-                     "vocal range one-sided.")
+        target = _mean_stats(full)
+        spread = np.std([s.shape_db for s in full], axis=0) if len(full) > 1 else np.zeros(len(CENTRES))
+        tolerance = 0.5 + spread / 2
+        offset, anchor = None, []
+        if beat:
+            # Room for a vocal: the beat may sit 0 to VOCAL_ROOM_DB under the song in the vocal range.
+            offset = np.zeros(len(CENTRES))
+            offset[VOCAL_RANGE] = -VOCAL_ROOM_DB / 2
+            tolerance = tolerance.copy()
+            tolerance[VOCAL_RANGE] += VOCAL_ROOM_DB / 2
+            # The comparison is smoothed over three bands, so the edge of the vocal range bleeds one band out.
+            edges = [VOCAL_RANGE[0] - 1, VOCAL_RANGE[-1] + 1]
+            tolerance[edges] += VOCAL_ROOM_DB / 3
+            anchor = [i for i in TONAL_BANDS if i not in VOCAL_RANGE and i not in edges]
+            how = (f"full references; vocal range 200 Hz–5 kHz may sit up to {VOCAL_ROOM_DB:.0f} dB under the song "
+                   "(room for a vocal), level set by the bands outside it")
         else:
-            basis, how, one_sided = full, "full references", []
-        target = _mean_stats(basis)
-        loud_src = basis if loudness_from == "instrumental" else full
-        if basis is not full and loudness_from != "instrumental":
-            # Loudness from the full songs, so the dynamics (peak to loudness) too: an instrumental measured on its
-            # own is quieter than the song and would ask for peaks the master cannot have at that loudness.
-            mean_full = _mean_stats(full)
-            target = Stats(**{**target.__dict__, "plr": mean_full.plr, "peak_db": mean_full.peak_db})
-        spread = np.std([s.shape_db for s in basis], axis=0) if len(basis) > 1 else np.zeros(len(CENTRES))
-        return Target(stats=target, loudness=float(np.mean([s.loudness for s in loud_src])),
-                      tolerance=0.5 + spread / 2 + extra, one_sided=list(one_sided),
-                      description=f"{len(basis)} reference(s), {how}; loudness from the "
-                                  f"{'instrumentals' if loudness_from == 'instrumental' else 'full songs'}")
+            how = "full references"
+        return Target(stats=target, loudness=float(np.mean([s.loudness for s in full])), tolerance=tolerance,
+                      one_sided=[], offset=offset, anchor=anchor,
+                      description=f"{len(full)} reference(s), {how}; loudness from the full songs")
 
