@@ -928,8 +928,11 @@ function closeness(s) {
   $("verdict").textContent = word; $("distance").textContent = s.distance != null ? s.distance.toFixed(2) + " points" : "";
   $("scale_mark").style.left = (pos * 100).toFixed(1) + "%";
   const phase = (s.history_phase || []).slice(-1)[0];
+  const local = (s.section || "").includes("outside the loudest part");
+  const where = (s.section || "a channel").replace(/ \(outside the loudest part[^)]*\)/, "").replace(/_/g, " ");
   $("scope").textContent = phase === "channels"
-    ? `Now on ${(s.section || "a channel").replace(/_/g, " ")}. While MARA works on single channels, loudness and punch are left out: that part of the song need not sound like the drop.`
+    ? (local ? `Now on ${where}. This part is outside the loudest part, so it is not compared with the references: only how the instruments cover each other and a mono bass count.`
+             : `Now on ${where}. While MARA works on single channels, loudness and punch are left out: that part of the song need not sound like the drop.`)
     : (s.section ? `Now on the master, ${s.section}. Tone, loudness, punch and width are compared with the references.` : "");
   // one row per phase: where it started and where it is now
   const rows = [], hist = s.history || [], ph = s.history_phase || [];

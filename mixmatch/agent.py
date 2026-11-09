@@ -503,11 +503,15 @@ class Agent:
                 continue
             start, length = region
             bar = start / 4 + 1
-            self.log(f"\n▶ {r.name} ({r.role}, priority {r.priority}), bars {bar:.0f}–{bar + length / 4:.0f}")
+            # Only the loudest part is compared with the references (their loudest part); elsewhere, e.g. an intro
+            # without drums, the song is meant to sound different, so only the channels against each other count.
+            in_main = main is not None and abs(start - main[1]) < 1e-6
+            note = "" if in_main or main is None else " (outside the loudest part: overlap and mono bass only)"
+            self.log(f"\n▶ {r.name} ({r.role}, priority {r.priority}), bars {bar:.0f}–{bar + length / 4:.0f}{note}")
             self.play_loop(start, length)
             self.begin_step(self.W_CHANNEL)
             self.section(f"channel {r.name}", deadline, focus=r.key, max_rounds=self.s.channel_rounds,
-                         scoring="balance")
+                         scoring="balance" if in_main or main is None else "local")
             self.finish_step(r.name)
 
     # ── 2. measure ──────────────────────────────────────────────────────────
@@ -556,7 +560,9 @@ class Agent:
         masks = self._maskings(tracks)
         penalty = sum(m["severity"] * min(m["priority_a"], m["priority_b"]) / 5 for m in masks[:4])
         scored = cmp
-        if cmp and scoring == "balance":
+        if scoring == "local":
+            scored = None          # judged without the references: see the fallback below
+        elif cmp and scoring == "balance":
             scored = replace(cmp, loudness_diff=0.0, plr_diff=0.0)
         elif cmp and cmp.loudness_diff < 0 and self.loudness_exhausted():
             # Limiter (and clipper) as far as they may go: the rest of the gap is accepted, not chased with faders.
@@ -570,7 +576,8 @@ class Agent:
             if master is not None:
                 parts["low_side"] = max(0.0, master.low_side_db - LOW_SIDE_LIMIT_DB) * 0.5
             obj = sum(parts.values())
-        return {"master": master, "ref": ref, "tracks": tracks, "cmp": cmp, "masking": masks,
+        return {"master": master, "ref": ref, "tracks": tracks, "masking": masks, "scoring": scoring,
+                "cmp": None if scoring == "local" else cmp,   # the references do not apply outside the loud part
                 "objective": obj, "parts": parts}
 
     def limiter_at_cap(self) -> bool:
@@ -673,6 +680,10 @@ class Agent:
             "master": m["master"].summary() if m["master"] else None,
             "reference": m["ref"].summary() if m["ref"] else "no reference (pass --ref files or name tracks «REF …»)",
             "master_vs_reference": {**cmp.summary(), "_tonal_excess": [float(x) for x in cmp.tonal_excess]} if cmp else None,
+            **({"scope": "this part is outside the song's loudest part: it is meant to sound different from the "
+                         "references (e.g. no drums), so do not match their tonal balance here; only make the channels "
+                         "sit well against each other (overlaps, mono low end, harsh resonances)"}
+               if m.get("scoring") == "local" else {}),
             "master_devices": device_summary(self.ex.track("m")),
             "master_resonances": self.resonances.get("m") or None,
             "user_description": self.description or None,

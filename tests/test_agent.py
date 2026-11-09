@@ -482,3 +482,14 @@ def test_a_stopped_run_continues_exactly_where_it_stopped(tmp_path):
     assert "Final check" in text and not os.path.exists(tmp_path / "checkpoint.json")   # complete: nothing left
     first_progress = [json.loads(l.split("progress ", 1)[1]) for l in second if l.strip().startswith("progress {")]
     assert first_progress[0]["done"] == ck["done"]                                       # the bar goes on from there
+
+
+def test_a_channel_outside_the_loudest_part_is_not_compared_with_the_references():
+    song, hub, env, live = demo_project()
+    env.wait(5)
+    agent = Agent(live, hub, RulePlanner(), Settings(minutes=1, settle=1.0), env=env, log=lambda *_: None)
+    agent.understand()
+    m = agent.measure("local")
+    assert m["cmp"] is None and set(m["parts"]) <= {"masking", "low_side"}
+    ctx = agent.context("channel Bass", m, focus="t1")
+    assert "outside the song's loudest part" in ctx["scope"] and ctx["master_vs_reference"] is None
