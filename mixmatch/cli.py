@@ -180,7 +180,8 @@ def cmd_run(args):
                                            focus=args.focus, focus_bars=args.focus_bars, complete=not args.quick, resume=args.resume,
                                            auto_ref=args.auto_ref or (not args.ref and not args.no_auto_ref),
                                            library=args.library or None,
-                                           jamendo=args.jamendo, audit=not args.no_audit),
+                                           jamendo=args.jamendo, audit=not args.no_audit,
+                                           silent=args.silent),
               references=refset).run()
     finally:
         live.transport(play=False)
@@ -240,6 +241,8 @@ def main(argv=None):
                                     help="do not look for references: only --ref and the project's reference tracks")
     sub.choices["run"].add_argument("--library", default="~/Music",
                                     help="folder searched for references with --auto-ref (empty to skip)")
+    sub.choices["run"].add_argument("--silent", action="store_true",
+                                    help="Main fader down while running (MixMatch measures before it), back at the end")
     sub.choices["run"].add_argument("--no-audit", action="store_true",
                                     help="keep every effect (no check for effects that do nothing or harm)")
     sub.choices["run"].add_argument("--jamendo", action="store_true",

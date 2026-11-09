@@ -60,6 +60,7 @@ class Settings:
     channel_rounds: int = 2       # rounds per channel in the channel pass
     final_rounds: int = 4         # rounds of the final master check
     resume: str | None = None     # track name: skip the master phase and start the channel pass there
+    silent: bool = False          # Main fader down while running (the taps measure before it), put back at the end
     auto_ref: bool = False        # find references by listening to the project (library and Jamendo)
     library: str | None = "~/Music"
     jamendo: bool = False         # also try Creative Commons tracks from Jamendo
@@ -737,6 +738,7 @@ class Agent:
         stamp = time.strftime("%Y%m%d-%H%M%S")
         self.ex.refresh()
         ab.save(self.ex.set_state, self.s.log_dir, stamp, "before")   # for the before/after switch
+        main_volume = self.mute_main() if self.s.silent else None
         try:
             self._run(deadline)
         except PlannerFailed as e:
@@ -744,6 +746,10 @@ class Agent:
         except MasterSilent:
             self.log("\nStopped: the master stayed silent for over a minute, so nothing could be measured. "
                      "Everything kept so far stays in the set; continue with --resume once Live plays again.")
+        finally:
+            if main_volume is not None:
+                self.live.batch([{"track": "m", "device": "mixer", "param": "Volume", "value": main_volume}])
+                self.log("Main fader back where it was.")
         try:
             self.ex.refresh()
             ab.save(self.ex.set_state, self.s.log_dir, stamp, "after")
@@ -753,6 +759,17 @@ class Agent:
         self.log("\nDone. " + self.report())
         self.logfile.close()
         return self.history
+
+    def mute_main(self) -> float | None:
+        """Silent mode: the Main fader all the way down, so nothing is heard while MixMatch works. Every tap,
+        the master's too, sits before the Main fader and keeps measuring. Returns the old value."""
+        master = next((t for t in self.ex.set_state["tracks"] if t["key"] == "m"), None)
+        vol = next((p for p in master["mixer"] if p["name"] == "Volume"), None) if master else None
+        if vol is None:
+            return None
+        self.live.batch([{"track": "m", "device": "mixer", "param": "Volume", "value": 0.0}])
+        self.log("Silent: the Main fader is down while MixMatch works (it measures before the fader).")
+        return vol["value"]
 
     def _run(self, deadline: float) -> None:
         sections = self.sections()
@@ -894,6 +911,8 @@ class Agent:
                 elif plan.get("done"):
                     self.log("  targets reached for this section")
                 return
+            if self.s.silent:
+                actions = [a for a in actions if not (a.get("type") == "volume" and a.get("track") in (None, "m"))]
             for a in actions:
                 self.log(f"    · {a['type']} {a.get('track') or 'master'}: {a.get('reason', '')}")
             if self.s.assist and self.ask("    apply? [Y/n] ").strip().lower() == "n":

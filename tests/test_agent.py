@@ -385,3 +385,23 @@ def test_without_a_reference_the_audit_keeps_a_deliberate_eq():
     bass_eq = next(d for d in song.tracks[1].devices if d.class_name == "Eq8")
     assert bass_eq.p("Device On").value == 1
     assert not any("better without it" in l for l in logs)
+
+
+def test_silent_mode_turns_the_main_fader_down_and_back():
+    song, hub, env, live = demo_project()
+    env.wait(5)
+    vol = lambda: next(p["value"] for t in live.get_set()["tracks"] if t["key"] == "m"
+                       for p in t["mixer"] if p["name"] == "Volume")
+    before, during = vol(), []
+
+    class Watch(RulePlanner):
+        def plan(self, ctx):
+            during.append(vol())
+            return super().plan(ctx)
+
+    logs = []
+    agent = Agent(live, hub, Watch(), Settings(minutes=1, settle=1.0, silent=True), env=env, log=logs.append)
+    history = agent.run()
+    assert during and all(v == 0.0 for v in during)       # down while it worked …
+    assert vol() == before                                  # … and back afterwards
+    assert any(h.after is not None and not h.undone for h in history)   # it still measured and improved

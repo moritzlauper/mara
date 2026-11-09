@@ -487,6 +487,8 @@ def make_handler(runner: Runner, watcher: "DownloadWatcher | None" = None):
                         args += ["--no-auto-ref"]   # only the project's reference tracks
                     if body.get("quick"):
                         args += ["--quick"]
+                    if body.get("silent"):
+                        args += ["--silent"]
                     if body.get("no_audit"):
                         args += ["--no-audit"]
                     if body.get("resume"):
@@ -603,6 +605,7 @@ button.small{padding:2px 8px;font-size:12px}button.danger{background:var(--bad);
   <label><input type="checkbox" id="refs" checked> use references/</label></div>
   <div class="row"><label><input type="checkbox" id="quick"> master only (quick)</label>
   <label><input type="checkbox" id="no_audit"> keep every effect</label></div>
+  <div class="row"><label title="The Main fader goes down while MixMatch works and comes back at the end. MixMatch measures before the fader, so the results are the same."><input type="checkbox" id="silent"> silent (no need to listen)</label></div>
   <div class="row"><label>resume at track <input id="resume" size="14" placeholder="optional"></label></div>
   <div class="row"><button id="start">Start</button><button id="stop" class="ghost">Stop</button><button id="taps" class="ghost">Set taps</button></div>
   <div class="row"><span class="muted">compare the last run:</span><button id="ab_before" class="ghost">Before</button><button id="ab_after" class="ghost">After</button></div>
@@ -647,7 +650,7 @@ async function post(path, body) {
   const j = await r.json(); $("msg").textContent = j.error || ""; return j;
 }
 $("start").onclick = () => post("/api/run", {auto_ref: $("auto_ref").checked, refs: $("refs").checked, quick: $("quick").checked,
-  no_audit: $("no_audit").checked, resume: $("resume").value.trim()});
+  no_audit: $("no_audit").checked, silent: $("silent").checked, resume: $("resume").value.trim()});
 $("stop").onclick = () => post("/api/stop");
 $("taps").onclick = () => post("/api/taps");
 $("ab_before").onclick = async () => { const j = await post("/api/ab", {which: "before"}); if (!j.error) $("msg").textContent = `Before (${j.changed} parameters)`; };
