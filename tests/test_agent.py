@@ -134,3 +134,27 @@ def test_complete_run_visits_every_channel_and_ends_with_a_final_check(tmp_path)
     assert any("not now" in l for l in logs)                         # stray actions are dropped in the pass
     channel_rounds = [h for h in agent.history if h.section.startswith("channel ")]
     assert channel_rounds and all(a["track"] in agent.roles for h in channel_rounds for a in h.applied)
+
+
+def test_measurements_start_at_the_loop_start():
+    song, hub, env, live = demo_project()
+    agent = Agent(live, hub, RulePlanner(), Settings(settle=1.0), env=env, log=lambda *_: None)
+    agent.ex.refresh()
+    agent.play_loop(16.0, 32.0)
+    env.wait(3.3)                                   # somewhere inside the loop
+    agent.wait_for_loop_start()
+    assert abs(song.current_song_time - 16.0) < 0.5
+
+
+def test_a_vocal_track_that_never_plays_means_beat_mode(tmp_path):
+    song, hub, env, live = demo_project()
+    vox = next(t for t in song.tracks if t.name == "Lead Vox")
+    vox.mixer_device.volume.value = 0.0             # fader all the way down: silent everywhere
+    vox.spectrum = vox.spectrum - 200
+    env.wait(2)
+    logs = []
+    agent = Agent(live, hub, ChannelStub(), Settings(minutes=None, complete=True, focus="loud", settle=1.0,
+                                                     roles_file=str(tmp_path / "r.json"), log_dir=str(tmp_path)),
+                  env=env, log=logs.append)
+    agent.run()
+    assert agent.beat and any("treating it as a beat" in l for l in logs)

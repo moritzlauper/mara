@@ -42,7 +42,7 @@ class RealEnv:
 @dataclass
 class Settings:
     minutes: float | None = 10.0  # upper limit; None = until the run is complete
-    bars: int = 4                 # measurement window per round
+    bars: int = 8                 # measurement window per round, from the loop start (shorter loops: all of it)
     settle: float = 1.5           # seconds after a change before measuring (reverb tails, compressor release)
     max_rounds_per_section: int = 12
     stall_rounds: int = 4         # stop a section after this many rounds without improvement
@@ -97,13 +97,38 @@ class Agent:
         self.refset = references            # ReferenceSet from audio files (preferred)
         self.target = None
         self.target_no_vocals = None        # used in parts where the vocal channels are silent
+        self.loop: tuple[float, float] | None = None   # (start, length) of the loop the agent plays
         self.beat = False
         self.logfile = None
 
     # ── 1. understand the set ───────────────────────────────────────────────
     def window_seconds(self) -> float:
         tempo = self.ex.set_state.get("tempo") or 120
-        return max(4.0, self.s.bars * 4 * 60.0 / tempo)
+        beats = self.s.bars * 4
+        if self.loop is not None:  # aligned to the loop: the whole loop, at most `bars`
+            beats = min(beats, self.loop[1])
+        return max(4.0, beats * 60.0 / tempo)
+
+    def play_loop(self, start: float, length: float) -> None:
+        self.live.transport(loop_start=start, loop_length=length, loop=True, time=start, play=True)
+        self.loop = (start, length)
+
+    def wait_for_loop_start(self) -> None:
+        """Waits until playback is back at the loop start, so every measurement hears the same bars."""
+        if self.loop is None:
+            return
+        start, length = self.loop
+        tempo = self.ex.set_state.get("tempo") or 120
+        deadline = self.env.now() + length * 60 / tempo + 2
+        last = None
+        while self.env.now() < deadline:
+            pos = self.live.transport()["song_time"]
+            if last is not None and pos < last - 0.5:     # wrapped from the loop end to its start
+                return
+            if last is None and abs(pos - start) < 0.1:   # just started there
+                return
+            last = pos
+            self.env.wait(0.05)
 
     def match_taps(self) -> None:
         taps = self.hub.by_name()
@@ -235,13 +260,14 @@ class Agent:
             start, length = region
             bar = start / 4 + 1
             self.log(f"\n▶ {r.name} ({r.role}, priority {r.priority}), bars {bar:.0f}–{bar + length / 4:.0f}")
-            self.live.transport(loop_start=start, loop_length=length, loop=True, time=start, play=True)
+            self.play_loop(start, length)
             self.section(f"channel {r.name}", deadline, focus=r.key, max_rounds=self.s.channel_rounds,
                          scoring="balance")
 
     # ── 2. measure ──────────────────────────────────────────────────────────
     def measure(self, scoring: str = "full") -> dict:
         """`scoring` «balance» leaves out loudness and dynamics: a quiet part need not sound like the drop."""
+        self.wait_for_loop_start()
         self.env.wait(self.window_seconds())
         end = self.env.now()
         start = end - self.window_seconds()
@@ -385,6 +411,14 @@ class Agent:
                      "until then only the balance between channels is worked on.")
         sections = self.sections()
         scan = self.scan(sections) if self.s.complete else None
+        if scan is not None and not self.beat and self.s.mode == "auto":
+            vocals = [k for k, r in self.roles.items() if r.role in VOCAL_ROLES]
+            if vocals and all(stats([f for _, f in scan.channels.get(k, [])]) is None for k in vocals):
+                self.beat = True
+                self.log("The vocal channels are silent in the whole song: treating it as a beat (no vocals).")
+                if self.refset:
+                    self.target = self.refset.target(True, self.s.loudness_from)
+                    self.log(f"Target: {self.target.description}, {self.target.loudness:.1f} LUFS")
         main = [self.loudest_part(sections, scan)] if self.s.focus == "loud" else sections
         if self.s.complete:
             self.log(f"\n━━ Master against the reference")
@@ -392,14 +426,14 @@ class Agent:
             if self.env.now() >= deadline:
                 break
             self.log(f"\n▶ {name}")
-            self.live.transport(loop_start=start, loop_length=length, loop=True, time=start, play=True)
+            self.play_loop(start, length)
             self.section(name, deadline)
         if self.s.complete and scan is not None:
             self.channel_pass(scan, main[0] if self.s.focus == "loud" else None, deadline)
             name, start, length = main[0]
             if self.env.now() < deadline:
                 self.log(f"\n━━ Final check: master, {name}")
-                self.live.transport(loop_start=start, loop_length=length, loop=True, time=start, play=True)
+                self.play_loop(start, length)
                 self.section("final check", deadline, max_rounds=self.s.final_rounds)
         self.log("\nDone. " + self.report())
         self.logfile.close()
