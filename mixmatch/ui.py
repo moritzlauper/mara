@@ -714,7 +714,7 @@ header h1:hover{color:var(--accent2);text-shadow:3px 3px 0 var(--lime)}
   border:1px solid;border-color:var(--lo) var(--hi) var(--hi) var(--lo)}
 .pill.on{background:var(--lime);color:var(--on-bright);border-color:var(--lime-edge)}
 #phase{font-family:var(--mono);font-size:12px}
-main{gap:18px;padding:20px;grid-template-columns:repeat(auto-fit,minmax(min(100%,400px),1fr))}
+main{gap:18px;padding:20px;grid-template-columns:repeat(auto-fit,minmax(min(100%,400px),1fr));align-items:start}
 section{background:var(--panel);border-radius:0;padding:0 14px 14px;
   border:2px solid;border-color:var(--hi) var(--lo) var(--lo) var(--hi);box-shadow:1px 1px 0 var(--shadow),4px 4px 0 var(--drop)}
 section>h2:first-child{margin:0 -14px 12px;padding:5px 10px;background:var(--title);color:#fff;
@@ -837,10 +837,10 @@ ul.part-why{padding-left:18px}ul.part-why li{margin:2px 0}
   <div id="drop" class="drop">Drop audio files here to add them to references/</div><h2 style="margin-top:12px">To get</h2><div id="to_get" class="muted">–</div>
 </section>
 <section>
-  <h2>Effects</h2><div id="effects" class="muted">–</div>
+  <h2>Roles</h2><div id="roles" class="muted">–</div><div class="row"><button id="save_roles" class="ghost">Save roles</button></div>
 </section>
 <section>
-  <h2>Roles</h2><div id="roles" class="muted">–</div><div class="row"><button id="save_roles" class="ghost">Save roles</button></div>
+  <h2>Effects</h2><div id="effects" class="muted">–</div>
 </section>
 <section class="wide"><h2>Log</h2><pre id="log"></pre></section>
 </main>
@@ -1027,7 +1027,8 @@ async function tick() {
   if ($("import_dl")) $("import_dl").onclick = async () => { const j = await post("/api/references/import");
     if (!j.error) { $("msg").textContent = j.added.length ? "Imported: " + j.added.join(", ") : "Nothing new in Downloads (last hour)."; lastRefs = ""; } };
   }
-  $("effects").innerHTML = s.effects.length ? "<ul>" + s.effects.map(e => `<li>${esc(e)}</li>`).join("") + "</ul>" : "–";
+  $("effects").innerHTML = s.effects.length ? "<ul>" + s.effects.map(e => `<li>${esc(e)}</li>`).join("") + "</ul>"
+    : "<span class='hint'>Fills in during the effect check near the end of a run: what was kept, switched off or removed.</span>";
   const log = $("log"), atEnd = log.scrollTop + log.clientHeight >= log.scrollHeight - 5;
   log.textContent = s.log.join("\n"); if (atEnd) log.scrollTop = log.scrollHeight;
 }
