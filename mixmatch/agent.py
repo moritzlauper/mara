@@ -432,6 +432,12 @@ class Agent:
                 for h in self.history[-10:]
             ],
         }
+        if focus is None and section == "final check":
+            ctx["task"] = (
+                "Final check of the master after the channel pass. If the master is quieter than the target and the "
+                "limiter or clipper still has room (see «limiter», «clipper»), raise them first: limiter up to its "
+                "maximum, then the clipper. After that only small master corrections (a broad master EQ move of at most "
+                "1.5 dB for an overall tilt the channels did not fix). Channels are done; do not change them here.")
         if focus is not None and self.ex.track(focus).get("is_group"):
             r = self.roles[focus]
             ctx["task"] = (
