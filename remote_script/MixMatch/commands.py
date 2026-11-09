@@ -231,6 +231,10 @@ class Commands:
         return {"devices": len(list(track.devices))}
 
     def transport(self, req):
+        # Live refuses a loop that reaches past the end of the song, also for a moment in between:
+        # shorten first, then move the start, then set the final length.
+        if "loop_length" in req:
+            self.song.loop_length = min(self.song.loop_length, float(req["loop_length"]))
         if "loop_start" in req:
             self.song.loop_start = float(req["loop_start"])
         if "loop_length" in req:

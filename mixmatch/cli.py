@@ -116,13 +116,16 @@ def cmd_run(args):
     live, hub = _connect()
     planner = RulePlanner() if args.rules else make_planner()
     print(f"Planner: {'Claude (' + planner.model + ')' if isinstance(planner, ClaudePlanner) else 'rules (no ANTHROPIC_API_KEY or --rules)'}")
-    live.transport(play=True)
-    time.sleep(args.wait)
     refset = _refset(args)
-    Agent(live, hub, planner, Settings(minutes=args.minutes, assist=args.assist, roles_file=args.roles,
-                                       mode=args.mode, loudness_from=args.loudness_from,
-                                       focus=args.focus, focus_bars=args.focus_bars),
-          references=refset).run()
+    live.transport(play=True)
+    try:
+        time.sleep(args.wait)
+        Agent(live, hub, planner, Settings(minutes=args.minutes, assist=args.assist, roles_file=args.roles,
+                                           mode=args.mode, loudness_from=args.loudness_from,
+                                           focus=args.focus, focus_bars=args.focus_bars),
+              references=refset).run()
+    finally:
+        live.transport(play=False)
 
 
 def cmd_demo(args):
