@@ -634,9 +634,18 @@ PAGE = r"""<!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>MixMatch</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=IBM+Plex+Sans:wght@400;600&family=Zilla+Slab:wght@600;700&display=swap">
 <style>
-:root{--bg:#0f1115;--panel:#171a21;--line:#262b36;--text:#e7e9ee;--muted:#8a93a6;--accent:#7c9cff;--good:#4fc38a;--bad:#ef6b6b;--warn:#e5b450}
-@media (prefers-color-scheme: light){:root:not([data-theme="dark"]){--bg:#f6f7f9;--panel:#fff;--line:#e3e6ec;--text:#1b1f27;--muted:#646d7e;--accent:#3b5bdb;--good:#1f9d63;--bad:#d64545;--warn:#b7791f}}
+:root{
+  /* desktop of an old operating system, in MixMatch's own colours */
+  --bg:#b9b2c9;--panel:#dcd7e6;--face:#e9e5f0;--hi:#fbf9ff;--lo:#8d859e;--ink:#1c1824;
+  --line:#8d859e;--text:#1c1824;--muted:#5b5469;
+  --accent:#6d3fd1;--accent2:#e2479c;--lime:#c8f03a;--lime-edge:#5f7d00;--pink:#ff8cc8;--pink-edge:#c2287c;
+  --good:#2f8f4e;--bad:#c4304b;--warn:#a86b00;
+  --title:linear-gradient(90deg,#4b2aa0,#b2399a 70%,#e2479c);
+  --slab:"Zilla Slab",Georgia,serif;--mono:"IBM Plex Mono",ui-monospace,Menlo,monospace;--sans:"IBM Plex Sans",-apple-system,system-ui,sans-serif;
+}
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:14px/1.45 -apple-system,system-ui,sans-serif}
 header{display:flex;align-items:center;gap:12px;padding:14px 20px;border-bottom:1px solid var(--line)}
 header h1{font-size:17px;margin:0}.pill{padding:2px 9px;border-radius:99px;font-size:12px;background:var(--line);color:var(--muted)}
@@ -662,6 +671,49 @@ svg{width:100%;height:90px}.prog{margin-left:auto;display:flex;align-items:cente
 .drop.over{border-color:var(--accent);color:var(--accent)}.reflist li{display:flex;justify-content:space-between;gap:8px;align-items:center}
 .reflist li span{flex:1;min-width:0;overflow-wrap:anywhere}.reflist li button{flex-shrink:0}
 button.small{padding:2px 8px;font-size:12px}button.danger{background:var(--bad);color:#fff;border-color:var(--bad)}
+
+/* ── retro desktop layer ── */
+body{background:var(--bg);color:var(--ink);font:14px/1.5 var(--sans)}
+header{background:var(--panel);border-bottom:3px solid var(--ink);padding:10px 20px;flex-wrap:wrap}
+header h1{font:700 44px/1 var(--slab);letter-spacing:-.01em;margin:0 8px 0 0;cursor:default;color:var(--ink);transition:color .15s}
+header h1:hover{color:var(--accent2);text-shadow:3px 3px 0 var(--lime)}
+.pill{border-radius:0;background:var(--face);color:var(--ink);font:12px var(--mono);padding:2px 8px;
+  border:1px solid;border-color:var(--lo) var(--hi) var(--hi) var(--lo)}
+.pill.on{background:var(--lime);color:var(--ink);border-color:var(--lime-edge)}
+#phase{font-family:var(--mono);font-size:12px}
+main{gap:18px;padding:20px;grid-template-columns:repeat(auto-fit,minmax(min(100%,400px),1fr))}
+section{background:var(--panel);border-radius:0;padding:0 14px 14px;
+  border:2px solid;border-color:var(--hi) var(--lo) var(--lo) var(--hi);box-shadow:1px 1px 0 var(--ink),4px 4px 0 rgba(28,24,36,.18)}
+section>h2:first-child{margin:0 -14px 12px;padding:5px 10px;background:var(--title);color:#fff;
+  font:600 12px var(--mono);letter-spacing:.08em;text-transform:uppercase;display:flex;align-items:center;gap:8px}
+section>h2:first-child::after{content:"";margin-left:auto;width:11px;height:11px;background:var(--face);
+  border:1px solid;border-color:var(--hi) var(--lo) var(--lo) var(--hi)}
+section h2{font:600 12px var(--mono);letter-spacing:.06em;color:var(--ink)}
+button{border-radius:0;background:var(--lime);color:var(--ink);border:2px solid var(--lime-edge);font:600 13px var(--mono);
+  padding:6px 12px;box-shadow:inset -2px -2px 0 rgba(0,0,0,.18),inset 2px 2px 0 rgba(255,255,255,.55)}
+button:hover:not(:disabled){filter:brightness(1.05)}
+button:active:not(:disabled){box-shadow:inset 2px 2px 0 rgba(0,0,0,.25);transform:translate(1px,1px)}
+button.ghost{background:var(--face);color:var(--ink);border:2px solid;border-color:var(--hi) var(--lo) var(--lo) var(--hi);box-shadow:none}
+button.small{padding:2px 8px;font-size:12px}
+#stop{background:var(--pink);border-color:var(--pink-edge)}
+select,input,textarea{border-radius:0;background:#fff;color:var(--ink);font:13px var(--mono);
+  border:2px solid;border-color:var(--lo) var(--hi) var(--hi) var(--lo)}
+label{color:var(--ink)}.muted{color:var(--muted)}
+.big{font:700 54px/1 var(--slab);color:var(--accent)}
+.bar i{border-radius:0;background:var(--title);height:9px}
+.bar span{font-family:var(--mono)}
+svg polyline{stroke:var(--accent)}svg circle{fill:var(--accent)}
+.prog i{border-radius:0;background:#fff;border:2px solid;border-color:var(--lo) var(--hi) var(--hi) var(--lo);height:14px;width:180px}
+.prog b{background:repeating-linear-gradient(90deg,var(--accent) 0 9px,transparent 9px 11px)}
+.ev{border-radius:0;background:var(--face);border-left:4px solid var(--lo)}
+.ev.kept{border-color:var(--good)}.ev.undone{border-color:var(--bad)}.ev.warning{border-color:var(--warn)}
+.ev.phase{background:var(--ink);color:#fff;border-color:var(--lime);font-family:var(--mono)}
+.ev.section{color:var(--accent);font-weight:600}
+pre{border-radius:0;background:var(--ink);color:#d8ffa0;font:12px/1.45 var(--mono)}
+.drop{border-radius:0;border:2px dashed var(--accent);background:var(--face);color:var(--accent);font-family:var(--mono)}
+.drop.over{background:var(--lime);color:var(--ink);border-color:var(--lime-edge)}
+a{color:var(--accent)}a:hover{background:var(--accent);color:#fff}
+td{border-bottom:1px solid var(--lo)}
 </style>
 </head>
 <body>
