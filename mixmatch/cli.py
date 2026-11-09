@@ -248,8 +248,22 @@ def load_env(path: str = "env.local") -> None:
             os.environ.setdefault(key.strip().removeprefix("export ").strip(), value.strip().strip('"').strip("'"))
 
 
+def _stoppable() -> None:
+    """Ctrl-C and «Stop» end a run in order (Main fader, loop and taps back). A process started in the background
+    by a shell inherits an *ignored* SIGINT, and Python then never raises KeyboardInterrupt: restore it, and treat
+    SIGTERM the same way."""
+    import signal
+
+    def interrupt(signum, frame):
+        raise KeyboardInterrupt
+
+    signal.signal(signal.SIGINT, signal.default_int_handler)
+    signal.signal(signal.SIGTERM, interrupt)
+
+
 def main(argv=None):
     load_env()
+    _stoppable()
     p = argparse.ArgumentParser(prog="mixmatch", description="Mixing agent for Ableton Live")
     sub = p.add_subparsers(dest="cmd", required=True)
     for name, fn in (("run", cmd_run), ("refs", cmd_refs), ("check", cmd_check), ("demo", cmd_demo),

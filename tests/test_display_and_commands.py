@@ -125,3 +125,29 @@ def test_taps_sleep_between_runs_and_can_be_removed():
     assert set_taps_on(live, False) == 0                     # already asleep: nothing to do
     assert set_taps_on(live, True) == 2 and on() == [1.0, 1.0]
     assert remove_taps(live, log=lambda *_: None) == 2 and not taps()
+
+
+def test_a_run_started_with_sigint_ignored_still_stops_in_order(tmp_path):
+    """Background shells start processes with SIGINT ignored; «Stop» must still end a run through its finally."""
+    import signal
+    import subprocess
+    import sys
+    import time
+
+    script = tmp_path / "run.py"
+    marker = tmp_path / "cleaned"
+    script.write_text(
+        "import time, sys\n"
+        "from mixmatch.cli import _stoppable\n"
+        "_stoppable()\n"
+        "try:\n"
+        "    print('ready', flush=True)\n"
+        "    time.sleep(30)\n"
+        "finally:\n"
+        f"    open({str(marker)!r}, 'w').write('ok')\n")
+    proc = subprocess.Popen([sys.executable, str(script)], stdout=subprocess.PIPE, text=True,
+                            preexec_fn=lambda: signal.signal(signal.SIGINT, signal.SIG_IGN))
+    assert proc.stdout.readline().strip() == "ready"
+    proc.send_signal(signal.SIGINT)
+    proc.wait(timeout=10)
+    assert marker.read_text() == "ok"

@@ -89,8 +89,17 @@ class Runner:
             return self.log_path
 
     def stop(self) -> None:
+        """SIGINT, and SIGTERM 15 s later if the run still goes on; both end it in order (see cli._stoppable)."""
         if self.running():
-            self.proc.send_signal(signal.SIGINT)
+            proc = self.proc
+            proc.send_signal(signal.SIGINT)
+
+            def insist():
+                try:
+                    proc.wait(timeout=15)
+                except subprocess.TimeoutExpired:
+                    proc.terminate()
+            threading.Thread(target=insist, daemon=True).start()
 
     def latest_log(self) -> str | None:
         if self.log_path and (self.running() or os.path.basename(self.log_path).startswith("ui-")):
@@ -706,6 +715,7 @@ button.small{padding:2px 8px;font-size:12px}button.danger{background:var(--bad);
   --field:#15121d;--strong:#08070b;--on-strong:#ece8f6;--shadow:#000;--drop:rgba(0,0,0,.45);
   --dis-fg:#5e5672;--dis-edge:#3a3448;--log-fg:#c8f03a;--on-accent:#110f17;--scale-mid:#d8c24f;color-scheme:dark;}
 /* ── retro desktop layer ── */
+[hidden]{display:none !important}
 body{background:var(--bg);color:var(--ink);font:14px/1.5 var(--sans)}
 header{background:var(--panel);border-bottom:3px solid var(--ink);padding:10px 20px;flex-wrap:wrap}
 header h1{font:400 42px/1 var(--display);letter-spacing:.01em;margin:0 8px 0 0;cursor:default;color:var(--ink);transition:color .15s}
@@ -783,7 +793,8 @@ ul.part-why{padding-left:18px}ul.part-why li{margin:2px 0}
 <main>
 <section>
   <h2>Run</h2>
-  <div id="run_idle">
+  <p class="hint" id="run_wait">Asking MARA what it is doing …</p>
+  <div id="run_idle" hidden>
     <button id="cont" class="primary" hidden>Continue</button>
     <button id="start" class="primary">Mix the whole song</button>
     <p class="hint" id="start_hint">Plays the set, listens, and keeps only changes that measurably help.</p>
@@ -972,7 +983,7 @@ async function tick() {
   let s; try { s = await (await fetch("/api/state")).json(); } catch { return; }
   $("status").textContent = s.active ? "running" : (s.done ? "finished" : "ready"); $("status").className = "pill" + (s.active ? " on" : "");
   $("phase").textContent = s.phase || ""; $("start").disabled = s.active;
-  $("run_idle").hidden = s.active; $("run_busy").hidden = !s.active;
+  $("run_wait").hidden = true; $("run_idle").hidden = s.active; $("run_busy").hidden = !s.active;
   const ck = s.checkpoint; $("cont").hidden = !ck;
   if (ck) $("cont").textContent = `Continue at ${ck.next_channel || ck.phase}` + (ck.percent != null ? ` · ${ck.percent}%` : "");
   $("start").textContent = ck ? "Start over" : "Mix the whole song";
