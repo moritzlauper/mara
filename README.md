@@ -186,6 +186,18 @@ library. It also writes a list of real tracks to get, with Bandcamp links
 it. `--jamendo` adds Creative Commons tracks from Jamendo (`JAMENDO_CLIENT_ID`
 in `env.local`, which MixMatch reads by itself).
 
+## Interface
+
+```bash
+mixmatch ui        # opens http://127.0.0.1:8765
+```
+
+Start, stop and resume runs, follow what MixMatch does and why (distance to
+the target and where it comes from, every round kept or undone), see key,
+chords and style of the song, the references used and the ones to get (with
+Spotify and Bandcamp links), which effects were removed or bypassed, and edit
+the channel roles.
+
 ## Development
 
 ```bash
