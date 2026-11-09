@@ -131,14 +131,17 @@ def buy_list(workdir: str) -> list[dict]:
     files = sorted(glob.glob(os.path.join(workdir, "runs", "*-buy.md")))
     if not files:
         return []
-    out = []
+    out, free = [], False
     for line in open(files[-1]):
-        m = re.match(r"- \*\*(.+?)\*\*: (.*?)\s*$", line)
+        if line.startswith("## "):
+            free = line.strip().lower() == "## free"
+        m = re.match(r"- \*\*(.+?)\*\*(?: \((.+?)\))?: (.*?)\s*$", line)
         if m:
-            out.append({"title": m.group(1), "why": m.group(2), "links": {}})
-        for name, url in re.findall(r"\[(Spotify|Bandcamp|Beatport)\]\((\S+?)\)", line):
-            if out:
-                out[-1]["links"][name.lower()] = url
+            out.append({"title": m.group(1), "why": m.group(3), "links": {}, "free": free,
+                        **({"source": m.group(2)} if m.group(2) else {})})
+        for name, url in re.findall(r"\[([^\]]+)\]\((\S+?)\)", line):
+            if out and not m:
+                out[-1]["links"][name] = url
     return out
 
 
@@ -454,8 +457,11 @@ async function tick() {
       if (!j.error) $("msg").textContent = "Moved to the Trash: " + b.dataset.remove; lastRefs = ""; tick();
     });
   }
-  $("to_get").innerHTML = s.to_get.length ? "<ul>" + s.to_get.map(t => `<li><b>${esc(t.title)}</b><br><span class="muted">${esc(t.why)}</span><br>` +
-    Object.entries(t.links).map(([k, u]) => `<a href="${esc(u)}" target="_blank" rel="noopener">${k}</a>`).join(" · ") + "</li>").join("") + "</ul>" : "–";
+  const item = t => `<li><b>${esc(t.title)}</b>${t.source ? ` <span class="pill">${esc(t.source)}</span>` : ""}<br><span class="muted">${esc(t.why)}</span><br>` +
+    Object.entries(t.links).map(([k, u]) => `<a href="${esc(u)}" target="_blank" rel="noopener">${esc(k)}</a>`).join(" · ") + "</li>";
+  const buy = s.to_get.filter(t => !t.free), free = s.to_get.filter(t => t.free);
+  $("to_get").innerHTML = s.to_get.length ? (buy.length ? "<ul>" + buy.map(item).join("") + "</ul>" : "")
+    + (free.length ? "<h2 style='margin-top:12px'>Free (no purchase)</h2><ul>" + free.map(item).join("") + "</ul>" : "") : "–";
   $("effects").innerHTML = s.effects.length ? "<ul>" + s.effects.map(e => `<li>${esc(e)}</li>`).join("") + "</ul>" : "–";
   const log = $("log"), atEnd = log.scrollTop + log.clientHeight >= log.scrollHeight - 5;
   log.textContent = s.log.join("\n"); if (atEnd) log.scrollTop = log.scrollHeight;

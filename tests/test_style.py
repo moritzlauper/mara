@@ -59,3 +59,11 @@ def test_hyperpop_maps_to_an_existing_jamendo_tag():
 
 def test_search_links_include_spotify():
     assert search_links("Burial", "Near Dark")["spotify"] == "https://open.spotify.com/search/Burial%20Near%20Dark"
+
+
+def test_free_links_point_to_the_source():
+    from mixmatch.style import free_links
+
+    assert free_links("Artist", "Song", "NCS")["ncs"] == "https://ncs.io/music-search?q=Song"
+    assert "freemusicarchive.org" in free_links("A", "B", "Free Music Archive")["fma"]
+    assert "bandcamp.com" in free_links("A", "B", "free download by the artist")["bandcamp"]

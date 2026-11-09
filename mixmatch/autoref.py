@@ -116,9 +116,10 @@ def mastered(path: str) -> bool:
 
 
 def buy_list(recording: str, listener: Listener, harmony: dict | None = None, note: str = "",
-             log=print) -> list[dict]:
-    """Claude's suggestions of real tracks to get (Bandcamp often has «name your price»), with search links."""
-    from .style import describe, suggest
+             log=print) -> dict:
+    """Claude's suggestions: tracks to get (Bandcamp often has «name your price») and free, legal ones (NCS,
+    Creative Commons, free downloads), plus real Jamendo tracks in the style when JAMENDO_CLIENT_ID is set."""
+    from .style import describe, styles, suggest
 
     try:
         desc = describe(recording, listener)
@@ -127,16 +128,28 @@ def buy_list(recording: str, listener: Listener, harmony: dict | None = None, no
         result = suggest(desc, note=note)
     except Exception as e:
         log(f"  no suggestions from Claude ({str(e)[:100]})")
-        return []
+        return {"style": "", "buy": [], "free": []}
+    free = list(result.get("free_suggestions", []))
+    client_id = jamendo_client_id()
+    if client_id:
+        tags = list(dict.fromkeys(JAMENDO_TAGS.get(s, "electronic") for s, _ in styles(listener, listener.file(recording), 3)))
+        for t in jamendo_search(tags, client_id, per_tag=2, log=log):
+            free.append({"artist": t["artist"], "title": t["title"], "source": "Jamendo",
+                         "why": f"Creative Commons ({t['license'] or 'see page'}), download allowed; tagged {t['tag']}.",
+                         "links": {"jamendo": t["url"], "download": t["download"]}})
     log(f"  to get (style: {result['style']}):")
     for s in result["suggestions"]:
         log(f"    {s['artist']} – {s['title']}: {s['links']['spotify']}  {s['links']['bandcamp']}")
-    return [{**s, "style": result["style"]} for s in result["suggestions"]]
+    if free:
+        log("  free and legal:")
+        for s in free:
+            log(f"    {s['artist']} – {s['title']} [{s['source']}]: " + "  ".join(v for k, v in s["links"].items() if k != "spotify"))
+    return {"style": result["style"], "buy": result["suggestions"], "free": free}
 
 
 def find(live, start: float, length: float, tempo: float, library: str | None = "~/Music", count: int = 3,
          references: str = "references", jamendo: bool = False, suggest: bool = True,
-         harmony: dict | None = None, note: str = "", log=print) -> tuple[list[dict], list[dict]]:
+         harmony: dict | None = None, note: str = "", log=print) -> tuple[list[dict], dict]:
     """The `count` references that sound closest to the project, as {path, source, artist, title, …}."""
     log("\n━━ Finding references")
     recording = capture(live, start, length, tempo, log)
@@ -195,5 +208,5 @@ def find(live, start: float, length: float, tempo: float, library: str | None = 
         log(f"  ✓ {c['score']:.2f}  {name}  [{c['source']}]{extra}")
     if not picked:
         log("  no mastered song close enough was found in references/ or your library")
-    to_get = buy_list(recording, listener, harmony, note, log) if suggest else []
+    to_get = buy_list(recording, listener, harmony, note, log) if suggest else {"style": "", "buy": [], "free": []}
     return picked, to_get

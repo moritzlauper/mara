@@ -135,6 +135,11 @@ def cmd_suggest_refs(args):
         for s in result["suggestions"]:
             print(f"\n  {s['artist']} – {s['title']}\n    {s['why']}\n    listen: {s['links']['spotify']}\n"
                   f"    get:    {s['links']['bandcamp']}\n            {s['links']['beatport']}")
+        if result.get("free_suggestions"):
+            print("\nFree and legal (no purchase):")
+            for s in result["free_suggestions"]:
+                where = "  ".join(v for k, v in s["links"].items() if k != "spotify")
+                print(f"\n  {s['artist']} – {s['title']}  [{s['source']}]\n    {s['why']}\n    {where}")
     print("\nPut the references you pick (WAV, AIFF, FLAC or MP3) into references/ and run mixmatch run.")
 
 

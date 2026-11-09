@@ -281,6 +281,23 @@ def similar(listener: Listener, emb: np.ndarray, files: list[str], top: int = 10
     return sorted(scored, key=lambda x: -x[1])[:top]
 
 
+def free_links(artist: str, title: str, source: str) -> dict:
+    """Where a free track is: the source's own search, plus Spotify to listen first."""
+    from urllib.parse import quote, quote_plus
+
+    q, both = quote_plus(f"{artist} {title}"), f"{artist} {title}"
+    links = {"spotify": f"https://open.spotify.com/search/{quote(both)}"}
+    if source == "NCS":
+        links["ncs"] = f"https://ncs.io/music-search?q={quote_plus(title)}"
+    elif source == "Free Music Archive":
+        links["fma"] = f"https://freemusicarchive.org/search?adv=1&quicksearch={q}"
+    elif source == "Jamendo":
+        links["jamendo"] = f"https://www.jamendo.com/search?q={q}"
+    else:
+        links["bandcamp"] = f"https://bandcamp.com/search?q={q}"
+    return links
+
+
 def search_links(artist: str, title: str) -> dict:
     from urllib.parse import quote_plus
 
@@ -332,13 +349,26 @@ SUGGEST_SCHEMA = {
                 "additionalProperties": False,
             },
         },
+        "free_suggestions": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {"artist": {"type": "string"}, "title": {"type": "string"},
+                               "source": {"type": "string", "enum": ["NCS", "Free Music Archive", "Jamendo",
+                                                                     "free download by the artist"]},
+                               "why": {"type": "string"}},
+                "required": ["artist", "title", "source", "why"],
+                "additionalProperties": False,
+            },
+        },
     },
-    "required": ["style", "suggestions"],
+    "required": ["style", "suggestions", "free_suggestions"],
     "additionalProperties": False,
 }
 
 SUGGEST_SYSTEM = """You suggest reference tracks for mixing. You get measurements of the user's track: style and mood guesses from an audio model (CLAP; it knows hyperpop and newer styles poorly), key, major or minor and chords, tempo, loudness, dynamics, width and tonal balance, plus the user's own description, which always wins over the audio model.
-Name the style in a few words, then suggest 8 real, released tracks that a producer of this style would mix against: well mixed and mastered, close in style, mood, tempo and energy (a similar key or the same major/minor colour is a plus), ideally available on Bandcamp or Beatport. Only tracks you are sure exist. For each, one short sentence why it fits."""
+Name the style in a few words, then suggest 8 real, released tracks that a producer of this style would mix against: well mixed and mastered, close in style, mood, tempo and energy (a similar key or the same major/minor colour is a plus), ideally available on Bandcamp or Beatport. Only tracks you are sure exist. For each, one short sentence why it fits.
+Then, for producers who do not want to buy, suggest 5 well-produced tracks in the same direction that can be downloaded for free and legally: NoCopyrightSounds (NCS), Creative Commons music on Free Music Archive or Jamendo, or an official free download by the artist (e.g. a free Bandcamp or SoundCloud download). Name the source. Only tracks you are sure exist there; fewer is better than invented ones."""
 
 
 def suggest(desc: dict, note: str = "", model: str = "opus") -> dict:
@@ -357,4 +387,6 @@ def suggest(desc: dict, note: str = "", model: str = "opus") -> dict:
     result = out.get("structured_output") or json.loads(out["result"])
     for s in result["suggestions"]:
         s["links"] = search_links(s["artist"], s["title"])
+    for s in result.get("free_suggestions", []):
+        s["links"] = free_links(s["artist"], s["title"], s["source"])
     return result

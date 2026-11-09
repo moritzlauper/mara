@@ -31,9 +31,15 @@ def test_parse_log():
 def test_buy_list(tmp_path):
     (tmp_path / "runs").mkdir()
     (tmp_path / "runs" / "20261109-1-buy.md").write_text(
-        "# x\n\n- **SOPHIE – Immaterial**: bright.  \n  [Spotify](https://s/1) · [Bandcamp](https://b/1)\n")
-    assert buy_list(str(tmp_path)) == [{"title": "SOPHIE – Immaterial", "why": "bright.",
-                                        "links": {"spotify": "https://s/1", "bandcamp": "https://b/1"}}]
+        "# References (hyperpop)\n\n## To get\n\n- **SOPHIE – Immaterial**: bright.  \n"
+        "  [Spotify](https://s/1) · [Bandcamp](https://b/1)\n\n## Free\n\n"
+        "- **Artist – Free One** (NCS): free and close.  \n  [Spotify](https://s/2) · [NCS](https://n/2)\n")
+    assert buy_list(str(tmp_path)) == [
+        {"title": "SOPHIE – Immaterial", "why": "bright.", "free": False,
+         "links": {"Spotify": "https://s/1", "Bandcamp": "https://b/1"}},
+        {"title": "Artist – Free One", "why": "free and close.", "free": True, "source": "NCS",
+         "links": {"Spotify": "https://s/2", "NCS": "https://n/2"}},
+    ]
 
 
 def test_server_state_and_roles(tmp_path):

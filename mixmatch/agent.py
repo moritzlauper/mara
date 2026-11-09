@@ -64,6 +64,7 @@ class Settings:
     library: str | None = "~/Music"
     jamendo: bool = False         # also try Creative Commons tracks from Jamendo
     audit: bool = True            # complete runs: remove effects that do nothing, bypass ones that harm the mix
+    suggest: bool = True          # complete runs: write references to get and free ones (runs/…-buy.md)
     audit_bars: int = 4           # A/B window per effect
 
 
@@ -329,6 +330,41 @@ class Agent:
         chords = " – ".join(self.harmony["chords"][:8]) + (" …" if len(self.harmony["chords"]) > 8 else "")
         self.log(f"Key: {self.harmony['key']} ({self.harmony['mode']}, from MIDI) · chords: {chords}")
 
+    LINK_NAMES = {"spotify": "Spotify", "bandcamp": "Bandcamp", "beatport": "Beatport", "ncs": "NCS",
+                  "fma": "Free Music Archive", "jamendo": "Jamendo", "download": "Download"}
+
+    def write_suggestions(self, sugg: dict, stamp: str) -> None:
+        """runs/…-buy.md: tracks to get and free ones, with links (the interface shows it too)."""
+        if not sugg or not (sugg.get("buy") or sugg.get("free")):
+            return
+        os.makedirs(self.s.log_dir, exist_ok=True)
+        path = os.path.join(self.s.log_dir, stamp + "-buy.md")
+        links = lambda s: " · ".join(f"[{self.LINK_NAMES.get(k, k)}]({v})" for k, v in s["links"].items())
+        with open(path, "w") as f:
+            f.write(f"# References ({sugg['style']})\n\nPut the WAVs into references/ (or on a «ref» track in "
+                    "Live); the next run uses them.\n\n## To get\n\n")
+            for s in sugg.get("buy", []):
+                f.write(f"- **{s['artist']} – {s['title']}**: {s['why']}  \n  {links(s)}\n")
+            if sugg.get("free"):
+                f.write("\n## Free\n\n")
+                for s in sugg["free"]:
+                    f.write(f"- **{s['artist']} – {s['title']}** ({s['source']}): {s['why']}  \n  {links(s)}\n")
+        self.log(f"  list with links: {path}")
+
+    def suggest_references(self, part: tuple[str, float, float]) -> None:
+        """Without --auto-ref: still records the loudest part once and writes suggestions (to get and free)."""
+        from . import autoref
+        from .style import Listener
+
+        _, start, length = part
+        tempo = self.ex.set_state.get("tempo") or 120
+        self.log("\n━━ Suggesting references")
+        recording = autoref.capture(self.live, start, min(length, 64.0), tempo, self.log)
+        if recording:
+            listener = Listener(log=self.log)
+            self.write_suggestions(autoref.buy_list(recording, listener, self.harmony, log=self.log),
+                                   time.strftime("%Y%m%d-%H%M%S"))
+
     def find_references(self, part: tuple[str, float, float]) -> None:
         """Listens to the loudest part and picks references from the library and Jamendo (see autoref)."""
         from . import autoref
@@ -339,16 +375,7 @@ class Agent:
         picked, to_get = autoref.find(self.live, start, min(length, 64.0), tempo, library=self.s.library,
                                       jamendo=self.s.jamendo, harmony=self.harmony, log=self.log)
         stamp = time.strftime("%Y%m%d-%H%M%S")
-        os.makedirs(self.s.log_dir, exist_ok=True)
-        if to_get:
-            with open(os.path.join(self.s.log_dir, stamp + "-buy.md"), "w") as f:
-                f.write(f"# References to get ({to_get[0]['style']})\n\nPut the WAVs into references/; "
-                        "the next run uses them.\n\n")
-                for s in to_get:
-                    f.write(f"- **{s['artist']} – {s['title']}**: {s['why']}  \n  "
-                            f"[Spotify]({s['links']['spotify']}) · [Bandcamp]({s['links']['bandcamp']}) · "
-                            f"[Beatport]({s['links']['beatport']})\n")
-            self.log(f"  list with links: {os.path.join(self.s.log_dir, stamp + '-buy.md')}")
+        self.write_suggestions(to_get, stamp)
         if not picked:
             return
         paths = [c["path"] for c in picked] + (list(self.refset.paths) if self.refset else [])
@@ -694,6 +721,11 @@ class Agent:
         main = [self.loudest_part(sections, scan)] if self.s.focus == "loud" else sections
         if self.s.auto_ref:
             self.find_references(main[0])
+        elif self.s.complete and self.s.suggest:
+            try:
+                self.suggest_references(main[0])
+            except Exception as e:  # suggestions are a bonus: never stop a run for them
+                self.log(f"  no suggestions ({str(e)[:100]})")
         if self.s.complete and not self.s.resume:
             self.log(f"\n━━ Master against the reference")
         for name, start, length in ([] if self.s.resume else main):
