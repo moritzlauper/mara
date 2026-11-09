@@ -53,7 +53,7 @@ def test_server_state_and_roles(tmp_path):
     threading.Thread(target=server.serve_forever, daemon=True).start()
     base = f"http://127.0.0.1:{server.server_address[1]}"
     try:
-        assert b"<title>MixMatch</title>" in urllib.request.urlopen(base + "/").read()
+        assert b"<title>MARA</title>" in urllib.request.urlopen(base + "/").read()
         state = json.load(urllib.request.urlopen(base + "/api/state"))
         assert state["running"] is False and state["reference_files"] == []
         req = urllib.request.Request(base + "/api/roles", data=json.dumps({"Kick": {"role": "sub", "priority": 4}}).encode(),

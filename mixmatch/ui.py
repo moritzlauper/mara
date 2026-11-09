@@ -495,6 +495,11 @@ def make_handler(runner: Runner, watcher: "DownloadWatcher | None" = None):
                 lines = open(path).readlines() if path and os.path.exists(path) else []
                 history = [l for p in log_chain(path) for l in open(p).readlines()] if lines else []
                 state = parse_log(history)
+                prog = state.get("progress")
+                # A run counts as going on when this interface started it, or when its log reported progress in the
+                # last minutes (started elsewhere, e.g. from the command line or a second window).
+                state["active"] = runner.running() or bool(prog and not state.get("done")
+                                                           and time.time() - prog.get("t", 0) < 300)
                 return self._send(200, {**state, "running": runner.running(), "log": [l.rstrip() for l in lines[-200:]],
                                         "reference_files": references(workdir), "to_get": buy_list(workdir),
                                         "project_references": project_refs.get(), "live": project_refs.reachable,
@@ -647,11 +652,11 @@ PAGE = r"""<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>MixMatch</title>
+<title>MARA</title>
 <link rel="stylesheet" href="/fonts/fonts.css">
 <style>
 :root{
-  /* desktop of an old operating system, in MixMatch's own colours */
+  /* desktop of an old operating system, in MARA's own colours */
   --bg:#b9b2c9;--panel:#dcd7e6;--face:#e9e5f0;--hi:#fbf9ff;--lo:#8d859e;--ink:#1c1824;
   --line:#8d859e;--text:#1c1824;--muted:#5b5469;
   --accent:#6d3fd1;--accent2:#e2479c;--lime:#c8f03a;--lime-edge:#5f7d00;--pink:#ff8cc8;--pink-edge:#c2287c;
@@ -746,7 +751,7 @@ button.link:active{transform:none}
 </style>
 </head>
 <body>
-<header><h1>MixMatch</h1><span id="status" class="pill">idle</span><span id="live" class="pill">Live …</span><span id="phase" class="muted"></span>
+<header><h1 title="Mix And Reference Assistant">MARA</h1><span id="status" class="pill">idle</span><span id="live" class="pill">Live …</span><span id="phase" class="muted"></span>
 <span id="prog" class="prog" hidden><i><b id="prog_bar"></b></i><span id="prog_text" class="muted"></span></span></header>
 <main>
 <section>
@@ -763,7 +768,7 @@ button.link:active{transform:none}
     <span class="hint">It can continue later from where it stopped.</span>
   </div>
   <details class="opts"><summary>Options</summary>
-    <label title="The Main fader goes down while MixMatch works and comes back at the end. It measures before the fader, so the results are the same."><input type="checkbox" id="silent" checked> silent: Main fader down while it works</label>
+    <label title="The Main fader goes down while MARA works and comes back at the end. It measures before the fader, so the results are the same."><input type="checkbox" id="silent" checked> silent: Main fader down while it works</label>
     <label><input type="checkbox" id="refs" checked> use the files in references/</label>
     <label><input type="checkbox" id="auto_ref" checked> look for more references by itself</label>
     <label><input type="checkbox" id="quick"> master only (quick, about 15 min)</label>
@@ -789,7 +794,7 @@ button.link:active{transform:none}
   <div class="row"><button id="save_desc" class="ghost">Save</button><span class="muted">wins over the audio model, used by every run</span></div>
 </section>
 <section class="wide">
-  <h2>What MixMatch does</h2>
+  <h2>What MARA does</h2>
   <div class="events" id="events"></div>
 </section>
 <section>
@@ -862,20 +867,20 @@ function progress(s) {
   el.hidden = false;
   const frac = Math.min(1, p.done / p.total); $("prog_bar").style.width = (frac*100).toFixed(1) + "%";
   let left = "";
-  if (s.running && p0 && p.done > p0.done) {
+  if (s.active && p0 && p.done > p0.done) {
     // seconds per unit from all the time so far, including the time since the last step: waiting raises it
     const rate = (Date.now()/1000 - p0.t) / (p.done - p0.done);
     const m = Math.round(rate * (p.total - p.done) / 60);
     left = m >= 60 ? ` · about ${Math.floor(m/60)} h ${m%60} min left` : ` · about ${Math.max(1, m)} min left`;
-  } else if (s.running) left = " · estimating time …";
-  $("prog_text").textContent = `${Math.round(frac*100)}%${left}` + (s.running && s.section ? ` · ${s.section}` : "");
+  } else if (s.active) left = " · estimating time …";
+  $("prog_text").textContent = `${Math.round(frac*100)}%${left}` + (s.active && s.section ? ` · ${s.section}` : "");
   $("bigprog_bar").style.width = (frac*100).toFixed(1) + "%"; $("bigprog_text").textContent = `${Math.round(frac*100)}%${left}`;
 }
 async function tick() {
   let s; try { s = await (await fetch("/api/state")).json(); } catch { return; }
-  $("status").textContent = s.running ? "running" : (s.done ? "finished" : "idle"); $("status").className = "pill" + (s.running ? " on" : "");
-  $("phase").textContent = s.phase || ""; $("start").disabled = s.running;
-  $("run_idle").hidden = s.running; $("run_busy").hidden = !s.running;
+  $("status").textContent = s.active ? "running" : (s.done ? "finished" : "ready"); $("status").className = "pill" + (s.active ? " on" : "");
+  $("phase").textContent = s.phase || ""; $("start").disabled = s.active;
+  $("run_idle").hidden = s.active; $("run_busy").hidden = !s.active;
   const ck = s.checkpoint; $("cont").hidden = !ck;
   if (ck) $("cont").textContent = `Continue at ${ck.next_channel || ck.phase}` + (ck.percent != null ? ` · ${ck.percent}%` : "");
   $("start").textContent = ck ? "Start over" : "Mix the whole song";
@@ -886,7 +891,7 @@ async function tick() {
   if (s.auto_imported && s.auto_imported.length !== lastImported) {
     if (lastImported >= 0 && s.auto_imported.length) $("msg").textContent = "Picked up from Downloads: " + s.auto_imported.slice(-3).join(", ");
     lastImported = s.auto_imported.length; lastRefs = ""; }
-  for (const w of ["before", "after"]) { const b = $("ab_" + w); b.disabled = s.running || !s.ab_ready;
+  for (const w of ["before", "after"]) { const b = $("ab_" + w); b.disabled = s.active || !s.ab_ready;
     b.className = s.ab === w ? "on" : ""; }
   $("live").textContent = s.live === null ? "Live …" : (s.live ? "Live connected" : "Live busy or closed (exporting?)");
   $("live").className = "pill" + (s.live ? " on" : "");
@@ -926,7 +931,7 @@ async function tick() {
   const buy = s.to_get.filter(t => !t.free), free = s.to_get.filter(t => t.free);
   const getKey = JSON.stringify(s.to_get);
   if (getKey !== lastGet) { lastGet = getKey;
-  $("to_get").innerHTML = s.to_get.length ? (buy.length ? "<div class='muted' style='font-size:12px'>«Buy», download (WAV/FLAC/ZIP): MixMatch picks the file up from Downloads by itself.</div><ul>" + buy.map(item).join("") + "</ul>" : "")
+  $("to_get").innerHTML = s.to_get.length ? (buy.length ? "<div class='muted' style='font-size:12px'>«Buy», download (WAV/FLAC/ZIP): MARA picks the file up from Downloads by itself.</div><ul>" + buy.map(item).join("") + "</ul>" : "")
     + (free.length ? "<h2 style='margin-top:12px'>Free (no purchase)</h2><ul>" + free.map(item).join("") + "</ul>"
       + "<div class='row'><button id='import_dl' class='ghost small'>Import from Downloads</button><span class='muted'>after «Get»: newest audio or ZIP from the last hour</span></div>" : "") : "–";
   document.querySelectorAll("[data-use]").forEach(b => b.onclick = async () => {
