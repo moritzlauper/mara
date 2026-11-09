@@ -20,7 +20,7 @@ from dataclasses import dataclass, field, replace
 import numpy as np
 
 from . import roles as roles_mod
-from .actions import Executor
+from .actions import LIMITER_MAX_GAIN_DB, Executor
 from .analysis import Comparison, compare, masking, objective, stats
 from .bands import CENTRES
 from .display import parse_display
@@ -82,6 +82,7 @@ class Agent:
         self.references: list = []          # reference taps inside the project
         self.refset = references            # ReferenceSet from audio files (preferred)
         self.target = None
+        self.target_no_vocals = None        # used in parts where the vocal channels are silent
         self.beat = False
         self.logfile = None
 
@@ -185,8 +186,15 @@ class Agent:
         gains = self.fader_gains()
         tracks = {k: post_fader(stats(tap.window(start, end)), gains.get(k, 0.0)) for k, tap in self.tap_of.items()}
         if self.target:
-            ref = self.target.stats
-            cmp = compare(master, ref, self.target.loudness, self.target.tolerance, self.target.one_sided) if master else None
+            target = self.target
+            vocals = [k for k, r in self.roles.items() if r.role in VOCAL_ROLES]
+            if not self.beat and vocals and all(tracks.get(k) is None for k in vocals) and self.refset:
+                # No vocals in this part: like a beat, the vocal range only counts where the mix is louder.
+                if self.target_no_vocals is None:
+                    self.target_no_vocals = self.refset.target(True, self.s.loudness_from)
+                target = self.target_no_vocals
+            ref = target.stats
+            cmp = compare(master, ref, target.loudness, target.tolerance, target.one_sided) if master else None
         else:
             taps = self.references
             if self.beat and any("inst" in t.name.lower() for t in taps):
@@ -196,8 +204,16 @@ class Agent:
             cmp = compare(master, ref) if master and ref else None
         masks = self._maskings(tracks)
         penalty = sum(m["severity"] * min(m["priority_a"], m["priority_b"]) / 5 for m in masks[:4])
+        scored = cmp
+        if cmp and cmp.loudness_diff < 0 and self.limiter_at_cap():
+            # The limiter is as far as it may go: the rest of the loudness gap is accepted, not chased with faders.
+            scored = replace(cmp, loudness_diff=0.0)
         return {"master": master, "ref": ref, "tracks": tracks, "cmp": cmp, "masking": masks,
-                "objective": objective(cmp, penalty) if cmp else penalty}
+                "objective": objective(scored, penalty) if scored else penalty}
+
+    def limiter_at_cap(self) -> bool:
+        gain = self.ex.limiter_gain() if self.ex.set_state else None
+        return gain is not None and gain >= LIMITER_MAX_GAIN_DB - 0.05
 
     def fader_gains(self) -> dict[str, float]:
         """dB the mixer adds after each channel's tap: its own fader plus those of the groups it sits in.
@@ -266,6 +282,9 @@ class Agent:
             "reference": m["ref"].summary() if m["ref"] else "no reference (pass --ref files or name tracks «REF …»)",
             "master_vs_reference": {**cmp.summary(), "_tonal_excess": [float(x) for x in cmp.tonal_excess]} if cmp else None,
             "master_devices": device_summary(self.ex.track("m")),
+            "limiter": {"gain_db": self.ex.limiter_gain(), "max_gain_db": LIMITER_MAX_GAIN_DB,
+                        "note": "at its maximum: the remaining loudness gap is accepted and does not count; do not "
+                                "raise faders to chase loudness" if self.limiter_at_cap() else ""},
             "channels": channels,
             "masking": m["masking"][:8],
             "locked": [list(map(str, l)) for l in sorted(self.ex.locks, key=str)],

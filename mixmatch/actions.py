@@ -39,6 +39,7 @@ MAX_STEP = {"volume": 2.0, "eq": 3.0, "limiter": 2.0, "pan": 15.0, "width": 25.0
 EQ_GAIN_LIMIT = 12.0
 VOLUME_CEILING_DB = 6.0
 LIMITER_CEILING_DB = -1.0
+LIMITER_MAX_GAIN_DB = 6.0   # beyond this, limiting starts to flatten and distort the mix
 SHAPES = {"bell": ["bell"], "low_shelf": ["low shelf", "lowshelf"], "high_shelf": ["high shelf", "highshelf"],
           "low_cut": ["low cut 12", "lowcut 12", "low cut", "lowcut", "12 db"], "notch": ["notch"]}
 
@@ -160,6 +161,17 @@ class Executor:
             self.refresh()
 
     # ── actions ─────────────────────────────────────────────────────────────
+    def limiter_gain(self) -> float | None:
+        """Gain of the Limiter on the master in dB, None if there is none."""
+        try:
+            dev = self._device(self.master_key(), "limiter")
+        except KeyError:
+            return None
+        if dev is None:
+            return None
+        p = self._param(self.master_key(), dev, "Gain")
+        return self._db_of(p) if p else None
+
     def _db_of(self, p: dict) -> float:
         v = parse_display(p["display"])
         return -70.0 if v is None or v == -math.inf else v
@@ -243,7 +255,7 @@ class Executor:
         gain = self._param(key, dev, "Gain")
         if gain is None:
             raise KeyError("Limiter has no Gain parameter")
-        target = max(0.0, min(12.0, self._db_of(gain) + _clamp(float(a["delta_db"]), MAX_STEP["limiter"])))
+        target = max(0.0, min(LIMITER_MAX_GAIN_DB, self._db_of(gain) + _clamp(float(a["delta_db"]), MAX_STEP["limiter"])))
         self._set(rr, key, dev, "Gain", target=target)
 
     def _do_param(self, rr, a):

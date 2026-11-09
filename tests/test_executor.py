@@ -71,3 +71,16 @@ def test_live_12_parameter_names():
 
     assert _aliases("3 Resonance A") == ["3 Resonance A", "3 Q A"]
     assert _aliases("Gain") == ["Gain", "Input Gain"]
+
+
+def test_limiter_gain_is_capped():
+    from mixmatch.actions import LIMITER_MAX_GAIN_DB, Executor
+    from mixmatch.sim import demo_project
+
+    song, hub, env, live = demo_project()
+    ex = Executor(live, log=lambda *_: None)
+    ex.refresh()
+    for _ in range(6):
+        ex.apply([{"type": "limiter", "delta_db": 2.0, "reason": "test"}])
+        ex.refresh()
+    assert abs(ex.limiter_gain() - LIMITER_MAX_GAIN_DB) < 0.1

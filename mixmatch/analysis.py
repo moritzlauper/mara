@@ -137,7 +137,7 @@ class Comparison:
             "mix_peak_dbfs": round(self.peak_db, 1),
             "largest_tonal_differences_db": {band_label(i): round(float(self.tonal_excess[i]), 1) for i in worst
                                              if abs(self.tonal_excess[i]) > 0.05},
-            "tonal_diff_db": {band_label(i): round(float(self.tonal_diff[i]), 1) for i in range(0, BAND_COUNT, 2)},
+            "tonal_diff_db": {band_label(i): round(float(self.tonal_diff[i]), 1) for i in TONAL_BANDS[::2]},
         }
 
 

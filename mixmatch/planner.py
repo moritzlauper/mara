@@ -63,6 +63,8 @@ How to work:
 - Fix big problems before details, roughly in this order: gain staging and balance, low-end separation (kick/bass), masking, tonal balance of individual channels, width, compression, master loudness last.
 - Prefer cutting over boosting. Prefer fixing a channel over EQ on the master. Use the master EQ only for small overall tonal moves the channels cannot explain.
 - Small steps: volume at most ±2 dB, EQ at most ±3 dB per round, limiter at most +2 dB. Give 1 to 4 actions per round.
+- The limiter gain is capped at +6 dB (see "limiter"). Loudness beyond that is not a goal: never raise faders just to make the master louder.
+- If the vocal channels are silent in this part, the vocal range 200 Hz–5 kHz only counts where the mix is louder than the target. Do not fill it with instruments.
 - Look at the history: do not repeat a move that was undone; build on moves that helped.
 - Beat mode (see "mode"): the mix is an instrumental and the target comes from the references with their vocals removed. A beat that will get vocals later must leave room in the vocal range; never boost instruments into 1–5 kHz to imitate a vocal.
 - Several references: the target is their average and "largest_tonal_differences_db" already ignores differences within their spread, so only chase what is listed there.
