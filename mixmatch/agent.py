@@ -270,6 +270,7 @@ class Agent:
                 if region is not None:
                     candidates.append((region, key, t["name"], d["name"], cls))
         self.log(f"  listening to {len(candidates)} effects on and off …")
+        self.progress(0.0, "effects", total_add=len(candidates) * self.W_EFFECT - self.W_AUDIT_GUESS)
         bars, self.s.bars = self.s.bars, self.s.audit_bars
         try:
             for region, key, track_name, dev_name, cls in sorted(candidates, key=lambda c: c[0]):
@@ -277,6 +278,7 @@ class Agent:
                     self.log("  time is up")
                     return
                 self.audit_one(region, key, track_name, dev_name, cls)
+                self.progress(self.W_EFFECT, f"effect {dev_name}")
         finally:
             self.s.bars = bars
 
@@ -480,6 +482,7 @@ class Agent:
             region = self.channel_region(r.key, scan, main)
             if region is None:
                 self.log(f"\n▶ {r.name}: silent in the whole song, skipped")
+                self.progress(0.0, r.name, total_add=-self.W_CHANNEL)   # takes no time: out of the estimate
                 continue
             start, length = region
             bar = start / 4 + 1
@@ -487,6 +490,7 @@ class Agent:
             self.play_loop(start, length)
             self.section(f"channel {r.name}", deadline, focus=r.key, max_rounds=self.s.channel_rounds,
                          scoring="balance")
+            self.progress(self.W_CHANNEL, r.name)
 
     # ── 2. measure ──────────────────────────────────────────────────────────
     def measure(self, scoring: str = "full", retries: int = 6) -> dict:
@@ -738,6 +742,15 @@ class Agent:
 
     def _run(self, deadline: float) -> None:
         sections = self.sections()
+        if self.s.complete:
+            channels = len(self.roles)
+            if self.s.resume:
+                names = [r.name for r in sorted(self.roles.values(), key=lambda r: (-r.priority, r.name))]
+                channels -= names.index(self.s.resume) if self.s.resume in names else 0
+            masters = 0 if self.s.resume else (1 if self.s.focus == "loud" else len(sections))
+            self._done, self._total = 0.0, (self.W_PREP + masters * self.W_MASTER + channels * self.W_CHANNEL
+                                            + (self.W_AUDIT_GUESS if self.s.audit else 0) + self.W_FINAL)
+            self.progress(step="harmony and scan")
         self.read_harmony(sections)
         scan = self.scan(sections) if self.s.complete else None
         if scan is not None and not self.beat and self.s.mode == "auto":
@@ -756,6 +769,8 @@ class Agent:
                 self.suggest_references(main[0])
             except Exception as e:  # suggestions are a bonus: never stop a run for them
                 self.log(f"  no suggestions ({str(e)[:100]})")
+        if self.s.complete:
+            self.progress(self.W_PREP, "master" if not self.s.resume else "channels")
         if self.s.complete and not self.s.resume:
             self.log(f"\n━━ Master against the reference")
         for name, start, length in ([] if self.s.resume else main):
@@ -764,6 +779,8 @@ class Agent:
             self.log(f"\n▶ {name}")
             self.play_loop(start, length)
             self.section(name, deadline)
+            if self.s.complete:
+                self.progress(self.W_MASTER, "master")
         if self.s.complete and scan is not None:
             self.channel_pass(scan, main[0] if self.s.focus == "loud" else None, deadline)
             if self.s.audit and self.env.now() < deadline:
@@ -773,6 +790,7 @@ class Agent:
                 self.log(f"\n━━ Final check: master, {name}")
                 self.play_loop(start, length)
                 self.section("final check", deadline, max_rounds=self.s.final_rounds)
+                self.progress(self.W_FINAL, "done")
 
     def explain(self, m: dict) -> None:
         """The distance in plain words and real units, as one «explain» log line (JSON) for the interface."""
@@ -794,6 +812,17 @@ class Agent:
                  for x in m.get("masking", [])[:3]]
         out["masking"] = ", ".join(pairs) if pairs else "no channels covering each other"
         self.log("  explain " + json.dumps(out, ensure_ascii=False))
+
+    # Weights of the steps of a complete run, in «channel» units, for the progress bar and the time left.
+    W_PREP, W_MASTER, W_CHANNEL, W_AUDIT_GUESS, W_EFFECT, W_FINAL = 3.0, 5.0, 1.0, 6.0, 0.4, 3.0
+
+    def progress(self, add: float = 0.0, step: str = "", total_add: float = 0.0) -> None:
+        """One «progress» log line (JSON): units done of the expected total, with the wall clock, so the
+        interface can show how far the run is and estimate the time left."""
+        self._done = getattr(self, "_done", 0.0) + add
+        self._total = max(getattr(self, "_total", 0.0) + total_add, self._done)
+        self.log("  progress " + json.dumps({"done": round(self._done, 2), "total": round(self._total, 2),
+                                             "t": round(time.time(), 1), "step": step}, ensure_ascii=False))
 
     def measure_fine(self, scoring: str, key: str) -> dict:
         """The first measurement of a section, recording the channel (or master) at the same time to find narrow

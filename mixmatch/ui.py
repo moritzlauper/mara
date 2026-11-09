@@ -77,14 +77,50 @@ def _parts(text: str) -> dict:
     return out
 
 
+def phase_label(phase: str | None) -> str:
+    p = (phase or "").lower()
+    return ("final" if p.startswith("final") else "channels" if p.startswith("channel") else
+            "effects" if p.startswith("effects") else "master" if p.startswith("master") else "setup")
+
+
+def log_chain(path: str) -> list[str]:
+    """The log of a run and, if it was resumed, the logs of the runs it continues, oldest first."""
+    logs = sorted(glob.glob(os.path.join(os.path.dirname(path), "ui-*.log")))
+    chain = [path]
+    i = logs.index(path) if path in logs else 0
+    while i > 0 and "━━ Channel pass, resumed at" in open(chain[0]).read():
+        i -= 1
+        chain.insert(0, logs[i])
+    return chain
+
+
 def parse_log(lines: list[str]) -> dict:
     """Phase, current channel, distance history, decisions, song info and effects from a run's log."""
     state = {"phase": None, "section": None, "distance": None, "parts": {}, "history": [], "events": [],
-             "key": None, "style": None, "mood": None, "explain": {}, "effects": [], "references": [], "to_get": [], "done": None}
+             "key": None, "style": None, "mood": None, "explain": {}, "effects": [], "references": [], "to_get": [], "done": None,
+             "history_phase": [], "history_run": [], "progress": None, "progress_start": None}
+    run = 0
+
+    def point(value: float) -> None:
+        state["history"].append(value)
+        state["history_phase"].append(phase_label(state["phase"]))
+        state["history_run"].append(run)
+
     for raw in lines:
         line = raw.rstrip("\n")
         s = line.strip()
-        if s.startswith("━━"):
+        if s.startswith("Taps:"):            # the first lines of every run: a resumed run starts its own log
+            run += 1
+            state["progress"] = state["progress_start"] = state["done"] = None
+        elif s.startswith("progress {"):
+            try:
+                p = json.loads(s[len("progress "):])
+            except ValueError:
+                continue
+            state["progress"] = p
+            if state["progress_start"] is None:
+                state["progress_start"] = p
+        elif s.startswith("━━"):
             state["phase"] = s.strip("━ ").strip()
             state["events"].append({"kind": "phase", "text": state["phase"]})
         elif s.startswith("▶"):
@@ -94,12 +130,12 @@ def parse_log(lines: list[str]) -> dict:
             m = re.match(r"distance ([\d.]+)", s)
             if m:
                 state["distance"], state["parts"] = float(m.group(1)), _parts(s)
-                state["history"].append(state["distance"])
+                point(state["distance"])
         elif s.startswith("✓") and "→" in s:
             m = re.search(r"→ ([\d.]+)", s)
             if m:
                 state["distance"], state["parts"] = float(m.group(1)), _parts(s) or state["parts"]
-                state["history"].append(state["distance"])
+                point(state["distance"])
             state["events"].append({"kind": "kept", "text": s})
         elif s.startswith("↺ undone, no measurable") or s.startswith("= no measurable"):
             state["events"].append({"kind": "neutral", "text": s})
@@ -374,7 +410,8 @@ def make_handler(runner: Runner, watcher: "DownloadWatcher | None" = None):
             if self.path == "/api/state":
                 path = runner.latest_log()
                 lines = open(path).readlines() if path and os.path.exists(path) else []
-                state = parse_log(lines)
+                history = [l for p in log_chain(path) for l in open(p).readlines()] if lines else []
+                state = parse_log(history)
                 return self._send(200, {**state, "running": runner.running(), "log": [l.rstrip() for l in lines[-200:]],
                                         "reference_files": references(workdir), "to_get": buy_list(workdir),
                                         "project_references": project_refs.get(), "live": project_refs.reachable,
@@ -527,14 +564,17 @@ label{display:flex;gap:6px;align-items:center;color:var(--muted)}.row{display:fl
 ul{margin:0;padding-left:18px}li{margin:3px 0}a{color:var(--accent)}table{width:100%;border-collapse:collapse;font-size:13px}
 td{padding:4px 6px;border-bottom:1px solid var(--line)}select,input,textarea{background:var(--bg);color:var(--text);border:1px solid var(--line);border-radius:6px;padding:4px 6px;font:inherit}
 pre{max-height:260px;overflow:auto;font-size:12px;background:var(--bg);padding:10px;border-radius:8px;margin:0;white-space:pre-wrap}
-svg{width:100%;height:90px}
+svg{width:100%;height:90px}.prog{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:12px}
+.prog i{display:block;width:160px;height:7px;border-radius:4px;background:var(--line);overflow:hidden}.prog b{display:block;height:100%;background:var(--accent)}
+.chartlabels{position:relative;height:16px;font-size:11px;color:var(--muted)}.chartlabels span{position:absolute;white-space:nowrap}
 .drop{margin-top:10px;border:1.5px dashed var(--line);border-radius:8px;padding:12px;text-align:center;color:var(--muted);font-size:13px}
 .drop.over{border-color:var(--accent);color:var(--accent)}.reflist li{display:flex;justify-content:space-between;gap:8px;align-items:center}
 button.small{padding:2px 8px;font-size:12px}button.danger{background:var(--bad);color:#fff;border-color:var(--bad)}
 </style>
 </head>
 <body>
-<header><h1>MixMatch</h1><span id="status" class="pill">idle</span><span id="live" class="pill">Live …</span><span id="phase" class="muted"></span></header>
+<header><h1>MixMatch</h1><span id="status" class="pill">idle</span><span id="live" class="pill">Live …</span><span id="phase" class="muted"></span>
+<span id="prog" class="prog" hidden><i><b id="prog_bar"></b></i><span id="prog_text" class="muted"></span></span></header>
 <main>
 <section>
   <h2>Run</h2>
@@ -551,7 +591,7 @@ button.small{padding:2px 8px;font-size:12px}button.danger{background:var(--bad);
   <h2>Distance to target</h2>
   <div class="big" id="distance">–</div><div class="muted" id="section"></div>
   <div class="muted" style="font-size:12px">0 = measures like the reference · lower is better · points, not dB</div>
-  <svg id="chart" viewBox="0 0 300 90" preserveAspectRatio="none"></svg>
+  <svg id="chart" viewBox="0 0 300 90" preserveAspectRatio="none"></svg><div id="chartlabels" class="chartlabels"></div>
   <div class="parts" id="parts"></div>
 </section>
 <section>
@@ -603,11 +643,36 @@ async function loadRoles() {
     await post("/api/roles", roles); $("msg").textContent = "Roles saved; the next run uses them.";
   };
 }
-function chart(values) {
-  if (values.length < 2) { $("chart").innerHTML = ""; return; }
-  const max = Math.max(...values) * 1.05, w = 300, h = 90;
-  const pts = values.map((v, i) => `${(i/(values.length-1))*w},${h - (v/max)*h}`).join(" ");
-  $("chart").innerHTML = `<polyline fill="none" stroke="var(--accent)" stroke-width="2" points="${pts}"/>`;
+function chart(values, phases, runs) {
+  if (values.length < 2) { $("chart").innerHTML = ""; $("chartlabels").innerHTML = ""; return; }
+  phases = phases || []; runs = runs || [];
+  const max = Math.max(...values) * 1.05, w = 300, h = 90, x = i => (i/(values.length-1))*w, y = v => h - (v/max)*h;
+  // one line per phase: master and channels are measured differently, so their numbers are not joined
+  let svg = "", labels = "", from = 0;
+  for (let i = 1; i <= values.length; i++) {
+    if (i < values.length && phases[i] === phases[from] && runs[i] === runs[from]) continue;
+    const seg = values.slice(from, i).map((v, j) => `${x(from + j)},${y(v)}`).join(" ");
+    svg += i - from > 1 ? `<polyline fill="none" stroke="var(--accent)" stroke-width="2" points="${seg}"/>`
+                        : `<circle cx="${x(from)}" cy="${y(values[from])}" r="2" fill="var(--accent)"/>`;
+    if (from > 0) svg += `<line x1="${x(from) - w/(values.length-1)/2}" x2="${x(from) - w/(values.length-1)/2}" y1="0" y2="${h}" stroke="var(--line)" stroke-dasharray="${runs[from] !== runs[from-1] ? "4 3" : "0"}"/>`;
+    if (phases[from] !== phases[from-1] && phases[from])
+      labels += `<span style="left:${(x(from)/w)*100}%">${esc(phases[from])}${runs[from] !== runs[from-1] && from ? " (resumed)" : ""}</span>`;
+    from = i;
+  }
+  $("chart").innerHTML = svg; $("chartlabels").innerHTML = labels;
+}
+function progress(s) {
+  const p = s.progress, p0 = s.progress_start, el = $("prog");
+  if (!p || !p.total) { el.hidden = true; return; }
+  el.hidden = false;
+  const frac = Math.min(1, p.done / p.total); $("prog_bar").style.width = (frac*100).toFixed(1) + "%";
+  let left = "";
+  if (s.running && p0 && p.done > p0.done) {
+    const rate = (p.t - p0.t) / (p.done - p0.done), since = Math.max(0, Date.now()/1000 - p.t);
+    const secs = Math.max(0, rate * (p.total - p.done) - since), m = Math.round(secs / 60);
+    left = m >= 60 ? ` · about ${Math.floor(m/60)} h ${m%60} min left` : ` · about ${Math.max(1, m)} min left`;
+  } else if (s.running) left = " · estimating time …";
+  $("prog_text").textContent = `${Math.round(frac*100)}%${left}` + (s.running && p.step ? ` · next: ${p.step}` : "");
 }
 async function tick() {
   let s; try { s = await (await fetch("/api/state")).json(); } catch { return; }
@@ -621,7 +686,7 @@ async function tick() {
   $("live").textContent = s.live === null ? "Live …" : (s.live ? "Live connected" : "Live busy or closed (exporting?)");
   $("live").className = "pill" + (s.live ? " on" : "");
   $("distance").textContent = s.distance != null ? s.distance.toFixed(2) : "–"; $("section").textContent = s.section || "";
-  chart(s.history);
+  chart(s.history, s.history_phase, s.history_run); progress(s);
   const parts = Object.entries(s.parts || {}); const top = Math.max(1, ...parts.map(p => p[1]));
   const ex = s.explain || {};
   $("parts").innerHTML = parts.map(([k, v]) => `<div class="bar"><span>${esc(k)}</span><i style="width:${(v/top)*100}%"></i><span>${v.toFixed(2)}</span></div>` +

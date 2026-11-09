@@ -158,3 +158,20 @@ def test_download_watcher_takes_only_finished_matching_downloads(tmp_path):
     assert sorted(added) == ["Charli XCX - Album - 03 Unlock It.flac", "SOPHIE - Immaterial.wav"]
     assert sorted(os.listdir(tmp_path / "references")) == sorted(added)
     assert w.scan(sugg) == []                        # never twice
+
+
+def test_a_resumed_run_shows_the_whole_history_and_its_progress(tmp_path):
+    from mixmatch.ui import log_chain
+    first = tmp_path / "ui-20260101-100000.log"
+    first.write_text("Taps: 3 channels\n━━ Master against the reference\n  distance 6.0   (tonal 6.0)\n"
+                     "    ✓ 6.0 → 4.0   (tonal 4.0)\n━━ Channel pass: 3 channels\n  distance 2.5   (masking 2.5)\n")
+    second = tmp_path / "ui-20260101-110000.log"
+    second.write_text("Taps: 3 channels\n  progress {\"done\": 0, \"total\": 10, \"t\": 100.0, \"step\": \"x\"}\n"
+                      "━━ Channel pass, resumed at B: 2 channels left\n  distance 2.4   (masking 2.4)\n"
+                      "  progress {\"done\": 4, \"total\": 10, \"t\": 220.0, \"step\": \"B\"}\n")
+    chain = log_chain(str(second))
+    assert chain == [str(first), str(second)]
+    s = parse_log([l for p in chain for l in open(p)])
+    assert s["history"] == [6.0, 4.0, 2.5, 2.4]
+    assert s["history_phase"] == ["master", "master", "channels", "channels"] and s["history_run"] == [1, 1, 1, 2]
+    assert s["progress"]["done"] == 4 and s["progress_start"]["t"] == 100.0
