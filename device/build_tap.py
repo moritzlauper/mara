@@ -35,6 +35,15 @@ def box(text, x, y, ins, outs, w=None):
     return oid
 
 
+def label(text, x, y, w, size=11.0, bold=False):
+    """A comment that only shows in the device view (presentation mode)."""
+    boxes.append({"box": {
+        "id": "obj-%d" % (len(boxes) + 1), "maxclass": "comment", "text": text,
+        "numinlets": 1, "numoutlets": 0, "fontsize": size, "fontface": 1 if bold else 0,
+        "patching_rect": [x, y, w, 20], "presentation": 1, "presentation_rect": [8, y, w, 20],
+    }})
+
+
 def wire(src, out, dst, inp):
     lines.append({"patchline": {"source": [src, out], "destination": [dst, inp]}})
 
@@ -101,6 +110,10 @@ def build():
     measured((plugin, 0), "peak", 3, 440)
     measured((plugin, 1), "peak", 4, 580)
 
+    # The device view in Live: narrow, just a name. Live's own meters beside it show the level.
+    label("MixMatch", 1100, 30, 84, size=12.0, bold=True)
+    label("measuring", 1100, 54, 84)
+
     bank = box("fffb~ %d %g %g %g" % (BAND_COUNT, BASE_HZ, RATIO, Q), 140, 180, 1, BAND_COUNT, w=900)
     wire(mid, 0, bank, 0)
     for i in range(BAND_COUNT):
@@ -111,7 +124,8 @@ def build():
         "appversion": {"major": 8, "minor": 6, "revision": 0, "architecture": "x64", "modernui": 1},
         "classnamespace": "box",
         "rect": [100, 100, 1400, 700],
-        "openinpresentation": 0,
+        "openinpresentation": 1,
+        "devicewidth": 100.0,
         "default_fontsize": 10.0,
         "boxes": boxes,
         "lines": lines,
