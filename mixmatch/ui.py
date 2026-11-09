@@ -41,7 +41,9 @@ class Runner:
             if self.running():
                 raise RuntimeError("a run is already going on")
             os.makedirs(os.path.join(self.workdir, "runs"), exist_ok=True)
-            self.log_path = os.path.join(self.workdir, "runs", time.strftime("ui-%Y%m%d-%H%M%S.log"))
+            # Only runs are «ui-…» logs: the run view, its history and resumed runs are read from them.
+            prefix = "ui-" if args[:1] == ["run"] else f"tool-{args[0]}-"
+            self.log_path = os.path.join(self.workdir, "runs", time.strftime(prefix + "%Y%m%d-%H%M%S.log"))
             log = open(self.log_path, "w")
             env = {**os.environ, "PYTHONUNBUFFERED": "1"}
             self.proc = subprocess.Popen([sys.executable, "-m", "mixmatch.cli", *args], cwd=self.workdir,
@@ -53,8 +55,8 @@ class Runner:
             self.proc.send_signal(signal.SIGINT)
 
     def latest_log(self) -> str | None:
-        if self.log_path:
-            return self.log_path
+        if self.log_path and (self.running() or os.path.basename(self.log_path).startswith("ui-")):
+            return self.log_path   # a tool (installing taps) is shown while it works, then the last run again
         logs = sorted(glob.glob(os.path.join(self.workdir, "runs", "ui-*.log")))
         return logs[-1] if logs else None
 
