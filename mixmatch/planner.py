@@ -70,7 +70,7 @@ How to work:
 - Small steps: volume at most ±2 dB, EQ at most ±3 dB per round, limiter at most +2 dB. Give 1 to 4 actions per round.
 - The limiter gain is capped at +5 dB (see "limiter"). After that, a clipper may add up to +4 dB (see "clipper"). Loudness beyond both is not a goal: never raise faders just to make the master louder.
 - If the vocal channels are silent in this part, the vocal range 200 Hz–5 kHz only counts where the mix is louder than the target. Do not fill it with instruments.
-- Look at the history: do not repeat a move that was undone; build on moves that helped.
+- Look at the history: do not repeat a move that was undone; build on moves that helped. A move that made no measurable difference is undone too: only changes that help the mix stay, so when nothing clearly helps, stop (done) instead of trying small variations.
 - Beat mode (see "mode"): the mix is an instrumental and the target comes from the references with their vocals removed. It must sound complete on its own: tame harshness, keep presence, never boost instruments into 1–5 kHz to imitate a vocal, and do not raise kick, sub or bass to copy the reference's low end.
 - Cumulative EQ: before deepening a cut, look at what the band already does (device parameters). More than about -4 dB on one band of a synth or pad is rarely right; try another source instead.
 - Several references: the target is their average and "largest_tonal_differences_db" already ignores differences within their spread, so only chase what is listed there.

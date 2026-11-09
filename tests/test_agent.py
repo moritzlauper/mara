@@ -324,3 +324,25 @@ def test_fallback_planner_switches_to_the_api_at_a_usage_limit():
     assert code.calls == 1 and any("continuing with the API" in l for l in logs)      # switched once, for good
     with pytest.raises(RuntimeError):                                                    # other errors still stop
         FallbackPlanner(Code("Not logged in"), Api(), log=lambda *_: None).plan({})
+
+
+class TinyPlanner:
+    """Always proposes a change too small to measure."""
+
+    def plan(self, ctx):
+        return {"assessment": "nudge", "done": False, "actions": [
+            {"type": "volume", "track": "t5", "delta_db": 0.01, "reason": "tiny nudge"}]}
+
+
+def test_a_round_without_measurable_effect_is_undone():
+    song, hub, env, live = demo_project()
+    env.wait(5)
+    logs = []
+    agent = Agent(live, hub, TinyPlanner(), Settings(minutes=1, settle=1.0, fine=False), env=env, log=logs.append)
+    agent.understand()
+    before = live.get_set()
+    vol = lambda s: next(p["value"] for t in s["tracks"] if t["key"] == "t5" for p in t["mixer"] if p["name"] == "Volume")
+    agent.section("test", env.now() + 600, max_rounds=1)
+    assert agent.history and agent.history[-1].undone
+    assert any("undone, no measurable change" in l for l in logs)
+    assert abs(vol(live.get_set()) - vol(before)) < 1e-9

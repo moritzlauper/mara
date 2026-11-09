@@ -101,10 +101,10 @@ def parse_log(lines: list[str]) -> dict:
                 state["distance"], state["parts"] = float(m.group(1)), _parts(s) or state["parts"]
                 state["history"].append(state["distance"])
             state["events"].append({"kind": "kept", "text": s})
+        elif s.startswith("↺ undone, no measurable") or s.startswith("= no measurable"):
+            state["events"].append({"kind": "neutral", "text": s})
         elif s.startswith("↺"):
             state["events"].append({"kind": "undone", "text": s})
-        elif s.startswith("= no measurable"):
-            state["events"].append({"kind": "neutral", "text": s})
         elif s.startswith("round "):
             state["events"].append({"kind": "round", "text": s})
         elif s.startswith("·"):

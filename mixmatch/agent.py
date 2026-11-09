@@ -870,9 +870,11 @@ class Agent:
                 m = self.measure(scoring)
                 best = min(best, m["objective"])
                 stall += 1
-            else:  # no measurable effect: keep it, but it does not count as progress
-                self.log(f"    = no measurable change ({after['objective']:.2f})")
-                m = after
+            else:  # no measurable effect: undo it too, only changes that help the mix stay
+                self.ex.undo(rr)
+                rnd.undone = True
+                self.log(f"    ↺ undone, no measurable change ({after['objective']:.2f})")
+                self.env.wait(self.s.settle)
                 stall += 1
             self._record(rnd)
             if plan.get("done") or stall >= self.s.stall_rounds:
