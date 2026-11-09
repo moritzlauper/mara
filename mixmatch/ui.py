@@ -640,13 +640,35 @@ def make_handler(runner: Runner, watcher: "DownloadWatcher | None" = None):
     return Handler
 
 
+def _already_running(url: str) -> bool:
+    import urllib.request
+
+    try:
+        with urllib.request.urlopen(url + "/api/state", timeout=3) as r:
+            return r.status == 200
+    except Exception:
+        return False
+
+
 def serve(workdir: str = ".", port: int = PORT, open_browser: bool = True) -> None:
+    import errno
+
     runner = Runner(os.path.abspath(workdir))
-    watcher = DownloadWatcher(runner.workdir)
-    watcher.run()
-    server = ThreadingHTTPServer(("127.0.0.1", port), make_handler(runner, watcher))
     url = f"http://127.0.0.1:{port}"
-    print(f"MixMatch interface: {url}  (Ctrl+C to quit)")
+    watcher = DownloadWatcher(runner.workdir)
+    try:
+        server = ThreadingHTTPServer(("127.0.0.1", port), make_handler(runner, watcher))
+    except OSError as e:
+        if e.errno != errno.EADDRINUSE:
+            raise
+        if _already_running(url):   # a second start: show the one that runs (it may be carrying a run)
+            print(f"MARA is already running: {url}")
+            if open_browser:
+                webbrowser.open(url)
+            return
+        sys.exit(f"Port {port} is used by another program. Start MARA on another one: mixmatch ui --port {port + 1}")
+    watcher.run()
+    print(f"MARA: {url}  (Ctrl+C to quit)")
     if open_browser:
         threading.Timer(0.5, lambda: webbrowser.open(url)).start()
     try:
