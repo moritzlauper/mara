@@ -95,6 +95,7 @@ your beat with the references **without their vocals**:
    python3 -m venv .venv && source .venv/bin/activate
    pip install -e ".[stems]"          # without [stems] if you never mix beats
    export ANTHROPIC_API_KEY=sk-ant-…  # without a key a rule-based planner is used
+   # Planner model: Claude Haiku 5.5 by default; MIXMATCH_MODEL=claude-opus-5-5 for another one
    ```
 
 2. **Remote script**: copy `remote_script/MixMatch` to

@@ -77,6 +77,17 @@ def test_claude_planner_request_and_loop(monkeypatch):
     assert history and history[0].applied
 
 
+def test_haiku_is_the_default_and_gets_no_fallback():
+    from mixmatch.planner import MODEL
+
+    assert MODEL == "claude-haiku-5-5"
+    planner = ClaudePlanner.__new__(ClaudePlanner)
+    planner.client, planner.model, planner.effort = FakeClaude(), MODEL, "medium"
+    run_demo(planner, minutes=1)
+    call = planner.client.calls[0]
+    assert call["model"] == "claude-haiku-5-5" and "fallbacks" not in call and "betas" not in call
+
+
 def test_loudest_window_finds_the_drop():
     from mixmatch.agent import loudest_window
     from mixmatch.taps import Frame

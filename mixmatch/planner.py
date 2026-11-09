@@ -15,7 +15,9 @@ import numpy as np
 from .analysis import TONAL_BANDS, band_label
 from .bands import CENTRES
 
-MODEL = os.environ.get("MIXMATCH_MODEL", "claude-opus-5-5")
+MODEL = os.environ.get("MIXMATCH_MODEL", "claude-haiku-5-5")
+# Models that accept the server-side refusal fallback; Haiku 5.5 has none and rejects the parameter.
+FALLBACK_MODELS = {"claude-fable-5-1", "claude-opus-5-5", "claude-opus-5", "claude-sonnet-5-5"}
 
 ACTION_SCHEMA = {
     "type": "object",
@@ -104,15 +106,18 @@ class ClaudePlanner:
         self.effort = effort
 
     def plan(self, context: dict) -> dict:
-        response = self.client.beta.messages.create(
+        request = dict(
             model=self.model,
             max_tokens=16000,
-            betas=["server-side-fallback-2026-07-01"],
-            fallbacks="default",
             system=SYSTEM,
             output_config={"effort": self.effort, "format": {"type": "json_schema", "schema": ACTION_SCHEMA}},
             messages=[{"role": "user", "content": json.dumps(context, ensure_ascii=False)}],
         )
+        if self.model in FALLBACK_MODELS:
+            response = self.client.beta.messages.create(
+                betas=["server-side-fallback-2026-07-01"], fallbacks="default", **request)
+        else:
+            response = self.client.messages.create(**request)
         if response.stop_reason == "refusal":
             return {"assessment": "Claude declined this round.", "done": False, "actions": []}
         text = next(b.text for b in response.content if b.type == "text")
