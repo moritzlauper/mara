@@ -163,6 +163,21 @@ def safe_reference(workdir: str, name: str) -> str:
     return os.path.join(workdir, "references", base)
 
 
+def project_references() -> list[dict]:
+    """Reference tracks inside the open Live set (read-only, quick); empty when Live is not reachable."""
+    try:
+        from .live_client import LiveClient
+
+        live = LiveClient(timeout=1.5).connect()
+        try:
+            return [{"track": c["track"], "file": os.path.basename(c["file"])}
+                    for c in live.request("reference_clips")["clips"]]
+        finally:
+            live.close()
+    except Exception:
+        return []
+
+
 def references(workdir: str) -> list[str]:
     folder = os.path.join(workdir, "references")
     if not os.path.isdir(folder):
@@ -171,8 +186,21 @@ def references(workdir: str) -> list[str]:
 
 
 # ── HTTP ────────────────────────────────────────────────────────────────────
+class _Cached:
+    """Asks Live at most every few seconds (the page polls more often)."""
+
+    def __init__(self, fn, seconds: float = 4.0):
+        self.fn, self.seconds, self.at, self.value = fn, seconds, 0.0, []
+
+    def get(self):
+        if time.time() - self.at > self.seconds:
+            self.value, self.at = self.fn(), time.time()
+        return self.value
+
+
 def make_handler(runner: Runner):
     workdir = runner.workdir
+    project_refs = _Cached(project_references)
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *_):
@@ -198,7 +226,8 @@ def make_handler(runner: Runner):
                 lines = open(path).readlines() if path and os.path.exists(path) else []
                 state = parse_log(lines)
                 return self._send(200, {**state, "running": runner.running(), "log": [l.rstrip() for l in lines[-200:]],
-                                        "reference_files": references(workdir), "to_get": buy_list(workdir)})
+                                        "reference_files": references(workdir), "to_get": buy_list(workdir),
+                                        "project_references": project_refs.get()})
             if self.path == "/api/roles":
                 path = os.path.join(workdir, "roles.json")
                 return self._send(200, json.load(open(path)) if os.path.exists(path) else {})
@@ -238,6 +267,8 @@ def make_handler(runner: Runner):
                         args += ["--ref", "references/"]
                     if body.get("auto_ref"):
                         args += ["--auto-ref"]
+                    elif not body.get("refs"):
+                        args += ["--no-auto-ref"]   # only the project's reference tracks
                     if body.get("quick"):
                         args += ["--quick"]
                     if body.get("no_audit"):
@@ -394,9 +425,11 @@ async function tick() {
   $("parts").innerHTML = parts.map(([k, v]) => `<div class="bar"><span>${esc(k)}</span><i style="width:${(v/top)*100}%"></i><span>${v.toFixed(2)}</span></div>`).join("");
   $("song").innerHTML = [s.key && `<div><b>${esc(s.key)}</b></div>`, s.style && `<div class="muted">sounds like ${esc(s.style)}</div>`].filter(Boolean).join("") || "No run yet.";
   $("events").innerHTML = s.events.slice().reverse().map(e => `<div class="ev ${e.kind}">${esc(e.text)}</div>`).join("");
-  const refsKey = JSON.stringify(s.reference_files) + s.references.length;
+  const refsKey = JSON.stringify(s.reference_files) + JSON.stringify(s.project_references) + s.references.length;
   if (refsKey !== lastRefs) { lastRefs = refsKey;
-    $("refs_used").innerHTML = (s.reference_files.length ? "<ul class='reflist'>" + s.reference_files.map(f =>
+    $("refs_used").innerHTML = (s.project_references.length ? "<div class='muted'>in the Live set (always used):</div><ul>" +
+      s.project_references.map(r => `<li><b>${esc(r.track)}</b>: ${esc(r.file)}</li>`).join("") + "</ul><div class='muted'>in references/:</div>" : "")
+      + (s.reference_files.length ? "<ul class='reflist'>" + s.reference_files.map(f =>
       `<li><span>${esc(f)}</span><button class="ghost small" data-remove="${esc(f)}">remove</button></li>`).join("") + "</ul>"
       : "<span class='muted'>references/ is empty</span>")
       + (s.references.length ? "<div class='muted' style='margin-top:6px'>picked: " + s.references.map(esc).join("<br>") + "</div>" : "");

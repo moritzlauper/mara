@@ -158,7 +158,8 @@ def cmd_run(args):
         Agent(live, hub, planner, Settings(minutes=args.minutes, assist=args.assist, roles_file=args.roles,
                                            mode=args.mode, loudness_from=args.loudness_from,
                                            focus=args.focus, focus_bars=args.focus_bars, complete=not args.quick, resume=args.resume,
-                                           auto_ref=args.auto_ref or not args.ref, library=args.library or None,
+                                           auto_ref=args.auto_ref or (not args.ref and not args.no_auto_ref),
+                                           library=args.library or None,
                                            jamendo=args.jamendo, audit=not args.no_audit),
               references=refset).run()
     finally:
@@ -215,6 +216,8 @@ def main(argv=None):
                                     help="continue a stopped run: channel pass from this track on, then the final check")
     sub.choices["run"].add_argument("--auto-ref", action="store_true",
                                     help="find references by listening to the project (default when no --ref is given)")
+    sub.choices["run"].add_argument("--no-auto-ref", action="store_true",
+                                    help="do not look for references: only --ref and the project's reference tracks")
     sub.choices["run"].add_argument("--library", default="~/Music",
                                     help="folder searched for references with --auto-ref (empty to skip)")
     sub.choices["run"].add_argument("--no-audit", action="store_true",
