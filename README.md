@@ -99,8 +99,10 @@ your beat with the references **without their vocals**:
    git clone <this repo> && cd mixmatch
    python3 -m venv .venv && source .venv/bin/activate
    pip install -e ".[stems]"          # without [stems] if you never mix beats
-   export ANTHROPIC_API_KEY=sk-ant-…  # without a key a rule-based planner is used
-   # Planner model: Claude Haiku 5.5 by default; MIXMATCH_MODEL=claude-opus-5-5 for another one
+   # Planner: with Claude Code installed and logged in, MixMatch plans through it on your
+   # subscription (Opus for the master, Haiku for the channels). Otherwise it uses an API key:
+   export ANTHROPIC_API_KEY=sk-ant-…  # Claude Haiku 5.5; MIXMATCH_MODEL for another model
+   # Without either, a rule-based planner is used. Choose with --planner auto|claude-code|api|rules.
    ```
 
 2. **Remote script**: copy `remote_script/MixMatch` to

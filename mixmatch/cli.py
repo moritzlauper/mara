@@ -1,6 +1,6 @@
 """Command line.
 
-    mixmatch run --ref a.wav --ref b.mp3 [--mode beat] [--focus loud] [--minutes 10] [--assist] [--rules]
+    mixmatch run --ref a.wav --ref b.mp3 [--mode beat] [--planner auto|claude-code|api|rules] [--minutes 10] [--assist]
     mixmatch refs a.wav b.mp3 [--mode beat]        analyse references (and split vocals) ahead of time
     mixmatch taps                                   put the «MixMatch Tap» on every channel and the master
     mixmatch check                                  connection, taps, roles
@@ -112,8 +112,8 @@ def cmd_check(args):
 
 def cmd_run(args):
     live, hub = _connect()
-    planner = RulePlanner() if args.rules else make_planner()
-    print(f"Planner: {'Claude (' + planner.model + ')' if isinstance(planner, ClaudePlanner) else 'rules (no ANTHROPIC_API_KEY or --rules)'}")
+    planner = make_planner("rules" if args.rules else args.planner)
+    print(f"Planner: {getattr(planner, 'model', None) or 'rules (no Claude Code, no ANTHROPIC_API_KEY, or --rules)'}")
     refset = _refset(args)
     live.transport(play=True)
     try:
@@ -166,6 +166,8 @@ def main(argv=None):
                                     help="loud: find the loudest part of the song once and work only there, "
                                          "like the references are measured at their loudest part")
     sub.choices["run"].add_argument("--focus-bars", type=int, default=16, help="length of the loudest part in bars")
+    sub.choices["run"].add_argument("--planner", choices=["auto", "claude-code", "api", "rules"], default="auto",
+                                    help="auto: local Claude Code on your subscription if installed, else the API key")
     sub.choices["run"].add_argument("--rules", action="store_true", help="rule-based planner instead of Claude")
     sub.choices["demo"].add_argument("--claude", action="store_true", help="use Claude in the simulator too")
     args = p.parse_args(argv)

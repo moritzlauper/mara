@@ -230,3 +230,41 @@ def test_a_silent_master_stops_the_run_instead_of_looking_perfect(tmp_path, monk
     agent.run()
     assert any("master stayed silent" in l for l in logs)
     assert not any(h.after == 0 for h in agent.history)
+
+
+def test_claude_code_planner_uses_the_subscription_and_picks_the_model(monkeypatch):
+    import subprocess
+
+    from mixmatch.planner import ACTION_SCHEMA, ClaudeCodePlanner
+
+    calls = []
+
+    def fake_run(cmd, **kw):
+        calls.append((cmd, kw))
+        out = {"is_error": False, "structured_output": {"assessment": "ok", "done": True, "actions": []}}
+        return subprocess.CompletedProcess(cmd, 0, json.dumps(out), "")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    p = ClaudeCodePlanner(binary="claude")
+    assert p.plan({"objective": 1.0}) == {"assessment": "ok", "done": True, "actions": []}
+    assert p.plan({"objective": 1.0, "task": "Channel pass on t1"})["done"]
+    (master_cmd, kw), (channel_cmd, _) = calls
+    assert master_cmd[master_cmd.index("--model") + 1] == "opus"
+    assert channel_cmd[channel_cmd.index("--model") + 1] == "haiku"
+    assert "ANTHROPIC_API_KEY" not in kw["env"]                     # the subscription, not the API key
+    assert master_cmd[master_cmd.index("--tools") + 1] == "" and "--setting-sources" in master_cmd
+    assert json.loads(master_cmd[master_cmd.index("--json-schema") + 1]) == ACTION_SCHEMA
+
+
+def test_claude_code_planner_reports_a_missing_login(monkeypatch):
+    import subprocess
+
+    import pytest
+
+    from mixmatch.planner import ClaudeCodePlanner
+
+    out = json.dumps({"is_error": True, "result": "Not logged in · Please run /login"})
+    monkeypatch.setattr(subprocess, "run", lambda cmd, **kw: subprocess.CompletedProcess(cmd, 0, out, ""))
+    with pytest.raises(RuntimeError, match="Not logged in"):
+        ClaudeCodePlanner(binary="claude").plan({"objective": 1.0})

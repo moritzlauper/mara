@@ -9,6 +9,9 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
+import subprocess
+import tempfile
 
 import numpy as np
 
@@ -159,7 +162,66 @@ class RulePlanner:
         return {"assessment": " ".join(notes) or "Rule-based round.", "done": not actions, "actions": actions}
 
 
-def make_planner(prefer_claude: bool = True):
-    if prefer_claude and os.environ.get("ANTHROPIC_API_KEY"):
+class ClaudeCodePlanner:
+    """Plans through the local Claude Code (`claude -p`), on the user's subscription instead of an API key.
+
+    The few, consequential master decisions go to `master_model` (Opus), the many channel-pass rounds to
+    `channel_model` (Haiku). Claude Code runs without tools, MCP servers or the user's settings and CLAUDE.md,
+    so a request carries only MixMatch's own prompt.
+    """
+
+    def __init__(self, master_model: str = "opus", channel_model: str = "haiku", binary: str = "claude",
+                 timeout: float = 600, retries: int = 2):
+        self.binary = shutil.which(binary) or binary
+        self.master_model, self.channel_model = master_model, channel_model
+        self.model = f"Claude Code: {master_model} for the master, {channel_model} for channels"
+        self.timeout, self.retries = timeout, retries
+
+    def command(self, context: dict) -> tuple[list[str], str]:
+        model = self.channel_model if "task" in context else self.master_model
+        cmd = [self.binary, "-p", json.dumps(context, ensure_ascii=False), "--model", model,
+               "--output-format", "json", "--no-session-persistence", "--strict-mcp-config", "--tools", "",
+               "--setting-sources", "", "--exclude-dynamic-system-prompt-sections",
+               "--system-prompt", SYSTEM, "--json-schema", json.dumps(ACTION_SCHEMA)]
+        return cmd, model
+
+    def plan(self, context: dict) -> dict:
+        cmd, model = self.command(context)
+        # Without these, Claude Code would bill an API key instead of the subscription.
+        env = {k: v for k, v in os.environ.items() if k not in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN")}
+        error = ""
+        for _ in range(self.retries + 1):
+            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=self.timeout, env=env,
+                                  cwd=tempfile.gettempdir())
+            try:
+                out = json.loads(proc.stdout)
+            except json.JSONDecodeError:
+                error = (proc.stderr or proc.stdout).strip()[:300] or f"exit code {proc.returncode}"
+                continue
+            if out.get("is_error"):
+                error = str(out.get("result"))[:300]
+                if "log" in error.lower() and "in" in error.lower():   # «Not logged in»: retrying will not help
+                    break
+                continue
+            plan = out.get("structured_output")
+            if plan is None and out.get("result"):
+                plan = json.loads(out["result"])
+            if plan is not None:
+                return plan
+            error = "no structured output"
+        raise RuntimeError(f"claude -p ({model}): {error}")
+
+
+def make_planner(kind: str = "auto"):
+    """auto: the local Claude Code if installed (subscription), else the API with ANTHROPIC_API_KEY, else rules."""
+    if kind == "rules":
+        return RulePlanner()
+    if kind in ("auto", "claude-code") and shutil.which("claude"):
+        return ClaudeCodePlanner()
+    if kind == "claude-code":
+        raise SystemExit("Claude Code (the claude command) is not installed or not on the PATH.")
+    if kind in ("auto", "api") and os.environ.get("ANTHROPIC_API_KEY"):
         return ClaudePlanner()
+    if kind == "api":
+        raise SystemExit("--planner api needs ANTHROPIC_API_KEY.")
     return RulePlanner()
