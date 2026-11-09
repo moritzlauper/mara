@@ -147,6 +147,7 @@ class Commands:
                         "index": i,
                         "name": d.name,
                         "class_name": getattr(d, "class_name", d.name),
+                        "type": int(getattr(d, "type", 0)),  # 1 instrument, 2 audio effect, 4 MIDI effect
                         "params": [_param_info(j, p) for j, p in enumerate(d.parameters)],
                     }
                     for i, d in enumerate(t.devices)

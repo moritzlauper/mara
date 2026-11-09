@@ -215,3 +215,28 @@ def test_send_starts_from_off_and_never_passes_0_db():
     assert not rr.skipped, rr.skipped
     assert abs(rr.changes[0].new["value"] - song.tracks[0].mixer_device.sends[0].value) < 1e-9
     assert -28.5 < float(rr.changes[0].new["display"].split()[0]) < -26.5        # -30 dB start + 3 dB
+
+
+def test_neutral_device_detection():
+    from mixmatch.actions import neutral_device
+
+    def eq(**bands):
+        params = [{"name": "Output", "display": "0.00 dB"}]
+        for n in range(1, 9):
+            on, kind, gain = bands.get(str(n), ("Off", "Bell", "0.00 dB"))
+            params += [{"name": f"{n} Filter On A", "display": on}, {"name": f"{n} Filter Type A", "display": kind},
+                       {"name": f"{n} Gain A", "display": gain}]
+        return {"class_name": "Eq8", "params": params}
+
+    assert neutral_device(eq(**{"1": ("On", "Low Shelf", "0.00 dB"), "2": ("On", "Bell", "0.00 dB")}))
+    assert not neutral_device(eq(**{"3": ("On", "Bell", "-2.00 dB")}))
+    assert not neutral_device(eq(**{"5": ("On", "High Pass 12dB", "0.00 dB")}))     # a cut acts even at 0 dB
+
+    def utility(**over):
+        P = {"Left Inv": "Off", "Right Inv": "Off", "Channel Mode": "Stereo", "Stereo Width": "100 %", "Mono": "Off",
+             "Bass Mono": "Off", "Balance": "C", "Output": "0.00 dB", "Mute": "Off", "DC Filter": "Off", **over}
+        return {"class_name": "StereoGain", "params": [{"name": k, "display": v} for k, v in P.items()]}
+
+    assert neutral_device(utility())
+    assert not neutral_device(utility(**{"Bass Mono": "On"}))
+    assert not neutral_device(utility(**{"Stereo Width": "80 %"}))

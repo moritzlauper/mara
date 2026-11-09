@@ -155,7 +155,7 @@ def cmd_run(args):
                                            mode=args.mode, loudness_from=args.loudness_from,
                                            focus=args.focus, focus_bars=args.focus_bars, complete=not args.quick, resume=args.resume,
                                            auto_ref=args.auto_ref or not args.ref, library=args.library or None,
-                                           jamendo=args.jamendo),
+                                           jamendo=args.jamendo, audit=not args.no_audit),
               references=refset).run()
     finally:
         live.transport(play=False)
@@ -213,6 +213,8 @@ def main(argv=None):
                                     help="find references by listening to the project (default when no --ref is given)")
     sub.choices["run"].add_argument("--library", default="~/Music",
                                     help="folder searched for references with --auto-ref (empty to skip)")
+    sub.choices["run"].add_argument("--no-audit", action="store_true",
+                                    help="keep every effect (no check for effects that do nothing or harm)")
     sub.choices["run"].add_argument("--jamendo", action="store_true",
                                     help="with --auto-ref also try Creative Commons tracks from Jamendo (JAMENDO_CLIENT_ID)")
     sub.choices["run"].add_argument("--quick", action="store_true",

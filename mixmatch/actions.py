@@ -30,6 +30,33 @@ def _plain(name: str) -> str:
     return n.removeprefix("fabfilter ").strip()
 
 
+def _db(display: str) -> float | None:
+    v = parse_display(display)
+    return None if v is None else float(v)
+
+
+def neutral_device(d: dict) -> bool:
+    """True for an EQ Eight or Utility whose settings change nothing: safe to remove without listening."""
+    P = {p["name"]: p["display"] for p in d.get("params", [])}
+    if d.get("class_name") == "Eq8":
+        if abs(_db(P.get("Output", "0 dB")) or 0.0) > 0.05:
+            return False
+        for n in range(1, 9):
+            if P.get(f"{n} Filter On A", "Off") != "On":
+                continue
+            kind = P.get(f"{n} Filter Type A", "").lower()
+            gain = _db(P.get(f"{n} Gain A", "0 dB")) or 0.0
+            if kind not in ("bell", "low shelf", "high shelf") or abs(gain) > 0.05:
+                return False
+        return True
+    if d.get("class_name") == "StereoGain":
+        off = ("Left Inv", "Right Inv", "Mono", "Bass Mono", "Mute", "DC Filter")
+        return (all(P.get(k, "Off") == "Off" for k in off) and P.get("Channel Mode", "Stereo") == "Stereo"
+                and P.get("Balance", "C") in ("C", "0", "0.00") and abs((_db(P.get("Stereo Width", "100")) or 100) - 100) < 0.5
+                and abs(_db(P.get("Output", P.get("Gain", "0 dB"))) or 0.0) < 0.05)
+    return False
+
+
 def _aliases(name):
     """Parameter names differ between Live versions: EQ Eight «1 Resonance A» is «1 Q A» in Live 12,
     the Limiter's «Gain» is «Input Gain»."""

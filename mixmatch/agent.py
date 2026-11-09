@@ -20,7 +20,7 @@ from dataclasses import dataclass, field, replace
 import numpy as np
 
 from . import roles as roles_mod
-from .actions import CLIPPER_MAX_GAIN_DB, LIMITER_MAX_GAIN_DB, Executor
+from .actions import CLIPPER_MAX_GAIN_DB, CLIPPERS, LIMITER_MAX_GAIN_DB, LIMITERS, Executor, RoundResult, neutral_device
 from .analysis import Comparison, compare, masking, objective, objective_parts, stats
 from .bands import CENTRES
 from .display import parse_display
@@ -62,6 +62,8 @@ class Settings:
     auto_ref: bool = False        # find references by listening to the project (library and Jamendo)
     library: str | None = "~/Music"
     jamendo: bool = False         # also try Creative Commons tracks from Jamendo
+    audit: bool = True            # complete runs: remove effects that do nothing, bypass ones that harm the mix
+    audit_bars: int = 4           # A/B window per effect
 
 
 @dataclass
@@ -84,6 +86,9 @@ class Round:
     applied: list = field(default_factory=list)
     skipped: list = field(default_factory=list)
     undone: bool = False
+
+
+TAP = "MixMatch Tap"
 
 
 class PlannerFailed(Exception):
@@ -189,6 +194,92 @@ class Agent:
                     for i, c in enumerate(cues[:-1]) if cues[i + 1]["time"] > c["time"]]
         loop = self.ex.set_state["loop"]
         return [("loop", loop["start"], loop["length"])]
+
+    # ── effects that do nothing or harm ─────────────────────────────────────
+    MIXING_TOOLS = ("eq8", "compressor2", "gluecompressor", "multibanddynamics", "stereogain", "channeleq",
+                    "filtereq3", "pro-q", "pro-c", "pro-mb", "pro-ds")
+    METERS = ("loudness meter", "span", "spectrum", "analyzer", "analyser", "tuner", "meter", "insight", "youlean")
+
+    def audit_effects(self, scan, main: tuple[str, float, float], deadline: float) -> None:
+        """Removes EQ Eights and Utilities that change nothing; listens to every other audio effect on and off
+        and bypasses those that change nothing or (mixing tools only) make the mix worse."""
+        self.log("\n━━ Effects: what does nothing or harms")
+        self.ex.refresh()
+        for t in self.ex.set_state["tracks"]:
+            for d in sorted(t["devices"], key=lambda d: -d["index"]):
+                if neutral_device(d) and not any(p.get("automated") for p in d["params"]):
+                    count = len(t["devices"])
+                    self.live.delete_device(t["key"], d["index"])
+                    self.ex._deleted(t["key"], d["index"], count)
+                    self.log(f"  − removed {d['name']} on {t['name']}: its settings change nothing")
+            self.ex.refresh()
+
+        candidates = []
+        for t in self.ex.set_state["tracks"]:
+            key = t["key"]
+            if key != "m" and key not in self.tap_of:
+                continue
+            for d in t["devices"]:
+                name, cls = d["name"].lower(), d.get("class_name", "").lower()
+                on = next((p for p in d["params"] if p["name"] == "Device On"), None)
+                if (d.get("type", 2) != 2 or d["name"] == TAP or on is None or on["value"] < 0.5
+                        or any(p.get("automated") for p in d["params"]) or any(m in name for m in self.METERS)):
+                    continue
+                if key == "m" and (cls == "limiter" or any(x in name for x in LIMITERS)
+                                   or any(c.lower() in name for c, _ in CLIPPERS)):
+                    continue  # the loudness chain is set elsewhere
+                region = (main[1], main[2]) if key == "m" else self.channel_region(key, scan, main)
+                if region is not None:
+                    candidates.append((region, key, t["name"], d["name"], cls))
+        self.log(f"  listening to {len(candidates)} effects on and off …")
+        bars, self.s.bars = self.s.bars, self.s.audit_bars
+        try:
+            for region, key, track_name, dev_name, cls in sorted(candidates, key=lambda c: c[0]):
+                if self.env.now() >= deadline:
+                    self.log("  time is up")
+                    return
+                self.audit_one(region, key, track_name, dev_name, cls)
+        finally:
+            self.s.bars = bars
+
+    def audit_one(self, region, key, track_name, dev_name, cls) -> None:
+        if self.loop != region:
+            self.play_loop(*region)
+        self.ex.refresh()
+        idx = next((d["index"] for d in self.ex.track(key)["devices"] if d["name"] == dev_name), None)
+        if idx is None:
+            return
+        scoring = "full" if key == "m" else "balance"
+        on = self.measure(scoring)
+        rr = RoundResult()
+        try:
+            self.ex._set(rr, key, idx, "Device On", value=0)
+        except Exception as e:
+            self.log(f"  {dev_name} on {track_name}: {e}")
+            return
+        off = self.measure(scoring)
+        a = on["master"] if key == "m" else on["tracks"].get(key)
+        b = off["master"] if key == "m" else off["tracks"].get(key)
+        if a is None or b is None:
+            self.ex.undo(rr)
+            return
+        audible = a.bands_db > a.bands_db.max() - 40
+        band = float(np.max(np.abs((b.bands_db - a.bands_db)[audible] - (b.loudness - a.loudness)))) if audible.any() else 0.0
+        level, plr, width = b.loudness - a.loudness, b.plr - a.plr, b.width_db - a.width_db
+        nothing = abs(level) < 0.3 and band < 0.5 and abs(plr) < 0.3 and abs(width) < 0.5
+        harmful = any(t in cls or t in dev_name.lower() for t in self.MIXING_TOOLS) and \
+            off["objective"] < on["objective"] - max(self.s.min_gain, 0.1)
+        what = f"level {level:+.1f} dB, tone ±{band:.1f} dB, PLR {plr:+.1f}, width {width:+.1f}"
+        if nothing:
+            verdict = f"  ⊘ bypassed {dev_name} on {track_name}: does nothing here ({what})"
+        elif harmful:
+            verdict = f"  ⊘ bypassed {dev_name} on {track_name}: the mix is better without it ({on['objective']:.2f} → {off['objective']:.2f})"
+        else:
+            self.ex.undo(rr)
+            verdict = f"  ✓ kept {dev_name} on {track_name} ({what})"
+        self.log(verdict)
+        self._record(Round(f"effects {track_name}", 1, on["objective"], off["objective"],
+                           {"assessment": verdict.strip()}, rr.applied, [], undone=not (nothing or harmful)))
 
     def read_harmony(self, sections: list[tuple[str, float, float]]) -> None:
         """Key and chords of the song from its MIDI clips (exact); quietly skipped if there are none."""
@@ -582,6 +673,8 @@ class Agent:
             self.section(name, deadline)
         if self.s.complete and scan is not None:
             self.channel_pass(scan, main[0] if self.s.focus == "loud" else None, deadline)
+            if self.s.audit and self.env.now() < deadline:
+                self.audit_effects(scan, main[0], deadline)
             name, start, length = main[0]
             if self.env.now() < deadline:
                 self.log(f"\n━━ Final check: master, {name}")

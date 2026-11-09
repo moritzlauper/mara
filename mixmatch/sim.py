@@ -57,6 +57,8 @@ EQ_TYPES = ["Low Cut 48", "Low Cut 12", "Low Shelf", "Bell", "Notch", "High Shel
 
 
 class Device:
+    type = 2  # audio effect
+
     def __init__(self, name, class_name, params):
         self.name, self.class_name, self.parameters = name, class_name, params
 
@@ -200,6 +202,11 @@ def eq_response(device) -> np.ndarray:
     return out
 
 
+def _on(device) -> bool:
+    p = next((x for x in device.parameters if x.name == "Device On"), None)
+    return p is None or p.value >= 0.5
+
+
 def track_output(t: Track, fader: bool = True) -> tuple[np.ndarray, float, float, float]:
     """Band levels (dB), plr, width, low side after the devices and, with `fader`, the mixer.
 
@@ -208,6 +215,8 @@ def track_output(t: Track, fader: bool = True) -> tuple[np.ndarray, float, float
     spec = t.spectrum + (_vol_db(t.mixer_device.volume.value) if fader else 0.0)
     width, low_side, plr = t.width_db, t.low_side_db, t.plr
     for d in t.devices:
+        if not _on(d):
+            continue
         if d.class_name == "Eq8":
             spec = spec + eq_response(d)
         elif d.class_name == "StereoGain":
@@ -231,6 +240,8 @@ def master_output(song: Song, refs: set[str]):
     low_side = float(max(o[3] for o in outs))
     peak_extra = 0.0
     for d in song.master_track.devices:
+        if not _on(d):
+            continue
         if d.class_name == "Eq8":
             spec = spec + eq_response(d)
         elif d.class_name == "StereoGain":

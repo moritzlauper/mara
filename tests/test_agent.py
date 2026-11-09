@@ -268,3 +268,30 @@ def test_claude_code_planner_reports_a_missing_login(monkeypatch):
     monkeypatch.setattr(subprocess, "run", lambda cmd, **kw: subprocess.CompletedProcess(cmd, 0, out, ""))
     with pytest.raises(RuntimeError, match="Not logged in"):
         ClaudeCodePlanner(binary="claude").plan({"objective": 1.0})
+
+
+def test_effect_audit_removes_a_neutral_eq_and_bypasses_a_harmful_one(tmp_path):
+    song, hub, env, live = demo_project()
+    from mixmatch.actions import Executor
+
+    live.load_device("t0", "EQ Eight")                       # neutral: all bands off
+    ex = Executor(live, log=lambda *_: None)
+    ex.refresh()                                              # a real cut where the bass sits
+    ex.apply([{"type": "eq", "track": "t1", "freq_hz": 80, "gain_db": -3.0, "q": 1.0, "shape": "bell", "reason": "t"}])
+    ex.refresh()
+    ex.apply([{"type": "eq", "track": "t1", "freq_hz": 80, "gain_db": -3.0, "q": 1.0, "shape": "bell", "reason": "t"}])
+    env.wait(2)
+    logs = []
+    class Idle:  # changes nothing, so only the audit touches the devices
+        def plan(self, ctx):
+            return {"assessment": "fine", "done": True, "actions": []}
+
+    agent = Agent(live, hub, Idle(), Settings(minutes=None, complete=True, focus="loud", settle=1.0,
+                                              roles_file=str(tmp_path / "r.json"), log_dir=str(tmp_path)),
+                  env=env, log=logs.append)
+    agent.run()
+    assert not any(d.class_name == "Eq8" for d in song.tracks[0].devices)          # removed
+    bass_eq = next(d for d in song.tracks[1].devices if d.class_name == "Eq8")
+    assert bass_eq.p("Device On").value == 0                                       # bypassed, not deleted
+    assert any("removed EQ Eight on Kick" in l for l in logs)
+    assert any("bypassed EQ Eight on Bass: the mix is better without it" in l for l in logs)
