@@ -10,8 +10,9 @@ A run is complete by default:
 
 1. It plays the song once and notes where each channel plays and how loud.
 2. It matches the master to the references at the song's loudest 16 bars.
-3. It goes through every channel, most important first, each looped where it
-   plays: level, EQ, masking, width, dynamics, or nothing if it sits well.
+3. It goes through every channel, group and return, most important first,
+   each looped where it plays: level, EQ, masking, width, dynamics, sends, or
+   nothing if it sits well.
    Loudness does not count here, a quiet part need not sound like the drop.
 4. It checks the master once more at the loudest part.
 
@@ -76,7 +77,11 @@ your beat with the references **without their vocals**:
 ### Safety
 
 * Small steps only: at most ±2 dB volume, ±3 dB EQ, +2 dB limiter per round.
-* The limiter gain stops at +6 dB; past that, the loudness gap is accepted.
+* The limiter gain stops at +6 dB, a clipper in front of it at +4 dB; past
+  that, the loudness gap is accepted.
+* Installed plugins are used where they help: FabFilter Pro-L 2 as the master
+  limiter, Classic Clipper before it, Pro-C 2 and others when Claude asks for
+  them. Plugins that show Live no parameters (Pro-Q 3) cannot be controlled.
 * Automated parameters (filter sweeps, build-ups) are never touched.
 * Every round is measured; a round that makes the distance to the target worse
   is undone, and Claude sees that in the history.
@@ -105,9 +110,9 @@ your beat with the references **without their vocals**:
 
 3. **Taps**: copy `device/MixMatch Tap.amxd` and `device/mixmatch_tap.js`
    into a folder of your User Library (e.g. `User Library/MixMatch`). Then
-   `mixmatch taps` puts the tap as the **last** device on every channel and on
-   the master (groups and returns are skipped; run it again after adding
-   tracks). You can also drag it onto the channels by hand. If Live
+   `mixmatch taps` puts the tap as the **last** device on every channel, group,
+   return and on the master (run it again after adding tracks). You can also
+   drag it onto the channels by hand. If Live
    does not open the .amxd, open `device/MixMatch Tap.maxpat` in Max (create an
    empty Max Audio Effect in Live, edit, paste the patch) and save it as a
    device.

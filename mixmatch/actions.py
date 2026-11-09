@@ -51,7 +51,7 @@ def _neutral(band: dict) -> bool:
     return kind in ("bell", "low shelf", "high shelf") and abs(band["gain"]) < 0.05
 
 
-MAX_STEP = {"volume": 2.0, "eq": 3.0, "limiter": 2.0, "clipper": 1.5, "pan": 15.0, "width": 25.0}
+MAX_STEP = {"volume": 2.0, "eq": 3.0, "limiter": 2.0, "clipper": 1.5, "send": 3.0, "pan": 15.0, "width": 25.0}
 EQ_GAIN_LIMIT = 12.0
 VOLUME_CEILING_DB = 6.0
 LIMITER_CEILING_DB = -1.0
@@ -272,6 +272,17 @@ class Executor:
         now = self._db_of(p)
         target = min(VOLUME_CEILING_DB, now + _clamp(float(a["delta_db"]), MAX_STEP["volume"]))
         self._set(rr, a["track"], "mixer", "Volume", target=target)
+
+    def _do_send(self, rr, a):
+        """Send level of a track to a return («A», «B», …), in dB; a send that is off starts at -30 dB."""
+        name = f"Send {str(a['name']).strip().upper()[:1]}"
+        p = self._param(a["track"], "mixer", name)
+        if p is None:
+            raise KeyError(f"{a['track']} has no {name}")
+        now = self._db_of(p)
+        start = now if now > -60 else -30.0
+        target = min(0.0, start + _clamp(float(a["delta_db"]), MAX_STEP["send"]))
+        self._set(rr, a["track"], "mixer", name, target=target)
 
     def _do_pan(self, rr, a):
         p = self._param(a["track"], "mixer", "Pan")

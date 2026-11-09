@@ -201,3 +201,17 @@ def test_clipper_goes_in_front_of_the_limiter_and_is_capped():
     names = [d.name for d in song.master_track.devices]
     assert names.index("Classic Clipper") < names.index("Limiter")
     assert abs(ex.clipper_gain() - CLIPPER_MAX_GAIN_DB) < 0.1
+
+
+def test_send_starts_from_off_and_never_passes_0_db():
+    from mixmatch.actions import Executor
+    from mixmatch.sim import Param, _db_fmt, _vol_db, demo_project
+
+    song, hub, env, live = demo_project()
+    song.tracks[0].mixer_device.sends = [Param("Send A", 0, 1, 0.0, lambda v: _db_fmt(_vol_db(v)))]
+    ex = Executor(live, log=lambda *_: None)
+    ex.refresh()
+    rr = ex.apply([{"type": "send", "track": "t0", "name": "A", "delta_db": 3.0, "reason": "test"}])
+    assert not rr.skipped, rr.skipped
+    assert abs(rr.changes[0].new["value"] - song.tracks[0].mixer_device.sends[0].value) < 1e-9
+    assert -28.5 < float(rr.changes[0].new["display"].split()[0]) < -26.5        # -30 dB start + 3 dB

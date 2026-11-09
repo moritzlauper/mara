@@ -29,7 +29,7 @@ ACTION_SCHEMA = {
             "items": {
                 "type": "object",
                 "properties": {
-                    "type": {"type": "string", "enum": ["volume", "pan", "eq", "width", "limiter", "clipper", "param", "load_device"]},
+                    "type": {"type": "string", "enum": ["volume", "pan", "eq", "width", "limiter", "clipper", "send", "param", "load_device"]},
                     "track": {"type": ["string", "null"]},
                     "delta_db": {"type": ["number", "null"]},
                     "value": {"type": ["number", "null"]},
@@ -79,6 +79,7 @@ How to work:
 Actions (unused fields null):
 - volume: track, delta_db
 - pan: track, value (-50 left … 50 right)
+- send: track, name (the return's letter, e.g. "A"), delta_db (send level to that return; see the channel's "sends" and the returns among the channels)
 - eq: track, freq_hz, gain_db, q (0.3–4, null = default), shape (bell, low_shelf, high_shelf, low_cut, notch). Uses an EQ Eight on the track, added if missing. A band already near that frequency with the same shape is adjusted instead of adding one.
 - width: track, width_pct (Utility width, 100 = unchanged), bass_mono (true/false)
 - limiter: delta_db (Limiter gain on the master, ceiling fixed at -1 dB)

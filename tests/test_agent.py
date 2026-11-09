@@ -197,3 +197,18 @@ def test_resume_skips_the_master_and_earlier_channels(tmp_path):
     assert "Pad" in names and "Kick" not in names                # Pad has the lowest priority: it is last
     assert not any("Master against the reference" in l for l in logs)
     assert any("Final check" in l for l in logs)
+
+
+def test_a_group_does_not_mask_its_own_tracks():
+    song, hub, env, live = demo_project()
+    group, member = song.tracks[0], song.tracks[1]   # Kick acts as the group, Bass sits inside it
+    group.is_foldable = True
+    member.is_grouped, member.group_track = True, group
+    env.wait(5)
+    agent = Agent(live, hub, RulePlanner(), Settings(settle=1.0), env=env, log=lambda *_: None)
+    agent.understand()
+    keys = {t["name"]: t["key"] for t in agent.ex.set_state["tracks"]}
+    assert keys[member.name] in agent._group_members()[keys[group.name]]
+    m = agent.measure()
+    pairs = {frozenset((x["track_a"], x["track_b"])) for x in m["masking"]}
+    assert frozenset((keys[group.name], keys[member.name])) not in pairs

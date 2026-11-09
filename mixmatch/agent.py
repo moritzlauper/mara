@@ -350,11 +350,27 @@ class Agent:
             out[t["key"]] = gain
         return out
 
+    def _group_members(self) -> dict[str, set[str]]:
+        """Group track key → keys of every track inside it (also inside nested groups)."""
+        tracks = self.ex.set_state.get("tracks", [])
+        by_name = {t["name"]: t for t in tracks if t.get("is_group")}
+        out: dict[str, set[str]] = {}
+        for t in tracks:
+            parent, seen = by_name.get(t.get("group")), set()
+            while parent is not None and parent["name"] not in seen:
+                seen.add(parent["name"])
+                out.setdefault(parent["key"], set()).add(t["key"])
+                parent = by_name.get(parent.get("group"))
+        return out
+
     def _maskings(self, tracks: dict) -> list[dict]:
         out = []
         keys = [k for k, s in tracks.items() if s is not None and k in self.roles]
+        inside = self._group_members()
         for i, a in enumerate(keys):
             for b in keys[i + 1:]:
+                if b in inside.get(a, ()) or a in inside.get(b, ()):
+                    continue  # a group contains its own tracks: that is not masking
                 ra, rb = self.roles[a], self.roles[b]
                 if ra.role in ("fx", "ambience", "bus", "drums_bus") or rb.role in ("fx", "ambience", "bus", "drums_bus"):
                     continue
@@ -378,6 +394,9 @@ class Agent:
                 "volume": next((p["display"] + (" (automated)" if p.get("automated") else "")
                                 for p in t["mixer"] if p["name"] == "Volume"), None),
                 "pan": next((p["display"] for p in t["mixer"] if p["name"] == "Pan"), None),
+                "sends": {p["name"]: p["display"] for p in t["mixer"] if p["name"].startswith("Send ")} or None,
+                "kind": "group" if t.get("is_group") else t["kind"],
+                "group": t.get("group"),
                 "measured": st.summary() if st else "silent in this section",
                 "loudness_vs_master_lu": round(st.loudness - m["master"].loudness, 1) if st and m["master"] else None,
                 "devices": device_summary(t),
@@ -411,7 +430,21 @@ class Agent:
                 for h in self.history[-10:]
             ],
         }
-        if focus is not None:
+        if focus is not None and self.ex.track(focus).get("is_group"):
+            r = self.roles[focus]
+            ctx["task"] = (
+                f"Channel pass on the group (bus) {focus} «{r.name}»: it sums the tracks inside it (see «group» of the "
+                "channels). Check its level in the mix, its bus devices (compressor amount: gentle glue, 1–3 dB of gain "
+                "reduction; load one only if the group clearly needs it), and EQ that belongs to the whole group. Do not "
+                "fix single tracks here. 0 to 3 actions, all on this track; none if it sits well (done=true).")
+        elif focus is not None and self.ex.track(focus)["kind"] == "return":
+            r = self.roles[focus]
+            ctx["task"] = (
+                f"Channel pass on the return {focus} «{r.name}» (reverb or delay fed by the channels' sends). Check its "
+                "level, EQ (cut lows below ~200–300 Hz and harsh highs so it does not muddy the mix), width, and which "
+                "channels send how much (send actions on those channels are allowed in this pass). 0 to 3 actions; "
+                "none if it sits well (done=true).")
+        elif focus is not None:
             r = self.roles[focus]
             ctx["task"] = (
                 f"Channel pass: work only on track {focus} «{r.name}» (role {r.role}, priority {r.priority}"
@@ -484,8 +517,10 @@ class Agent:
             self.log(f"  round {n}: {plan.get('assessment', '')}")
             actions = plan.get("actions", [])
             if focus is not None:
-                other = [a for a in actions if a.get("track") != focus]
-                actions = [a for a in actions if a.get("track") == focus]
+                is_return = self.ex.track(focus)["kind"] == "return"
+                ok = lambda a: a.get("track") == focus or (is_return and a.get("type") == "send")
+                other = [a for a in actions if not ok(a)]
+                actions = [a for a in actions if ok(a)]
                 for a in other:
                     self.log(f"    – not now: {a['type']} {a.get('track') or 'master'} (channel pass is on {focus})")
             if not actions:

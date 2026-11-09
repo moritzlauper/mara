@@ -70,14 +70,12 @@ TAP = "MixMatch Tap"
 
 
 def add_taps(live, log=print, replace: bool = False) -> int:
-    """Append the tap device to every normal track and the master that has none yet. Groups and returns are skipped.
+    """Append the tap device to every track, group, return and the master that has none yet.
 
     `replace` first removes existing taps, e.g. after the device was rebuilt.
     """
     added = 0
     for t in live.get_set()["tracks"]:
-        if t["is_group"] or t["kind"] == "return":
-            continue
         old = [d["index"] for d in t["devices"] if d["name"] == TAP]
         if old and not replace:
             continue
