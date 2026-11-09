@@ -695,6 +695,11 @@ class Agent:
         if not self.references and not self.target:
             self.log("No reference found. Name the reference tracks «REF …» and put a tap on them; "
                      "until then only the balance between channels is worked on.")
+        from . import ab
+
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        self.ex.refresh()
+        ab.save(self.ex.set_state, self.s.log_dir, stamp, "before")   # for the before/after switch
         try:
             self._run(deadline)
         except PlannerFailed as e:
@@ -702,6 +707,12 @@ class Agent:
         except MasterSilent:
             self.log("\nStopped: the master stayed silent for over a minute, so nothing could be measured. "
                      "Everything kept so far stays in the set; continue with --resume once Live plays again.")
+        try:
+            self.ex.refresh()
+            ab.save(self.ex.set_state, self.s.log_dir, stamp, "after")
+            self.log("Before/after saved: switch with «mixmatch ab before» / «mixmatch ab after» or in mixmatch ui.")
+        except Exception:
+            pass
         self.log("\nDone. " + self.report())
         self.logfile.close()
         return self.history

@@ -217,6 +217,7 @@ class _Cached:
 def make_handler(runner: Runner):
     workdir = runner.workdir
     project_refs = _Cached(project_references)
+    ab_state = {"which": None}
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *_):
@@ -243,7 +244,10 @@ def make_handler(runner: Runner):
                 state = parse_log(lines)
                 return self._send(200, {**state, "running": runner.running(), "log": [l.rstrip() for l in lines[-200:]],
                                         "reference_files": references(workdir), "to_get": buy_list(workdir),
-                                        "project_references": project_refs.get(), "live": project_refs.reachable})
+                                        "project_references": project_refs.get(), "live": project_refs.reachable,
+                                        "ab": ab_state["which"],
+                                        "ab_ready": __import__("mixmatch.ab", fromlist=["latest_pair"]).latest_pair(
+                                            os.path.join(workdir, "runs")) is not None})
             if self.path == "/api/roles":
                 path = os.path.join(workdir, "roles.json")
                 return self._send(200, json.load(open(path)) if os.path.exists(path) else {})
@@ -294,6 +298,19 @@ def make_handler(runner: Runner):
                     if body.get("minutes"):
                         args += ["--minutes", str(float(body["minutes"]))]
                     return self._send(200, {"log": runner.start(args)})
+                if self.path == "/api/ab":
+                    if runner.running():
+                        raise RuntimeError("wait until the run is finished")
+                    from . import ab
+                    from .live_client import LiveClient
+
+                    live = LiveClient(timeout=10).connect()
+                    try:
+                        n = ab.switch(live, body.get("which", "after"), os.path.join(workdir, "runs"))
+                    finally:
+                        live.close()
+                    ab_state["which"] = body.get("which")
+                    return self._send(200, {"changed": n, "which": ab_state["which"]})
                 if self.path == "/api/taps":
                     return self._send(200, {"log": runner.start(["taps"])})
                 if self.path == "/api/stop":
@@ -373,6 +390,7 @@ button.small{padding:2px 8px;font-size:12px}button.danger{background:var(--bad);
   <label><input type="checkbox" id="no_audit"> keep every effect</label></div>
   <div class="row"><label>resume at track <input id="resume" size="14" placeholder="optional"></label></div>
   <div class="row"><button id="start">Start</button><button id="stop" class="ghost">Stop</button><button id="taps" class="ghost">Set taps</button></div>
+  <div class="row"><span class="muted">compare the last run:</span><button id="ab_before" class="ghost">Before</button><button id="ab_after" class="ghost">After</button></div>
   <p class="muted" id="msg"></p>
 </section>
 <section>
@@ -413,6 +431,8 @@ $("start").onclick = () => post("/api/run", {auto_ref: $("auto_ref").checked, re
   no_audit: $("no_audit").checked, resume: $("resume").value.trim()});
 $("stop").onclick = () => post("/api/stop");
 $("taps").onclick = () => post("/api/taps");
+$("ab_before").onclick = async () => { const j = await post("/api/ab", {which: "before"}); if (!j.error) $("msg").textContent = `Before (${j.changed} parameters)`; };
+$("ab_after").onclick = async () => { const j = await post("/api/ab", {which: "after"}); if (!j.error) $("msg").textContent = `After (${j.changed} parameters)`; };
 const ROLES = ["kick","snare","clap","hats","percussion","drums_bus","sub","bass","lead_vocal","backing_vocal","vocal_fx","lead_synth","pluck","pad","keys","piano","guitar","strings","brass","fx","ambience","bus","other"];
 async function loadRoles() {
   const roles = await (await fetch("/api/roles")).json(); const names = Object.keys(roles);
@@ -435,6 +455,8 @@ async function tick() {
   let s; try { s = await (await fetch("/api/state")).json(); } catch { return; }
   $("status").textContent = s.running ? "running" : (s.done ? "finished" : "idle"); $("status").className = "pill" + (s.running ? " on" : "");
   $("phase").textContent = s.phase || ""; $("start").disabled = s.running;
+  for (const w of ["before", "after"]) { const b = $("ab_" + w); b.disabled = s.running || !s.ab_ready;
+    b.className = s.ab === w ? "" : "ghost"; }
   $("live").textContent = s.live === null ? "Live …" : (s.live ? "Live connected" : "Live busy or closed (exporting?)");
   $("live").className = "pill" + (s.live ? " on" : "");
   $("distance").textContent = s.distance != null ? s.distance.toFixed(2) : "–"; $("section").textContent = s.section || "";

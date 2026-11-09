@@ -143,6 +143,18 @@ def cmd_suggest_refs(args):
     print("\nPut the references you pick (WAV, AIFF, FLAC or MP3) into references/ and run mixmatch run.")
 
 
+def cmd_ab(args):
+    from . import ab
+    from .live_client import LiveClient
+
+    try:
+        live = LiveClient().connect()
+    except OSError:
+        sys.exit("Cannot reach Live on port 9877.")
+    n = ab.switch(live, args.which)
+    print(f"Set to «{args.which}» ({n} parameters changed).")
+
+
 def cmd_check(args):
     live, hub = _connect()
     print("Connected to Live. Play the song for a few seconds so the taps report …")
@@ -240,6 +252,9 @@ def main(argv=None):
                                     help="auto: local Claude Code on your subscription if installed, else the API key")
     sub.choices["run"].add_argument("--rules", action="store_true", help="rule-based planner instead of Claude")
     sub.choices["demo"].add_argument("--claude", action="store_true", help="use Claude in the simulator too")
+    abp = sub.add_parser("ab", help="switch the set to the state before or after the last run")
+    abp.add_argument("which", choices=["before", "after"])
+    abp.set_defaults(fn=cmd_ab)
     ui = sub.add_parser("ui", help="local web interface: start and follow runs, references, effects, roles")
     ui.set_defaults(fn=lambda a: __import__("mixmatch.ui", fromlist=["serve"]).serve(".", a.port, not a.no_browser))
     ui.add_argument("--port", type=int, default=8765)
