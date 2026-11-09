@@ -42,6 +42,18 @@ def test_add_taps_appends_to_channels_and_master_only():
     assert [d.name for d in song.tracks[0].devices] == ["EQ Eight", "MixMatch Tap"]
 
 
+def test_new_devices_go_before_the_tap():
+    from mixmatch.cli import add_taps
+
+    song, hub, env, live = demo_project()
+    add_taps(live, log=lambda *_: None)
+    assert live.load_device("t0", "EQ Eight") == 0               # the tap was the only device
+    assert live.load_device("t0", "Utility") == 1
+    assert live.load_device("m", "Limiter") == 0
+    assert [d.name for d in song.tracks[0].devices] == ["EQ Eight", "Utility", "MixMatch Tap"]
+    assert [d.name for d in song.master_track.devices] == ["Limiter", "MixMatch Tap"]
+
+
 def test_load_device_through_browser():
     song, hub, env, live = demo_project()
     assert live.load_device("t1", "EQ Eight") == 0

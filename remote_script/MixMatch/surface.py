@@ -12,11 +12,22 @@ class MixMatchSurface(ControlSurface):
         ControlSurface.__init__(self, c_instance)
         self.commands = Commands(self.song(), self.application().browser, self.log_message)
         try:
-            self.server = LineServer(self.commands.run, port=PORT, log=self.log_message)
+            self.server = LineServer(self._handle, port=PORT, log=self.log_message)
             self.show_message("MixMatch listening on port %d" % PORT)
         except OSError as e:
             self.server = None
             self.show_message("MixMatch: port %d busy (%s)" % (PORT, e))
+
+    def _handle(self, req):
+        """«reload» re-imports the commands, so a changed script works without restarting Live."""
+        if req.get("cmd") == "reload":
+            import importlib
+            from . import commands
+
+            importlib.reload(commands)
+            self.commands = commands.Commands(self.song(), self.application().browser, self.log_message)
+            return {"reloaded": True}
+        return self.commands.run(req)
 
     def update_display(self):
         ControlSurface.update_display(self)

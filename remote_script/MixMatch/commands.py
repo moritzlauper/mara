@@ -47,6 +47,9 @@ def _display(param, value=None):
         return str(param.value if value is None else value)
 
 
+TAP = "MixMatch Tap"
+
+
 def _stem(name):
     """Browser item name without a device file extension, lower case: «MixMatch Tap.amxd» → «mixmatch tap»."""
     name = name.lower()
@@ -187,10 +190,10 @@ class Commands:
         return {"value": p.value, "display": _display(p), "min": p.min, "max": p.max}
 
     def load_device(self, req):
-        """Load a device at the end of a track's chain.
+        """Load a device into a track's chain: at the end, but before a «MixMatch Tap» so the tap keeps measuring last.
 
         `source` is «audio_effects» (built-in devices such as «EQ Eight», the
-        default) or «user_library» (e.g. the «MixMatch Tap» device).
+        default) or «user_library» (e.g. the «MixMatch Tap» device itself).
         """
         if self.browser is None:
             raise CommandError("browser not available")
@@ -202,12 +205,21 @@ class Commands:
         if item is None:
             raise CommandError("device %r not found in the browser" % req["name"])
         devices = list(track.devices)
+        taps = [i for i, d in enumerate(devices) if d.name == TAP]
+        at = taps[0] if taps and _stem(req["name"]) != TAP.lower() else len(devices)
         self.song.view.selected_track = track
-        if devices:
-            # Live inserts after the selected device, so select the last one to append.
-            self.song.view.select_device(devices[-1])
-        self.browser.load_item(item)
-        return {"index": len(devices)}
+        # Live inserts after the selected device.
+        if at > 0:
+            self.song.view.select_device(devices[at - 1])
+            self.browser.load_item(item)
+        elif not devices:
+            self.browser.load_item(item)
+        else:  # only the tap is there: load after it, then move the new device to the front
+            self.song.view.select_device(devices[0])
+            self.browser.load_item(item)
+            new = list(track.devices)[1]
+            self.song.move_device(new, track, 0)
+        return {"index": at}
 
     def delete_device(self, req):
         """Remove the device at `device` (index) from a track's chain."""

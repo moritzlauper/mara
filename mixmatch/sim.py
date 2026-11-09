@@ -142,6 +142,12 @@ class Song:
         self.loop, self.loop_start, self.loop_length = False, 0.0, 16.0
         self.cue_points, self.view = [], View()
 
+    def move_device(self, device, track, index):
+        for t in self.tracks + [self.master_track]:
+            if device in t.devices:
+                t.devices.remove(device)
+        track.devices.insert(index, device)
+
     def start_playing(self):
         self.is_playing = True
 
