@@ -262,6 +262,42 @@ class Commands:
         self.song.move_device(devices[req["device"]], track, int(req["to"]))
         return {"devices": [d.name for d in track.devices]}
 
+    # ── capturing the master (for listening with CLAP) ──────────────────────
+    def capture_start(self, req):
+        """New audio track recording the master (input «Resampling», monitoring off) into its first clip slot."""
+        song = self.song
+        song.create_audio_track(-1)
+        track = list(song.tracks)[-1]
+        track.name = "MixMatch Capture"
+        inputs = list(getattr(track, "available_input_routing_types", []))
+        resampling = next((r for r in inputs if r.display_name.lower() == "resampling"), None)
+        if resampling is None:
+            song.delete_track(len(list(song.tracks)) - 1)
+            raise CommandError("no «Resampling» input on the new track")
+        track.input_routing_type = resampling
+        track.current_monitoring_state = 2  # Off: hearing the master on it again would feed back
+        track.arm = True
+        slot = list(track.clip_slots)[0]
+        slot.fire(record_length=float(req.get("beats", 64)))
+        return {"track": len(list(song.tracks)) - 1}
+
+    def capture_status(self, req):
+        track = list(self.song.tracks)[int(req["track"])]
+        slot = list(track.clip_slots)[0]
+        clip = slot.clip if slot.has_clip else None
+        return {"recording": bool(getattr(slot, "is_recording", False)),
+                "file": getattr(clip, "file_path", None) if clip is not None else None}
+
+    def capture_cleanup(self, req):
+        """Delete the capture track; the recorded file stays in the project's Samples/Recorded folder."""
+        tracks = list(self.song.tracks)
+        index = int(req["track"])
+        if 0 <= index < len(tracks) and tracks[index].name == "MixMatch Capture":
+            tracks[index].arm = False
+            self.song.delete_track(index)
+        self.song.back_to_arranger = False  # the session clip had taken over this track only; play the arrangement
+        return {"tracks": len(list(self.song.tracks))}
+
     def delete_device(self, req):
         """Remove the device at `device` (index) from a track's chain."""
         track = self._track(req["track"])

@@ -59,6 +59,9 @@ class Settings:
     channel_rounds: int = 2       # rounds per channel in the channel pass
     final_rounds: int = 4         # rounds of the final master check
     resume: str | None = None     # track name: skip the master phase and start the channel pass there
+    auto_ref: bool = False        # find references by listening to the project (library and Jamendo)
+    library: str | None = "~/Music"
+    jamendo: bool = False         # also try Creative Commons tracks from Jamendo
 
 
 @dataclass
@@ -185,6 +188,35 @@ class Agent:
                     for i, c in enumerate(cues[:-1]) if cues[i + 1]["time"] > c["time"]]
         loop = self.ex.set_state["loop"]
         return [("loop", loop["start"], loop["length"])]
+
+    def find_references(self, part: tuple[str, float, float]) -> None:
+        """Listens to the loudest part and picks references from the library and Jamendo (see autoref)."""
+        from . import autoref
+        from .reference import ReferenceSet
+
+        _, start, length = part
+        tempo = self.ex.set_state.get("tempo") or 120
+        picked, to_get = autoref.find(self.live, start, min(length, 64.0), tempo, library=self.s.library,
+                                      jamendo=self.s.jamendo, log=self.log)
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        os.makedirs(self.s.log_dir, exist_ok=True)
+        if to_get:
+            with open(os.path.join(self.s.log_dir, stamp + "-buy.md"), "w") as f:
+                f.write(f"# References to get ({to_get[0]['style']})\n\nPut the WAVs into references/; "
+                        "the next run uses them.\n\n")
+                for s in to_get:
+                    f.write(f"- **{s['artist']} – {s['title']}**: {s['why']}  \n  "
+                            f"[Bandcamp]({s['links']['bandcamp']}) · [Beatport]({s['links']['beatport']})\n")
+            self.log(f"  list with links: {os.path.join(self.s.log_dir, stamp + '-buy.md')}")
+        if not picked:
+            return
+        paths = [c["path"] for c in picked] + (list(self.refset.paths) if self.refset else [])
+        paths = list(dict.fromkeys(os.path.realpath(x) for x in paths))
+        self.refset = ReferenceSet(paths, log=self.log)
+        self.target, self.target_no_vocals = self.refset.target(self.beat, self.s.loudness_from), None
+        self.log(f"Target: {self.target.description}, {self.target.loudness:.1f} LUFS")
+        with open(os.path.join(self.s.log_dir, stamp + "-references.json"), "w") as f:
+            json.dump(picked, f, indent=2, ensure_ascii=False)  # sources, links and licenses of what was used
 
     def scan(self, sections: list[tuple[str, float, float]]) -> Scan | None:
         """Plays the whole range once and records where the master and every channel play, and how loud."""
@@ -515,6 +547,8 @@ class Agent:
                     self.target = self.refset.target(True, self.s.loudness_from)
                     self.log(f"Target: {self.target.description}, {self.target.loudness:.1f} LUFS")
         main = [self.loudest_part(sections, scan)] if self.s.focus == "loud" else sections
+        if self.s.auto_ref:
+            self.find_references(main[0])
         if self.s.complete and not self.s.resume:
             self.log(f"\n━━ Master against the reference")
         for name, start, length in ([] if self.s.resume else main):

@@ -150,7 +150,9 @@ def cmd_run(args):
         time.sleep(args.wait)
         Agent(live, hub, planner, Settings(minutes=args.minutes, assist=args.assist, roles_file=args.roles,
                                            mode=args.mode, loudness_from=args.loudness_from,
-                                           focus=args.focus, focus_bars=args.focus_bars, complete=not args.quick, resume=args.resume),
+                                           focus=args.focus, focus_bars=args.focus_bars, complete=not args.quick, resume=args.resume,
+                                           auto_ref=args.auto_ref or not args.ref, library=args.library or None,
+                                           jamendo=args.jamendo),
               references=refset).run()
     finally:
         live.transport(play=False)
@@ -168,7 +170,21 @@ def cmd_demo(args):
     agent.run()
 
 
+def load_env(path: str = "env.local") -> None:
+    """KEY=value lines (quotes allowed) from env.local or .env, without overriding the environment."""
+    for name in (path, ".env"):
+        if not os.path.exists(name):
+            continue
+        for line in open(name):
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            os.environ.setdefault(key.strip().removeprefix("export ").strip(), value.strip().strip('"').strip("'"))
+
+
 def main(argv=None):
+    load_env()
     p = argparse.ArgumentParser(prog="mixmatch", description="Mixing agent for Ableton Live")
     sub = p.add_subparsers(dest="cmd", required=True)
     for name, fn in (("run", cmd_run), ("refs", cmd_refs), ("check", cmd_check), ("demo", cmd_demo),
@@ -190,6 +206,12 @@ def main(argv=None):
     sub.choices["run"].add_argument("--assist", action="store_true", help="ask before every round")
     sub.choices["run"].add_argument("--resume", metavar="TRACK",
                                     help="continue a stopped run: channel pass from this track on, then the final check")
+    sub.choices["run"].add_argument("--auto-ref", action="store_true",
+                                    help="find references by listening to the project (default when no --ref is given)")
+    sub.choices["run"].add_argument("--library", default="~/Music",
+                                    help="folder searched for references with --auto-ref (empty to skip)")
+    sub.choices["run"].add_argument("--jamendo", action="store_true",
+                                    help="with --auto-ref also try Creative Commons tracks from Jamendo (JAMENDO_CLIENT_ID)")
     sub.choices["run"].add_argument("--quick", action="store_true",
                                     help="only match the master to the reference, no pass over every channel")
     sub.choices["run"].add_argument("--focus", choices=["sections", "loud"], default="loud",

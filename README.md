@@ -170,6 +170,17 @@ suggests real tracks to mix against, with Bandcamp and Beatport search links.
 Buy the ones you like and put the WAVs into `references/`; MixMatch does not
 download music itself.
 
+### Fully automatic
+
+`mixmatch run` without `--ref` finds its references itself (`--auto-ref`):
+it records the loudest 16 bars from Live's master (a temporary track with
+input «Resampling», monitoring off, deleted afterwards), names the style with
+CLAP, and picks the closest mastered songs from `references/` and your
+library. It also writes a list of real tracks to get, with Bandcamp links
+(`runs/…-buy.md`); put what you get into `references/` and the next run uses
+it. `--jamendo` adds Creative Commons tracks from Jamendo (`JAMENDO_CLIENT_ID`
+in `env.local`, which MixMatch reads by itself).
+
 ## Development
 
 ```bash

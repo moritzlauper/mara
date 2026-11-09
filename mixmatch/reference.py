@@ -184,6 +184,7 @@ def _mean_stats(items: list[Stats]) -> Stats:
 class ReferenceSet:
     def __init__(self, paths: list[str], log=print):
         self.log = log
+        self.paths = list(paths)
         self.refs: list[Reference] = []
         for p in paths:
             self.refs.append(Reference(p, profile(p)))

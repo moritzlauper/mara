@@ -32,3 +32,26 @@ def test_library_keeps_songs_and_skips_samples(tmp_path):
 def test_search_links_are_encoded():
     links = search_links("glaive & ericdoa", "cloak n dagger")
     assert links["bandcamp"] == "https://bandcamp.com/search?q=glaive+%26+ericdoa+cloak+n+dagger"
+
+
+def test_jamendo_search_keeps_only_allowed_downloads(monkeypatch):
+    import io
+    import json as _json
+
+    from mixmatch import autoref
+
+    page = {"headers": {"status": "success"}, "results": [
+        {"id": "1", "artist_name": "A", "name": "ok", "audiodownload_allowed": True, "audiodownload": "http://x/1",
+         "shareurl": "http://j/1", "license_ccurl": "http://cc/by"},
+        {"id": "2", "artist_name": "B", "name": "no", "audiodownload_allowed": False, "audiodownload": "http://x/2"},
+        {"id": "1", "artist_name": "A", "name": "dupe", "audiodownload_allowed": True, "audiodownload": "http://x/1"},
+    ]}
+    monkeypatch.setattr(autoref.urllib.request, "urlopen", lambda url, timeout=0: io.StringIO(_json.dumps(page)))
+    found = autoref.jamendo_search(["futurebass", "emo"], "cid", log=lambda *_: None)
+    assert [t["title"] for t in found] == ["ok"] and found[0]["license"] == "http://cc/by"
+
+
+def test_hyperpop_maps_to_an_existing_jamendo_tag():
+    from mixmatch.autoref import JAMENDO_TAGS
+
+    assert JAMENDO_TAGS["hyperpop"] == "futurebass"
