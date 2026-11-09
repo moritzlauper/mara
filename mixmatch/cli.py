@@ -69,14 +69,20 @@ def cmd_refs(args):
 TAP = "MixMatch Tap"
 
 
-def add_taps(live, log=print) -> int:
-    """Append the tap device to every normal track and the master that has none yet. Groups and returns are skipped."""
+def add_taps(live, log=print, replace: bool = False) -> int:
+    """Append the tap device to every normal track and the master that has none yet. Groups and returns are skipped.
+
+    `replace` first removes existing taps, e.g. after the device was rebuilt.
+    """
     added = 0
     for t in live.get_set()["tracks"]:
         if t["is_group"] or t["kind"] == "return":
             continue
-        if any(d["name"] == TAP for d in t["devices"]):
+        old = [d["index"] for d in t["devices"] if d["name"] == TAP]
+        if old and not replace:
             continue
+        for index in sorted(old, reverse=True):
+            live.delete_device(t["key"], index)
         live.load_device(t["key"], TAP, source="user_library")
         log(f"  + tap on {t['name']}")
         added += 1
@@ -91,7 +97,7 @@ def cmd_taps(args):
     except OSError:
         sys.exit("Cannot reach Live on port 9877. Is «MixMatch» selected as a control surface in Live's settings?")
     try:
-        n = add_taps(live)
+        n = add_taps(live, replace=args.replace)
     except LiveError as e:
         sys.exit(f"{e}. Copy «{TAP}.amxd» and mixmatch_tap.js into a folder of your User Library.")
     print(f"{n} tap(s) added." if n else "Every channel already has a tap.")
@@ -147,6 +153,8 @@ def main(argv=None):
         s.add_argument("--roles", default="roles.json", help="file with channel roles (written on first start)")
         s.add_argument("--minutes", type=float, default=10.0)
         s.add_argument("--wait", type=float, default=6.0, help="seconds of playback before starting")
+    sub.choices["taps"].add_argument("--replace", action="store_true",
+                                     help="remove existing taps first and put fresh ones (after rebuilding the device)")
     sub.choices["run"].add_argument("--assist", action="store_true", help="ask before every round")
     sub.choices["run"].add_argument("--focus", choices=["sections", "loud"], default="sections",
                                     help="loud: find the loudest part of the song once and work only there, "

@@ -64,5 +64,8 @@ class LiveClient:
     def load_device(self, track: str, name: str, source: str = "audio_effects") -> int:
         return self.request("load_device", track=track, name=name, source=source)["index"]
 
+    def delete_device(self, track: str, device: int) -> None:
+        self.request("delete_device", track=track, device=device)
+
     def transport(self, **kw) -> dict:
         return self.request("transport", **kw)

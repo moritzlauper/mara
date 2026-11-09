@@ -117,6 +117,9 @@ class Track:
         self.plr, self.width_db, self.low_side_db = plr, width_db, low_side_db
         self.mute, self.is_foldable, self.is_grouped = False, False, False
 
+    def delete_device(self, index):
+        del self.devices[index]
+
 
 class Cue:
     def __init__(self, name, time):
@@ -288,6 +291,9 @@ class SimLive:
 
     def load_device(self, track, name, source="audio_effects"):
         return self.request("load_device", track=track, name=name, source=source)["index"]
+
+    def delete_device(self, track, device):
+        self.request("delete_device", track=track, device=device)
 
     def transport(self, **kw):
         return self.request("transport", **kw)

@@ -22,7 +22,7 @@
     "box": {
      "id": "obj-1",
      "maxclass": "newobj",
-     "text": "plugin~ 2",
+     "text": "plugin~ 1 2",
      "numinlets": 2,
      "numoutlets": 2,
      "outlettype": [
@@ -32,7 +32,7 @@
      "patching_rect": [
       20,
       20,
-      63,
+      77,
       22
      ]
     }
@@ -41,14 +41,14 @@
     "box": {
      "id": "obj-2",
      "maxclass": "newobj",
-     "text": "plugout~ 2",
+     "text": "plugout~ 1 2",
      "numinlets": 2,
      "numoutlets": 0,
      "outlettype": [],
      "patching_rect": [
       20,
       600,
-      70,
+      84,
       22
      ]
     }

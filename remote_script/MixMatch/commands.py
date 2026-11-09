@@ -209,6 +209,15 @@ class Commands:
         self.browser.load_item(item)
         return {"index": len(devices)}
 
+    def delete_device(self, req):
+        """Remove the device at `device` (index) from a track's chain."""
+        track = self._track(req["track"])
+        index = req["device"]
+        if not isinstance(index, int) or not 0 <= index < len(list(track.devices)):
+            raise CommandError("unknown device %r" % index)
+        track.delete_device(index)
+        return {"devices": len(list(track.devices))}
+
     def transport(self, req):
         if "loop_start" in req:
             self.song.loop_start = float(req["loop_start"])

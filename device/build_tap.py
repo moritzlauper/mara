@@ -42,8 +42,8 @@ def wire(src, out, dst, inp):
 def build():
     values = 5 + BAND_COUNT  # m, s, s_low, peak_l, peak_r, bands
 
-    plugin = box("plugin~ 2", 20, 20, 2, 2)
-    plugout = box("plugout~ 2", 20, 600, 2, 0)
+    plugin = box("plugin~ 1 2", 20, 20, 2, 2)  # arguments are channel numbers: «plugin~ 2» is the right channel only
+    plugout = box("plugout~ 1 2", 20, 600, 2, 0)
     wire(plugin, 0, plugout, 0)
     wire(plugin, 1, plugout, 1)
 

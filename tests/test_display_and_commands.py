@@ -38,6 +38,8 @@ def test_add_taps_appends_to_channels_and_master_only():
     assert song.tracks[0].devices[-1].name == "MixMatch Tap"   # after the EQ, not in front of it
     assert song.master_track.devices[-1].name == "MixMatch Tap"
     assert add_taps(live, log=lambda *_: None) == 0             # second run adds nothing
+    assert add_taps(live, log=lambda *_: None, replace=True) == len(song.tracks) + 1
+    assert [d.name for d in song.tracks[0].devices] == ["EQ Eight", "MixMatch Tap"]
 
 
 def test_load_device_through_browser():
