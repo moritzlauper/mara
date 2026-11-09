@@ -210,6 +210,11 @@ class ReferenceSet:
             # and 1–6 kHz gets extra tolerance.
             one_sided = bands_between(20, 120)
             extra[bands_between(1000, 6000)] = 2.5
+            # Above 6 kHz there is hardly any voice: the separation still darkens the air (it gives the vocal stem
+            # breath, sibilance and reverb). So the beat may be as bright up there as the full song.
+            air = bands_between(6000, 16000)
+            gap = np.mean([r.full.shape_db - r.inst.shape_db for r in self.refs], axis=0)
+            extra[air] = np.maximum(extra[air], gap[air])
         elif beat:
             basis, how = full, "full references; vocal range 200 Hz–5 kHz only counts where the beat is louder"
             one_sided = VOCAL_RANGE

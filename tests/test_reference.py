@@ -91,3 +91,24 @@ def test_beat_target_against_stems_never_asks_for_more_bass_and_tolerates_presen
     assert set(bands_between(20, 120)) <= set(t.one_sided)
     assert all(t.tolerance[i] >= 3.0 for i in bands_between(1000, 6000))
 
+
+
+def test_beat_target_lets_the_air_be_as_bright_as_the_full_song():
+    import numpy as np
+
+    from mixmatch.analysis import Stats
+    from mixmatch.bands import bands_between
+    from mixmatch.reference import Reference, ReferenceSet
+
+    def st(loud, air_db=0.0):
+        bands = np.full(31, loud - 15.0)
+        bands[bands_between(6000, 16000)] += air_db
+        return Stats(frames=10, loudness=loud, bands_db=bands, shape_db=bands - loud, peak_db=loud + 7, plr=7.0,
+                     width_db=-12.0, low_side_db=-30.0, active=1.0)
+
+    rs = ReferenceSet.__new__(ReferenceSet)
+    rs.log = lambda *_: None
+    rs.refs = [Reference("song.wav", full=st(-7.5), inst=st(-11.0, air_db=-3.0))]   # the stem is 3 dB darker up top
+    rs.separate = lambda: True
+    t = rs.target(beat=True)
+    assert all(t.tolerance[i] >= 3.0 for i in bands_between(6000, 16000))
