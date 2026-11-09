@@ -4,3 +4,4 @@ __pycache__/
 runs/
 roles.json
 .pytest_cache/
+env.local
