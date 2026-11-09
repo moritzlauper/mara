@@ -79,6 +79,17 @@ def _parts(text: str) -> dict:
     return out
 
 
+def checkpoint(workdir: str) -> dict | None:
+    """Where the last stopped run stands (runs/checkpoint.json), for «Continue»; None after a complete run."""
+    try:
+        with open(os.path.join(workdir, "runs", "checkpoint.json")) as f:
+            ck = json.load(f)
+    except (OSError, ValueError):
+        return None
+    return {"phase": ck.get("phase"), "next_channel": ck.get("next_channel"), "stamp": ck.get("stamp"),
+            "percent": round(100 * ck["done"] / ck["total"]) if ck.get("total") else None}
+
+
 def phase_label(phase: str | None) -> str:
     p = (phase or "").lower()
     return ("final" if p.startswith("final") else "channels" if p.startswith("channel") else
@@ -90,7 +101,7 @@ def log_chain(path: str) -> list[str]:
     logs = sorted(glob.glob(os.path.join(os.path.dirname(path), "ui-*.log")))
     chain = [path]
     i = logs.index(path) if path in logs else 0
-    while i > 0 and "━━ Channel pass, resumed at" in open(chain[0]).read():
+    while i > 0 and any(m in open(chain[0]).read() for m in ("━━ Channel pass, resumed at", "↻ Continuing the run")):
         i -= 1
         chain.insert(0, logs[i])
     return chain
@@ -438,6 +449,7 @@ def make_handler(runner: Runner, watcher: "DownloadWatcher | None" = None):
                                         "project_references": project_refs.get(), "live": project_refs.reachable,
                                         "ab": ab_state["which"],
                                         "auto_imported": watcher.imported[-10:] if watcher else [],
+                                        "checkpoint": checkpoint(workdir),
                                         "ab_ready": __import__("mixmatch.ab", fromlist=["latest_before"]).latest_before(
                                             os.path.join(workdir, "runs")) is not None})
             if self.path == "/api/project":
@@ -491,7 +503,9 @@ def make_handler(runner: Runner, watcher: "DownloadWatcher | None" = None):
                         args += ["--silent"]
                     if body.get("no_audit"):
                         args += ["--no-audit"]
-                    if body.get("resume"):
+                    if body.get("continue"):
+                        args += ["--continue"]
+                    elif body.get("resume"):
                         args += ["--resume", body["resume"]]
                     if body.get("minutes"):
                         args += ["--minutes", str(float(body["minutes"]))]
@@ -607,7 +621,7 @@ button.small{padding:2px 8px;font-size:12px}button.danger{background:var(--bad);
   <label><input type="checkbox" id="no_audit"> keep every effect</label></div>
   <div class="row"><label title="The Main fader goes down while MixMatch works and comes back at the end. MixMatch measures before the fader, so the results are the same."><input type="checkbox" id="silent"> silent (no need to listen)</label></div>
   <div class="row"><label>resume at track <input id="resume" size="14" placeholder="optional"></label></div>
-  <div class="row"><button id="start">Start</button><button id="stop" class="ghost">Stop</button><button id="taps" class="ghost">Set taps</button></div>
+  <div class="row"><button id="start">Start</button><button id="cont" class="ghost" hidden>Continue</button><button id="stop" class="ghost">Stop</button><button id="taps" class="ghost">Set taps</button></div>
   <div class="row"><span class="muted">compare the last run:</span><button id="ab_before" class="ghost">Before</button><button id="ab_after" class="ghost">After</button></div>
   <p class="muted" id="msg"></p>
 </section>
@@ -652,6 +666,8 @@ async function post(path, body) {
 $("start").onclick = () => post("/api/run", {auto_ref: $("auto_ref").checked, refs: $("refs").checked, quick: $("quick").checked,
   no_audit: $("no_audit").checked, silent: $("silent").checked, resume: $("resume").value.trim()});
 $("stop").onclick = () => post("/api/stop");
+$("cont").onclick = () => post("/api/run", {continue: true, refs: $("refs").checked, silent: $("silent").checked,
+  no_audit: $("no_audit").checked});
 $("taps").onclick = () => post("/api/taps");
 $("ab_before").onclick = async () => { const j = await post("/api/ab", {which: "before"}); if (!j.error) $("msg").textContent = `Before (${j.changed} parameters)`; };
 $("ab_after").onclick = async () => { const j = await post("/api/ab", {which: "after"}); if (!j.error) $("msg").textContent = `After (${j.changed} parameters)`; };
@@ -703,6 +719,8 @@ async function tick() {
   let s; try { s = await (await fetch("/api/state")).json(); } catch { return; }
   $("status").textContent = s.running ? "running" : (s.done ? "finished" : "idle"); $("status").className = "pill" + (s.running ? " on" : "");
   $("phase").textContent = s.phase || ""; $("start").disabled = s.running;
+  const ck = s.checkpoint; $("cont").hidden = !ck || s.running;
+  if (ck) $("cont").textContent = `Continue at ${ck.next_channel || ck.phase}` + (ck.percent != null ? ` (${ck.percent}%)` : "");
   if (s.auto_imported && s.auto_imported.length !== lastImported) {
     if (lastImported >= 0 && s.auto_imported.length) $("msg").textContent = "Picked up from Downloads: " + s.auto_imported.slice(-3).join(", ");
     lastImported = s.auto_imported.length; lastRefs = ""; }

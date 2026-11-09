@@ -191,3 +191,13 @@ def test_buy_list_adds_a_preview_from_the_cache(tmp_path, monkeypatch):
     (tmp_path / "runs" / "20261109-1-buy.md").write_text(
         "# References (x)\n\n## To get\n\n- **SOPHIE – Immaterial**: bright.  \n  [Spotify](https://s/1)\n")
     assert buy_list(str(tmp_path))[0]["links"]["Preview"] == "https://p/1"
+
+
+def test_checkpoint_for_the_continue_button(tmp_path):
+    import json as _json
+    from mixmatch.ui import checkpoint
+    assert checkpoint(str(tmp_path)) is None
+    (tmp_path / "runs").mkdir()
+    (tmp_path / "runs" / "checkpoint.json").write_text(_json.dumps(
+        {"phase": "channels", "next_channel": "1-Group", "done": 12.0, "total": 48.0, "stamp": "x"}))
+    assert checkpoint(str(tmp_path)) == {"phase": "channels", "next_channel": "1-Group", "stamp": "x", "percent": 25}

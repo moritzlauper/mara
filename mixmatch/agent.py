@@ -109,6 +109,7 @@ class Agent:
                  references=None):
         self.live, self.hub, self.planner = live, hub, planner
         self.s = settings or Settings()
+        self.regions: dict = {}       # track key → (start beat, length) where the channel pass works on it
         self.env = env or RealEnv()
         self.log, self.ask = log, ask
         self.ex = Executor(live, log)
@@ -239,7 +240,7 @@ class Agent:
                     "filtereq3", "pro-q", "pro-c", "pro-mb", "pro-ds")
     METERS = ("loudness meter", "span", "spectrum", "analyzer", "analyser", "tuner", "meter", "insight", "youlean")
 
-    def audit_effects(self, scan, main: tuple[str, float, float], deadline: float) -> None:
+    def audit_effects(self, main: tuple[str, float, float], deadline: float) -> None:
         """Removes EQ Eights and Utilities that change nothing; listens to every other audio effect on and off
         and bypasses those that change nothing or (mixing tools only) make the mix worse."""
         self.log("\n━━ Effects: what does nothing or harms")
@@ -267,7 +268,7 @@ class Agent:
                 if key == "m" and (cls == "limiter" or any(x in name for x in LIMITERS)
                                    or any(c.lower() in name for c, _ in CLIPPERS)):
                     continue  # the loudness chain is set elsewhere
-                region = (main[1], main[2]) if key == "m" else self.channel_region(key, scan, main)
+                region = (main[1], main[2]) if key == "m" else self.regions.get(key)
                 if region is not None:
                     candidates.append((region, key, t["name"], d["name"], cls))
         self.log(f"  listening to {len(candidates)} effects on and off …")
@@ -479,22 +480,23 @@ class Agent:
             return None
         return scan.start + found[0], length
 
-    def channel_pass(self, scan: Scan, main: tuple[str, float, float] | None, deadline: float) -> None:
+    def channel_pass(self, main: tuple[str, float, float] | None, deadline: float, start_at: str | None = None) -> None:
         """Every channel once, most important first: level, EQ, masking, width, dynamics, each where it plays."""
-        order = sorted(self.roles.values(), key=lambda r: (-r.priority, r.name))
-        if self.s.resume:
+        order = self._channel_order()
+        if start_at:
             names = [r.name for r in order]
-            if self.s.resume not in names:
-                raise ValueError(f"--resume: no channel named {self.s.resume!r}")
-            order = order[names.index(self.s.resume):]
-            self.log(f"\n━━ Channel pass, resumed at {self.s.resume}: {len(order)} channels left")
+            if start_at not in names:
+                raise ValueError(f"--resume: no channel named {start_at!r}")
+            order = order[names.index(start_at):]
+            self.log(f"\n━━ Channel pass, resumed at {start_at}: {len(order)} channels left")
         else:
             self.log(f"\n━━ Channel pass: {len(order)} channels")
         for r in order:
             if self.env.now() >= deadline:
                 self.log("  time is up")
                 return
-            region = self.channel_region(r.key, scan, main)
+            self.save_checkpoint(phase="channels", next_channel=r.name)
+            region = self.regions.get(r.key)
             if region is None:
                 self.log(f"\n▶ {r.name}: silent in the whole song, skipped")
                 self.progress(0.0, r.name, total_add=-self.W_CHANNEL)   # takes no time: out of the estimate
@@ -772,12 +774,102 @@ class Agent:
         self.log("Silent: the Main fader is down while MixMatch works (it measures before the fader).")
         return vol["value"]
 
+    CHECKPOINT = "checkpoint.json"
+
+    def save_checkpoint(self, **changes) -> None:
+        """Where a complete run stands, so a stopped run continues there without the preparation:
+        the loudest part, every channel's region, beat mode, key, the phase and the next channel."""
+        self._ck = {**getattr(self, "_ck", {}), **changes,
+                    "done": round(getattr(self, "_done", 0.0), 2), "total": round(getattr(self, "_total", 0.0), 2)}
+        try:
+            with open(os.path.join(self.s.log_dir, self.CHECKPOINT), "w") as f:
+                json.dump(self._ck, f)
+        except OSError:
+            pass
+
+    def load_checkpoint(self) -> dict | None:
+        try:
+            with open(os.path.join(self.s.log_dir, self.CHECKPOINT)) as f:
+                ck = json.load(f)
+        except (OSError, ValueError):
+            return None
+        names = {r.name for r in self.roles.values()}
+        return ck if ck.get("phase") and set(ck.get("regions", {})) <= {r.key for r in self.roles.values()} | {"m"} \
+            and (ck.get("next_channel") in (None, *names)) else None
+
+    def clear_checkpoint(self) -> None:
+        try:
+            os.remove(os.path.join(self.s.log_dir, self.CHECKPOINT))
+        except OSError:
+            pass
+
+    def _channel_order(self) -> list:
+        return sorted(self.roles.values(), key=lambda r: (-r.priority, r.name))
+
     def _run(self, deadline: float) -> None:
         sections = self.sections()
+        ck = self.load_checkpoint() if self.s.resume and self.s.complete else None
+        if self.s.resume == "auto" and ck is None:
+            self.log("Nothing to continue (no stopped run): starting a complete run.")
+            self.s.resume = None
+        if ck is not None:
+            self._resume_from(ck)
+            main = [tuple(ck["main"])]
+            phase = ck["phase"]
+            start_at = ck.get("next_channel") if self.s.resume == "auto" else self.s.resume
+            if self.s.resume != "auto":
+                phase = "channels"
+        else:
+            main, phase, start_at = self._prepare(sections, deadline), "master", None
+            if self.s.resume:                     # an old run without checkpoint: skip the master, start there
+                phase, start_at = "channels", self.s.resume
+            if self.s.complete:
+                self.save_checkpoint(phase=phase, next_channel=start_at)
+        if phase == "master":
+            if self.s.complete:
+                self.log(f"\n━━ Master against the reference")
+            for name, start, length in main:
+                if self.env.now() >= deadline:
+                    break
+                self.log(f"\n▶ {name}")
+                self.play_loop(start, length)
+                self.begin_step(self.W_MASTER)
+                self.section(name, deadline)
+                if self.s.complete:
+                    self.finish_step("master")
+            if not self.s.complete:
+                return
+            phase = "channels"
+            self.save_checkpoint(phase=phase, next_channel=None)
+        if phase == "channels":
+            self.channel_pass(main[0] if self.s.focus == "loud" else None, deadline, start_at)
+            if self.env.now() >= deadline:
+                return
+            phase = "effects"
+            self.save_checkpoint(phase=phase, next_channel=None)
+        if phase == "effects":
+            if self.s.audit:
+                self.audit_effects(main[0], deadline)
+            if self.env.now() >= deadline:
+                return
+            phase = "final"
+            self.save_checkpoint(phase=phase)
+        name, start, length = main[0]
+        if self.env.now() < deadline:
+            self.log(f"\n━━ Final check: master, {name}")
+            self.play_loop(start, length)
+            self.begin_step(self.W_FINAL)
+            self.section("final check", deadline, max_rounds=self.s.final_rounds)
+            self.finish_step("done")
+            self.clear_checkpoint()               # the run is complete: nothing left to continue
+
+    def _prepare(self, sections, deadline) -> list:
+        """Key, one pass through the whole song, beat mode, the loudest part, references; then every
+        channel's region. Returns the master sections."""
         if self.s.complete:
             channels = len(self.roles)
             if self.s.resume:
-                names = [r.name for r in sorted(self.roles.values(), key=lambda r: (-r.priority, r.name))]
+                names = [r.name for r in self._channel_order()]
                 channels -= names.index(self.s.resume) if self.s.resume in names else 0
             masters = 0 if self.s.resume else (1 if self.s.focus == "loud" else len(sections))
             self._done, self._total = 0.0, (self.W_PREP + masters * self.W_MASTER + channels * self.W_CHANNEL
@@ -801,30 +893,31 @@ class Agent:
                 self.suggest_references(main[0])
             except Exception as e:  # suggestions are a bonus: never stop a run for them
                 self.log(f"  no suggestions ({str(e)[:100]})")
+        if scan is not None:
+            focus = main[0] if self.s.focus == "loud" else None
+            self.regions = {r.key: self.channel_region(r.key, scan, focus) for r in self.roles.values()}
+            self._ck = {"stamp": time.strftime("%Y-%m-%d %H:%M"), "main": list(main[0]), "beat": self.beat,
+                        "harmony": getattr(self, "harmony", None),
+                        "regions": {k: (list(v) if v else None) for k, v in self.regions.items()}}
         if self.s.complete:
             self.progress(self.W_PREP, "master" if not self.s.resume else "channels")
-        if self.s.complete and not self.s.resume:
-            self.log(f"\n━━ Master against the reference")
-        for name, start, length in ([] if self.s.resume else main):
-            if self.env.now() >= deadline:
-                break
-            self.log(f"\n▶ {name}")
-            self.play_loop(start, length)
-            self.begin_step(self.W_MASTER)
-            self.section(name, deadline)
-            if self.s.complete:
-                self.finish_step("master")
-        if self.s.complete and scan is not None:
-            self.channel_pass(scan, main[0] if self.s.focus == "loud" else None, deadline)
-            if self.s.audit and self.env.now() < deadline:
-                self.audit_effects(scan, main[0], deadline)
-            name, start, length = main[0]
-            if self.env.now() < deadline:
-                self.log(f"\n━━ Final check: master, {name}")
-                self.play_loop(start, length)
-                self.begin_step(self.W_FINAL)
-                self.section("final check", deadline, max_rounds=self.s.final_rounds)
-                self.finish_step("done")
+        return main
+
+    def _resume_from(self, ck: dict) -> None:
+        """Back to where a stopped run was, without playing the song through again."""
+        self._ck = dict(ck)
+        self.regions = {k: (tuple(v) if v else None) for k, v in ck["regions"].items()}
+        if ck.get("harmony"):
+            self.harmony = ck["harmony"]
+        if ck.get("beat") and not self.beat:
+            self.beat = True
+            if self.refset:
+                self.target = self.refset.target(True, self.s.loudness_from)
+                self.log(f"Target: {self.target.description}, {self.target.loudness:.1f} LUFS")
+        self._done, self._total = float(ck.get("done", 0.0)), float(ck.get("total", 0.0))
+        where = ck.get("next_channel") or ck["phase"]
+        self.log(f"↻ Continuing the run from {ck.get('stamp', '?')} at {where} (no preparation needed)")
+        self.progress(0.0, where)
 
     def explain(self, m: dict) -> None:
         """The distance in plain words and real units, as one «explain» log line (JSON) for the interface."""

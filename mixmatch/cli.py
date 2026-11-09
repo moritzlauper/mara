@@ -177,7 +177,8 @@ def cmd_run(args):
         time.sleep(args.wait)
         Agent(live, hub, planner, Settings(minutes=args.minutes, assist=args.assist, roles_file=args.roles,
                                            mode=args.mode, loudness_from=args.loudness_from,
-                                           focus=args.focus, focus_bars=args.focus_bars, complete=not args.quick, resume=args.resume,
+                                           focus=args.focus, focus_bars=args.focus_bars, complete=not args.quick,
+                                           resume="auto" if args.cont else args.resume,
                                            auto_ref=args.auto_ref or (not args.ref and not args.no_auto_ref),
                                            library=args.library or None,
                                            jamendo=args.jamendo, audit=not args.no_audit,
@@ -233,6 +234,8 @@ def main(argv=None):
     sub.choices["taps"].add_argument("--replace", action="store_true",
                                      help="remove existing taps first and put fresh ones (after rebuilding the device)")
     sub.choices["run"].add_argument("--assist", action="store_true", help="ask before every round")
+    sub.choices["run"].add_argument("--continue", dest="cont", action="store_true",
+                                    help="continue the stopped run exactly where it stopped, without the preparation")
     sub.choices["run"].add_argument("--resume", metavar="TRACK",
                                     help="continue a stopped run: channel pass from this track on, then the final check")
     sub.choices["run"].add_argument("--auto-ref", action="store_true",

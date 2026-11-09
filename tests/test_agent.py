@@ -452,3 +452,33 @@ def test_a_real_planner_error_still_stops_the_run():
     logs = []
     Agent(live, hub, Broken(), Settings(minutes=1, settle=1.0), env=env, log=logs.append).run()
     assert any("Stopped: the planner failed" in l for l in logs)
+
+
+def test_a_stopped_run_continues_exactly_where_it_stopped(tmp_path):
+    import os
+
+    song, hub, env, live = demo_project()
+    env.wait(5)
+    settings = lambda **kw: Settings(minutes=None, complete=True, focus="loud", settle=1.0,
+                                     roles_file=str(tmp_path / "r.json"), log_dir=str(tmp_path), **kw)
+
+    class DiesInTheChannelPass(RulePlanner):
+        def plan(self, ctx):
+            if ctx.get("section") == "channel Snare":       # stop in the channel pass
+                raise RuntimeError("invalid schema")
+            return super().plan(ctx)
+
+    first = []
+    Agent(live, hub, DiesInTheChannelPass(), settings(), env=env, log=first.append).run()
+    assert any("Stopped: the planner failed" in l for l in first)
+    ck = json.load(open(tmp_path / "checkpoint.json"))
+    assert ck["phase"] == "channels" and ck["next_channel"] == "Snare"
+
+    second = []
+    Agent(live, hub, RulePlanner(), settings(resume="auto"), env=env, log=second.append).run()
+    text = "\n".join(second)
+    assert "↻ Continuing the run" in text and "resumed at Snare" in text
+    assert "Suggesting references" not in text and "Master against the reference" not in text
+    assert "Final check" in text and not os.path.exists(tmp_path / "checkpoint.json")   # complete: nothing left
+    first_progress = [json.loads(l.split("progress ", 1)[1]) for l in second if l.strip().startswith("progress {")]
+    assert first_progress[0]["done"] == ck["done"]                                       # the bar goes on from there
