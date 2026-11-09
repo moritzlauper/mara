@@ -92,6 +92,29 @@ def add_taps(live, log=print, replace: bool = False) -> int:
     return added
 
 
+def remove_taps(live, log=print) -> int:
+    """Takes every MixMatch tap out of the set (the set is as it was before MixMatch)."""
+    removed = 0
+    for t in live.get_set()["tracks"]:
+        for d in sorted((d for d in t["devices"] if d["name"] == TAP), key=lambda d: -d["index"]):
+            live.delete_device(t["key"], d["index"])
+            removed += 1
+        if any(d["name"] == TAP for d in t["devices"]):
+            log(f"  − tap on {t['name']}")
+    return removed
+
+
+def set_taps_on(live, on: bool) -> int:
+    """Wakes the taps for a run or lets them sleep after it: a switched-off Max for Live device computes
+    nothing (31 filters per channel) and passes the sound through unchanged."""
+    changes = [{"track": t["key"], "device": d["index"], "param": "Device On", "value": 1.0 if on else 0.0}
+               for t in live.get_set()["tracks"] for d in t["devices"] if d["name"] == TAP
+               and any(p["name"] == "Device On" and (p["value"] >= 0.5) != on for p in d.get("params", []))]
+    if changes:
+        live.batch(changes)
+    return len(changes)
+
+
 def cmd_taps(args):
     from .live_client import LiveClient, LiveError
 
@@ -99,11 +122,16 @@ def cmd_taps(args):
         live = LiveClient().connect()
     except OSError:
         sys.exit("Cannot reach Live on port 9877. Is «MixMatch» selected as a control surface in Live's settings?")
+    if args.remove:
+        n = remove_taps(live)
+        print(f"{n} tap(s) removed." if n else "There are no taps in the set.")
+        return
     try:
         n = add_taps(live, replace=args.replace)
     except LiveError as e:
         sys.exit(f"{e}. Copy «{TAP}.amxd» and mixmatch_tap.js into a folder of your User Library.")
-    print(f"{n} tap(s) added." if n else "Every channel already has a tap.")
+    set_taps_on(live, False)   # asleep until a run needs them: no processing load in between
+    print(f"{n} tap(s) added (switched off until a run starts)." if n else "Every channel already has a tap.")
 
 
 def cmd_suggest_refs(args):
@@ -172,6 +200,8 @@ def cmd_run(args):
     print(f"Planner: {getattr(planner, 'model', None) or 'rules (no Claude Code, no ANTHROPIC_API_KEY, or --rules)'}")
     refset = _refset(args)
     loop = live.get_set()["loop"]
+    if set_taps_on(live, True):
+        print("Taps switched on for the run.")
     live.transport(time=loop["start"], play=True)   # start inside the song, not wherever playback last stopped
     try:
         time.sleep(args.wait)
@@ -185,7 +215,12 @@ def cmd_run(args):
                                            silent=args.silent),
               references=refset).run()
     finally:
-        live.transport(play=False)
+        # The loop brace back where the user had it (MixMatch moved it from part to part), playhead at its start.
+        live.transport(play=False, loop_start=loop["start"], loop_length=loop["length"], loop=loop["on"],
+                       time=loop["start"])
+        print(f"Loop back to bars {loop['start'] / 4 + 1:.0f}–{(loop['start'] + loop['length']) / 4 + 1:.0f}.")
+        set_taps_on(live, False)
+        print("Taps switched off until the next run (no processing load).")
 
 
 def cmd_demo(args):
@@ -231,6 +266,8 @@ def main(argv=None):
         s.add_argument("--minutes", type=float, default=None,
                        help="upper time limit; without it a run goes through every channel until it is complete")
         s.add_argument("--wait", type=float, default=6.0, help="seconds of playback before starting")
+    sub.choices["taps"].add_argument("--remove", action="store_true",
+                                     help="take every MixMatch tap out of the set")
     sub.choices["taps"].add_argument("--replace", action="store_true",
                                      help="remove existing taps first and put fresh ones (after rebuilding the device)")
     sub.choices["run"].add_argument("--assist", action="store_true", help="ask before every round")

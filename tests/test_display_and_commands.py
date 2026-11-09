@@ -110,3 +110,18 @@ def test_reading_a_tap_while_frames_arrive():
     finally:
         stop = True
         th.join()
+
+
+def test_taps_sleep_between_runs_and_can_be_removed():
+    from mixmatch.cli import TAP, remove_taps, set_taps_on
+    from mixmatch.sim import demo_project
+
+    song, hub, env, live = demo_project()
+    live.load_device("t0", TAP, source="user_library")
+    live.load_device("t1", TAP, source="user_library")
+    taps = lambda: [d for t in live.get_set()["tracks"] for d in t["devices"] if d["name"] == TAP]
+    on = lambda: [next(p["value"] for p in d["params"] if p["name"] == "Device On") for d in taps()]
+    assert set_taps_on(live, False) == 2 and on() == [0.0, 0.0]
+    assert set_taps_on(live, False) == 0                     # already asleep: nothing to do
+    assert set_taps_on(live, True) == 2 and on() == [1.0, 1.0]
+    assert remove_taps(live, log=lambda *_: None) == 2 and not taps()

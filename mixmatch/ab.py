@@ -56,6 +56,8 @@ def changes_to(target: dict, set_state: dict, bypass_new: bool) -> list[dict]:
             if v is not None and abs(v - p["value"]) > 1e-6:
                 out.append({"track": t["key"], "device": "mixer", "param": p["name"], "value": v})
         for i, (dev_id, d) in enumerate(zip(_device_ids(t["devices"]), t["devices"])):
+            if d["name"] == "MixMatch Tap":
+                continue   # the taps are switched by the runs, not part of the mix
             params = {p["name"]: p["value"] for p in d["params"]}
             if dev_id not in want["devices"]:
                 if bypass_new and params.get("Device On", 0) >= 0.5 and d["name"] != "MixMatch Tap":

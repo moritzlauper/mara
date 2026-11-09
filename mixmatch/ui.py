@@ -525,6 +525,8 @@ def make_handler(runner: Runner, watcher: "DownloadWatcher | None" = None):
                     return self._send(200, {"changed": n, "which": ab_state["which"]})
                 if self.path == "/api/taps":
                     return self._send(200, {"log": runner.start(["taps"])})
+                if self.path == "/api/taps/remove":
+                    return self._send(200, {"log": runner.start(["taps", "--remove"])})
                 if self.path == "/api/stop":
                     runner.stop()
                     return self._send(200, {"ok": True})
@@ -621,7 +623,7 @@ button.small{padding:2px 8px;font-size:12px}button.danger{background:var(--bad);
   <label><input type="checkbox" id="no_audit"> keep every effect</label></div>
   <div class="row"><label title="The Main fader goes down while MixMatch works and comes back at the end. MixMatch measures before the fader, so the results are the same."><input type="checkbox" id="silent"> silent (no need to listen)</label></div>
   <div class="row"><label>resume at track <input id="resume" size="14" placeholder="optional"></label></div>
-  <div class="row"><button id="start">Start</button><button id="cont" class="ghost" hidden>Continue</button><button id="stop" class="ghost">Stop</button><button id="taps" class="ghost">Set taps</button></div>
+  <div class="row"><button id="start">Start</button><button id="cont" class="ghost" hidden>Continue</button><button id="stop" class="ghost">Stop</button><button id="taps" class="ghost">Set taps</button><button id="untaps" class="ghost" title="Takes every MixMatch tap out of the Live set">Remove taps</button></div>
   <div class="row"><span class="muted">compare the last run:</span><button id="ab_before" class="ghost">Before</button><button id="ab_after" class="ghost">After</button></div>
   <p class="muted" id="msg"></p>
 </section>
@@ -669,6 +671,7 @@ $("stop").onclick = () => post("/api/stop");
 $("cont").onclick = () => post("/api/run", {continue: true, refs: $("refs").checked, silent: $("silent").checked,
   no_audit: $("no_audit").checked});
 $("taps").onclick = () => post("/api/taps");
+$("untaps").onclick = () => { if (confirm("Remove every MixMatch tap from the Live set? «Set taps» puts them back.")) post("/api/taps/remove"); };
 $("ab_before").onclick = async () => { const j = await post("/api/ab", {which: "before"}); if (!j.error) $("msg").textContent = `Before (${j.changed} parameters)`; };
 $("ab_after").onclick = async () => { const j = await post("/api/ab", {which: "after"}); if (!j.error) $("msg").textContent = `After (${j.changed} parameters)`; };
 const ROLE_GROUPS = __ROLE_GROUPS__;
