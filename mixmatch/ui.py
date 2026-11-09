@@ -807,6 +807,7 @@ h3.sub{font:400 12px var(--pixel);text-transform:uppercase;letter-spacing:.06em;
 .part{margin:0 0 10px}.part-head{display:grid;grid-template-columns:minmax(150px,auto) 1fr;gap:10px;align-items:center;font-weight:600;font-size:13.5px}
 .part-head i{display:block;height:9px;background:var(--title)}.part-why{font-size:12.5px;color:var(--muted);margin:3px 0 0}
 ul.part-why{padding-left:18px}ul.part-why li{margin:2px 0}
+.overlap{font-size:13px;margin:2px 0 0}.overlap b{font-family:var(--pixel);font-weight:400;color:var(--accent2)}
 </style>
 </head>
 <body>
@@ -841,7 +842,8 @@ ul.part-why{padding-left:18px}ul.part-why li{margin:2px 0}
 </section>
 <section>
   <h2>How close to the reference</h2>
-  <div class="verdict"><b id="verdict">No run yet</b><span id="distance" class="score" title="Distance in points: 0 = measures like the reference"></span></div>
+  <div class="verdict"><b id="verdict">No run yet</b><span id="distance" class="score" title="Points from tone, loudness, punch, width, bass and clipping: 0 = measures like the reference"></span></div>
+  <div class="overlap" id="overlap"></div>
   <div class="scale"><i id="scale_mark"></i></div>
   <div class="scale-labels"><span>like the reference</span><span>far off</span></div>
   <p class="hint" id="scope"></p>
@@ -957,8 +959,15 @@ function why(k, text) {
   return `<div class="part-why">${esc(text)}</div>`;
 }
 function closeness(s) {
-  const [word, pos] = verdict(s.distance);
-  $("verdict").textContent = word; $("distance").textContent = s.distance != null ? s.distance.toFixed(2) + " points" : "";
+  // The verdict is about the references only. Instruments covering each other is a matter inside the song:
+  // shown on its own line, not mixed into «how close».
+  const p = s.parts || {}, ref = Object.entries(p).filter(([k]) => k !== "masking").reduce((a, [, v]) => a + v, 0);
+  const compared = "tonal" in (s.explain || {});   // the explain line has the comparison only when there was one
+  const [word, pos] = compared ? verdict(ref) : ["Not compared here", 0];
+  $("verdict").textContent = word;
+  $("distance").textContent = compared ? ref.toFixed(2) + " points" : "this part is not meant to sound like the references";
+  const ov = p.masking || 0;
+  $("overlap").innerHTML = ov >= 0.05 ? `Overlap between instruments: <b>${ov < 1 ? "small" : ov < 2.5 ? "noticeable" : "strong"}</b> <span class="score">${ov.toFixed(2)} points</span>` : "";
   $("scale_mark").style.left = (pos * 100).toFixed(1) + "%";
   const phase = (s.history_phase || []).slice(-1)[0];
   const local = (s.section || "").includes("outside the loudest part");
