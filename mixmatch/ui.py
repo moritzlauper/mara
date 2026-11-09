@@ -749,6 +749,8 @@ details.opts[open]{padding-bottom:8px}details.opts label{margin:6px 0}
 .setup{border-top:1px solid var(--lo);padding-top:8px;margin-top:10px;font-size:12.5px;color:var(--muted)}
 button.link{background:none;border:0;box-shadow:none;padding:0;color:var(--accent);font:400 12.5px var(--pixel);text-decoration:underline;cursor:pointer}
 button.link:active{transform:none}
+button:disabled,button.ghost:disabled,.seg button:disabled{opacity:1;color:#a39cb3;background:var(--face);
+  border:2px solid #b9b2c9;box-shadow:none;cursor:default;filter:none;transform:none}
 .verdict{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap}.verdict b{font:400 30px/1.1 var(--display);color:var(--accent)}
 .score{font:12px var(--mono);color:var(--muted)}
 .scale{position:relative;height:12px;margin:10px 0 3px;background:linear-gradient(90deg,var(--lime),#f3e27a 45%,var(--pink));
@@ -855,10 +857,16 @@ async function loadRoles() {
   if (!names.length) { $("roles").textContent = "No roles.json yet (written by the first run)."; return; }
   $("roles").innerHTML = "<table>" + names.map(n => `<tr><td>${esc(n)}</td><td><select data-n="${esc(n)}">${Object.entries(ROLE_GROUPS).map(([g, rs]) => `<optgroup label="${esc(g)}">` + rs.map(r =>
     `<option ${r===roles[n].role?"selected":""}>${r}</option>`).join("") + "</optgroup>").join("")}</select></td><td><input data-p="${esc(n)}" type="number" min="1" max="5" value="${roles[n].priority}" style="width:52px"></td></tr>`).join("") + "</table>";
+  const current = () => names.map(n => document.querySelector(`[data-n="${CSS.escape(n)}"]`).value + "|" +
+    document.querySelector(`[data-p="${CSS.escape(n)}"]`).value).join(",");
+  let saved = current();
+  const rolesDirty = () => { $("save_roles").disabled = current() === saved; };
+  $("roles").addEventListener("input", rolesDirty); $("roles").addEventListener("change", rolesDirty); rolesDirty();
   $("save_roles").onclick = async () => {
     for (const n of names) { roles[n].role = document.querySelector(`[data-n="${CSS.escape(n)}"]`).value;
       roles[n].priority = +document.querySelector(`[data-p="${CSS.escape(n)}"]`).value; roles[n].source = "user"; }
-    await post("/api/roles", roles); $("msg").textContent = "Roles saved; the next run uses them.";
+    await post("/api/roles", roles); saved = current(); rolesDirty();
+    $("msg").textContent = "Roles saved; the next run uses them.";
   };
 }
 function chart(values, phases, runs) {
@@ -1016,9 +1024,14 @@ drop.addEventListener("drop", async e => {
   $("msg").textContent = results.join(" · ");
   drop.textContent = "Drop audio files here to add them to references/"; lastRefs = ""; tick();
 });
-fetch("/api/project").then(r => r.json()).then(p => { $("desc").value = p.description || ""; });
+// «Save» only when something changed: greyed out otherwise
+let savedDesc = "";
+const descDirty = () => { $("save_desc").disabled = $("desc").value.trim() === savedDesc.trim(); };
+$("save_desc").disabled = true;
+fetch("/api/project").then(r => r.json()).then(p => { savedDesc = $("desc").value = p.description || ""; descDirty(); });
+$("desc").addEventListener("input", descDirty);
 $("save_desc").onclick = async () => { const j = await post("/api/project", {description: $("desc").value});
-  if (!j.error) $("msg").textContent = "Description saved."; };
+  if (!j.error) { savedDesc = $("desc").value; descDirty(); $("msg").textContent = "Description saved."; } };
 loadRoles(); tick(); setInterval(tick, 1500);
 </script>
 </body>
