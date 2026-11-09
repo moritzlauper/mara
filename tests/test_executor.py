@@ -134,3 +134,46 @@ def test_installed_plugins_are_loaded_from_the_plugin_browser():
     assert ex.plugin_named("Pro-C 2") == "FabFilter Pro-C 2"
     rr = ex.apply([{"type": "load_device", "track": "t0", "name": "Pro-C 2", "reason": "test"}])
     assert not rr.skipped and song.tracks[0].devices[-1].class_name == "Limiter"
+
+
+def _with_plugins(live, names):
+    from mixmatch.sim import Item
+
+    live.cmd.browser.plugins = Item("Plug-Ins", [Item("VST3", [Item("FabFilter", [Item(n) for n in names])])])
+
+
+def test_limiter_prefers_pro_l2_when_installed():
+    from mixmatch.actions import Executor
+    from mixmatch.sim import FACTORIES, Device, Param, demo_project
+
+    def pro_l2():
+        return Device("Pro-L 2", "PluginDevice", [
+            Param("Device On", 0, 1, 1, str, True, ["Off", "On"]),
+            Param("Gain", 0, 30, 0, lambda v: f"{v:+.2f} dB"),
+            Param("Output Level", -30, 0, 0, lambda v: f"{v:.2f} dBTP"),
+        ])
+
+    song, hub, env, live = demo_project()
+    _with_plugins(live, ["Pro-L 2"])
+    FACTORIES["pro-l 2"] = pro_l2
+    ex = Executor(live, log=lambda *_: None)
+    ex.refresh()
+    rr = ex.apply([{"type": "limiter", "delta_db": 2.0, "reason": "test"}])
+    assert not rr.skipped
+    lim = next(d for d in song.master_track.devices if d.name == "Pro-L 2")
+    assert abs(lim.p("Gain").value - 2.0) < 0.05 and abs(lim.p("Output Level").value + 1.0) < 0.05
+    assert abs(ex.limiter_gain() - 2.0) < 0.05
+
+
+def test_a_plugin_without_parameters_is_removed_again():
+    from mixmatch.actions import Executor
+    from mixmatch.sim import FACTORIES, Device, Param, demo_project
+
+    song, hub, env, live = demo_project()
+    _with_plugins(live, ["Pro-Q 3"])
+    FACTORIES["pro-q 3"] = lambda: Device("Pro-Q 3", "PluginDevice", [Param("Device On", 0, 1, 1, str, True, ["Off", "On"])])
+    ex = Executor(live, log=lambda *_: None)
+    ex.refresh()
+    before = len(song.tracks[0].devices)
+    rr = ex.apply([{"type": "load_device", "track": "t0", "name": "Pro-Q 3", "reason": "test"}])
+    assert "no parameters" in rr.skipped[0]["error"] and len(song.tracks[0].devices) == before

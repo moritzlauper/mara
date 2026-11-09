@@ -216,14 +216,30 @@ class Commands:
             self.song.move_device(new, track, at)
         return {"index": at}
 
+    def browser_tree(self, req):
+        """Diagnostics: a part of Live's browser with the flags of each item."""
+        root = getattr(self.browser, req.get("source", "plugins"), None)
+
+        def node(item, depth):
+            out = {"name": item.name, "loadable": bool(getattr(item, "is_loadable", False)),
+                   "device": bool(getattr(item, "is_device", False)), "folder": bool(getattr(item, "is_folder", False))}
+            kids = list(getattr(item, "children", []))
+            if kids and depth > 0:
+                out["children"] = [node(c, depth - 1) for c in kids[: req.get("limit", 20)]]
+            elif kids:
+                out["n_children"] = len(kids)
+            return out
+
+        return node(root, int(req.get("depth", 2))) if root is not None else None
+
     def list_plugins(self, _):
-        """Names of the installed plugins in Live's browser (VST3, AU, VST), without duplicates."""
+        """Names of the installed plugins in Live's browser, without duplicates (VST3 before AU before VST)."""
         root = getattr(self.browser, "plugins", None)
         names, seen = [], set()
 
         def walk(item, depth):
             for child in getattr(item, "children", []):
-                if getattr(child, "is_loadable", False) and getattr(child, "is_device", True):
+                if getattr(child, "is_loadable", False) and not getattr(child, "is_folder", False):
                     key = _stem(child.name)
                     if key not in seen:
                         seen.add(key)
@@ -232,8 +248,19 @@ class Commands:
                     walk(child, depth - 1)
 
         if root is not None:
-            walk(root, 4)
+            order = {"vst3": 0, "audio units": 1, "au": 1, "vst": 2}
+            for fmt in sorted(getattr(root, "children", []), key=lambda c: order.get(c.name.lower(), 3)):
+                walk(fmt, 4)
         return {"plugins": names}
+
+    def move_device(self, req):
+        """Move the device at index `device` of a track to index `to` in the same chain."""
+        track = self._track(req["track"])
+        devices = list(track.devices)
+        if not isinstance(req["device"], int) or not 0 <= req["device"] < len(devices):
+            raise CommandError("unknown device %r" % req["device"])
+        self.song.move_device(devices[req["device"]], track, int(req["to"]))
+        return {"devices": [d.name for d in track.devices]}
 
     def delete_device(self, req):
         """Remove the device at `device` (index) from a track's chain."""

@@ -40,6 +40,8 @@ def _aliases(name):
         out.append(name[: -len("Resonance A")] + "Q A")
     if name == "Gain":
         out.append("Input Gain")
+    if name == "Ceiling":
+        out.append("Output Level")
     return out
 
 
@@ -53,6 +55,7 @@ MAX_STEP = {"volume": 2.0, "eq": 3.0, "limiter": 2.0, "pan": 15.0, "width": 25.0
 EQ_GAIN_LIMIT = 12.0
 VOLUME_CEILING_DB = 6.0
 LIMITER_CEILING_DB = -1.0
+LIMITERS = ("limiter", "pro-l 2")   # Live's Limiter or FabFilter Pro-L 2 on the master
 LIMITER_MAX_GAIN_DB = 6.0   # beyond this, limiting starts to flatten and distort the mix
 SHAPES = {"bell": ["bell"], "low_shelf": ["low shelf", "lowshelf"], "high_shelf": ["high shelf", "highshelf"],
           "low_cut": ["low cut 12", "lowcut 12", "low cut", "lowcut", "12 db"], "notch": ["notch"]}
@@ -92,7 +95,13 @@ class Executor:
         """Installed plugins (VST3/AU) as Live's browser lists them; read once."""
         if self._plugins is None:
             try:
-                self._plugins = list(self.live.request("list_plugins")["plugins"])
+                names, seen = [], set()
+                for n in self.live.request("list_plugins")["plugins"]:
+                    if "(mono)" in n.lower() or _plain(n) in seen:
+                        continue
+                    seen.add(_plain(n))
+                    names.append(n)
+                self._plugins = names
             except Exception:  # older remote script or no browser: no plugins
                 self._plugins = []
         return self._plugins
@@ -175,6 +184,10 @@ class Executor:
                 idx = at  # plugins show up under their own name, e.g. «FabFilter Pro-C 2»
             if idx is None:
                 raise RuntimeError(f"could not load {name} on {key}")
+            if plugin and len(self.track(key)["devices"][idx]["params"]) <= 1:
+                self.live.delete_device(key, idx)
+                self.refresh()
+                raise RuntimeError(f"{plugin} shows Live no parameters (it would need «Configure» in Live); removed")
             self.log(f"  + {name} on {self.track(key)['name']}")
         return idx
 
@@ -202,7 +215,7 @@ class Executor:
     def limiter_gain(self) -> float | None:
         """Gain of the Limiter on the master in dB, None if there is none."""
         try:
-            dev = self._device(self.master_key(), "limiter")
+            dev = self._device(self.master_key(), *LIMITERS)
         except KeyError:
             return None
         if dev is None:
@@ -287,7 +300,10 @@ class Executor:
 
     def _do_limiter(self, rr, a):
         key = self.master_key()
-        dev = self._ensure_device(key, "Limiter", "Limiter")
+        dev = self._device(key, *LIMITERS)
+        if dev is None:
+            name = "Pro-L 2" if self.plugin_named("Pro-L 2") else "Limiter"
+            dev = self._ensure_device(key, name, name, "Limiter")
         ceiling = self._param(key, dev, "Ceiling")
         if ceiling and abs(self._db_of(ceiling) - LIMITER_CEILING_DB) > 0.05:
             self._set(rr, key, dev, "Ceiling", target=LIMITER_CEILING_DB)
