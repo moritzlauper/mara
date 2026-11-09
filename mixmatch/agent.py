@@ -21,7 +21,7 @@ import numpy as np
 
 from . import roles as roles_mod
 from .actions import CLIPPER_MAX_GAIN_DB, CLIPPERS, LIMITER_MAX_GAIN_DB, LIMITERS, Executor, RoundResult, neutral_device
-from .analysis import Comparison, compare, masking, objective, objective_parts, stats
+from .analysis import TONAL_BANDS, Comparison, compare, masking, objective, objective_parts, stats
 from .bands import CENTRES
 from .taps import is_reference_name
 from .display import parse_display
@@ -764,6 +764,27 @@ class Agent:
                 self.play_loop(start, length)
                 self.section("final check", deadline, max_rounds=self.s.final_rounds)
 
+    def explain(self, m: dict) -> None:
+        """The distance in plain words and real units, as one «explain» log line (JSON) for the interface."""
+        from .analysis import band_label
+
+        cmp, out = m.get("cmp"), {}
+        if cmp is not None:
+            ld, plr, width = cmp.loudness_diff, cmp.plr_diff, cmp.width_diff
+            out["loudness"] = f"{abs(ld):.1f} LU {'quieter' if ld < 0 else 'louder'} than the reference"
+            out["dynamics"] = f"{abs(plr):.1f} dB {'more' if plr > 0 else 'less'} dynamic (PLR) than the reference"
+            out["width"] = f"{abs(width):.1f} dB {'wider' if width > 0 else 'narrower'} than the reference"
+            out["low_side"] = f"bass {cmp.low_side_diff:+.1f} dB more stereo than the reference"
+            out["clipping"] = f"peaks at {cmp.peak_db:.1f} dBFS"
+            worst = sorted(TONAL_BANDS, key=lambda i: -abs(cmp.tonal_excess[i]))[:3]
+            tones = [f"{cmp.tonal_excess[i]:+.1f} dB at {band_label(i)} Hz" for i in worst if abs(cmp.tonal_excess[i]) >= 0.3]
+            out["tonal"] = (", ".join(tones) + " vs the reference") if tones else "close to the reference"
+        names = {r.key: r.name for r in self.roles.values()}
+        pairs = [f"{names.get(x['track_a'], x['track_a'])} ↔ {names.get(x['track_b'], x['track_b'])} at {x['freq_hz']} Hz"
+                 for x in m.get("masking", [])[:3]]
+        out["masking"] = ", ".join(pairs) if pairs else "no channels covering each other"
+        self.log("  explain " + json.dumps(out, ensure_ascii=False))
+
     def measure_fine(self, scoring: str, key: str) -> dict:
         """The first measurement of a section, recording the channel (or master) at the same time to find narrow
         resonances. Falls back to a plain measurement when recording is not possible (simulator, old script)."""
@@ -795,6 +816,7 @@ class Agent:
         m = self.measure_fine(scoring, focus or "m")
         best, stall = m["objective"], 0
         self.log(f"  distance {best:.2f}   ({_parts(m['parts'])})")
+        self.explain(m)
         for n in range(1, (max_rounds or self.s.max_rounds_per_section) + 1):
             if self.env.now() >= deadline:
                 self.log("  time is up")
@@ -836,6 +858,7 @@ class Agent:
             rnd = Round(name, n, best, after["objective"], plan, rr.applied, rr.skipped)
             if after["objective"] < best - self.s.min_gain:
                 self.log(f"    ✓ {best:.2f} → {after['objective']:.2f}   ({_parts(after['parts'])})")
+                self.explain(after)
                 best, m, stall = after["objective"], after, 0
             elif after["objective"] > best + self.s.min_gain:
                 self.ex.undo(rr)

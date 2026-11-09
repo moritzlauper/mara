@@ -16,6 +16,7 @@ Key: Ebm (minor, from MIDI) · chords: Ebm7 – Dbmaj7
     ✓ 5.06 → 4.05   (masking 1.58 · tonal 1.13 · loudness 1.02)
     ↺ undone: 4.05 → 4.20
   ⊘ bypassed Redux on 6-Drum Rack: does nothing here (level +0.0 dB)
+  explain {"loudness": "1.3 LU quieter than the reference", "masking": "Kick ↔ Sub at 40 Hz"}
 Done. 3 rounds, 2 kept, 1 undone.
 """.splitlines(keepends=True)
 
@@ -25,6 +26,7 @@ def test_parse_log():
     assert s["phase"] == "Master against the reference" and s["section"] == "loudest part"
     assert s["history"] == [5.06, 4.05] and s["parts"]["loudness"] == 1.02
     assert s["key"].startswith("Ebm") and s["effects"] and s["done"].startswith("Done.")
+    assert s["explain"]["masking"] == "Kick ↔ Sub at 40 Hz"
     assert [e["kind"] for e in s["events"]][:4] == ["phase", "section", "round", "action"]
 
 

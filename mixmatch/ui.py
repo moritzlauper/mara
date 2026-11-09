@@ -80,7 +80,7 @@ def _parts(text: str) -> dict:
 def parse_log(lines: list[str]) -> dict:
     """Phase, current channel, distance history, decisions, song info and effects from a run's log."""
     state = {"phase": None, "section": None, "distance": None, "parts": {}, "history": [], "events": [],
-             "key": None, "style": None, "mood": None, "effects": [], "references": [], "to_get": [], "done": None}
+             "key": None, "style": None, "mood": None, "explain": {}, "effects": [], "references": [], "to_get": [], "done": None}
     for raw in lines:
         line = raw.rstrip("\n")
         s = line.strip()
@@ -111,6 +111,11 @@ def parse_log(lines: list[str]) -> dict:
             state["events"].append({"kind": "action", "text": s[1:].strip()})
         elif s.startswith("sits well"):
             state["events"].append({"kind": "neutral", "text": s})
+        elif s.startswith("explain "):
+            try:
+                state["explain"] = json.loads(s[len("explain "):])
+            except ValueError:
+                pass
         elif s.startswith("Key:"):
             state["key"] = s[4:].strip()
         elif s.startswith("sounds like:"):
@@ -460,6 +465,7 @@ button.small{padding:2px 8px;font-size:12px}button.danger{background:var(--bad);
 <section>
   <h2>Distance to target</h2>
   <div class="big" id="distance">–</div><div class="muted" id="section"></div>
+  <div class="muted" style="font-size:12px">0 = measures like the reference · lower is better · points, not dB</div>
   <svg id="chart" viewBox="0 0 300 90" preserveAspectRatio="none"></svg>
   <div class="parts" id="parts"></div>
 </section>
@@ -529,7 +535,9 @@ async function tick() {
   $("distance").textContent = s.distance != null ? s.distance.toFixed(2) : "–"; $("section").textContent = s.section || "";
   chart(s.history);
   const parts = Object.entries(s.parts || {}); const top = Math.max(1, ...parts.map(p => p[1]));
-  $("parts").innerHTML = parts.map(([k, v]) => `<div class="bar"><span>${esc(k)}</span><i style="width:${(v/top)*100}%"></i><span>${v.toFixed(2)}</span></div>`).join("");
+  const ex = s.explain || {};
+  $("parts").innerHTML = parts.map(([k, v]) => `<div class="bar"><span>${esc(k)}</span><i style="width:${(v/top)*100}%"></i><span>${v.toFixed(2)}</span></div>` +
+    (ex[k] ? `<div class="muted" style="font-size:12px;margin:-2px 0 6px 98px">${esc(ex[k])}</div>` : "")).join("");
   $("song").innerHTML = [s.key && `<div><b>${esc(s.key)}</b></div>`, s.style && `<div class="muted">sounds like ${esc(s.style)}</div>`].filter(Boolean).join("") || "No run yet.";
   $("events").innerHTML = s.events.slice().reverse().map(e => `<div class="ev ${e.kind}">${esc(e.text)}</div>`).join("");
   const refsKey = JSON.stringify(s.reference_files) + JSON.stringify(s.project_references) + s.references.length;
