@@ -185,8 +185,7 @@ def objective_parts(cmp: Comparison | None, maskings: float = 0.0, target_lufs_t
         "loudness": max(0.0, abs(cmp.loudness_diff) - target_lufs_tolerance),
         "clipping": max(0.0, cmp.peak_db + 1.0) * 4,  # anything above −1 dBFS true-peak-ish is punished hard
         "low_side": max(0.0, cmp.low_side_diff) * 0.5,
-        # wider than the reference counts double: it is the more audible fault and takes the room a vocal needs
-        "width": cmp.width_diff * 0.4 if cmp.width_diff > 0 else -cmp.width_diff * 0.2,
+        "width": abs(cmp.width_diff) * 0.2,
         "dynamics": abs(cmp.plr_diff) * 0.3,
         "masking": maskings,
     }

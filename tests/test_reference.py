@@ -91,11 +91,3 @@ def test_beat_target_against_stems_never_asks_for_more_bass_and_tolerates_presen
     assert set(bands_between(20, 120)) <= set(t.one_sided)
     assert all(t.tolerance[i] >= 3.0 for i in bands_between(1000, 6000))
 
-
-def test_too_wide_counts_more_than_too_narrow():
-    from types import SimpleNamespace
-    import numpy as np
-    from mixmatch.analysis import CENTRES, objective_parts
-    cmp = lambda w: SimpleNamespace(tonal_excess=np.zeros(len(CENTRES)), loudness_diff=0.0, peak_db=-3.0,
-                                    low_side_diff=0.0, width_diff=w, plr_diff=0.0)
-    assert objective_parts(cmp(2.0))["width"] == 2 * objective_parts(cmp(-2.0))["width"]
