@@ -1,11 +1,15 @@
 """What a track sounds like, and which tracks sound like it.
 
-Uses CLAP (laion/clap-htsat-unfused, runs locally), a model that places audio
-and text descriptions in the same space: the style of a track is the closest
-description, and similar tracks are the closest audio. Embeddings of library
-files are cached, so a library is listened to once.
+Uses CLAP, a model that places audio and text descriptions in the same space:
+the style of a track is the closest description, and similar tracks are the
+closest audio. Embeddings of library files are cached, so a library is listened
+to once.
 
-    pip install "mixmatch[style]"
+Preferred: LAION's original music checkpoint, which MixMatch sets up by itself
+on first use (its own Python 3.11 environment through uv, about 2.5 GB). The
+Hugging Face port of that checkpoint is broken on the text side, so it is not
+used. Without uv, or if the setup fails, the general model
+laion/clap-htsat-unfused (Hugging Face, `pip install "mixmatch[style]"`) is used.
 """
 from __future__ import annotations
 
@@ -17,8 +21,13 @@ import subprocess
 
 import numpy as np
 
-CACHE = os.path.join(os.environ.get("MIXMATCH_CACHE", os.path.expanduser("~/.cache/mixmatch")), "clap")
+BASE = os.environ.get("MIXMATCH_CACHE", os.path.expanduser("~/.cache/mixmatch"))
+CACHE = os.path.join(BASE, "clap")
 MODEL = "laion/clap-htsat-unfused"
+LAION_ENV = os.path.join(BASE, "laion-env")
+LAION_CKPT = os.path.join(BASE, "laion", "music_audioset_epoch_15_esc_90.14.pt")
+LAION_URL = "https://huggingface.co/lukewys/laion_clap/resolve/main/music_audioset_epoch_15_esc_90.14.pt"
+LAION_PACKAGES = ["laion-clap", "transformers==4.30.2", "numpy<2", "torch", "torchvision"]
 SR = 48000            # CLAP's sample rate
 CLIP = 10.0           # seconds per clip
 AUDIO = (".wav", ".aif", ".aiff", ".flac", ".mp3", ".m4a", ".aac", ".ogg")
@@ -101,42 +110,132 @@ def tempo(mono: np.ndarray) -> float | None:
 
 
 # ── CLAP ───────────────────────────────────────────────────────────────────
-class Listener:
-    """Loads CLAP once; embeds audio files (cached) and text."""
+def ensure_laion(log=print) -> str | None:
+    """Python of the LAION environment, set up on first use; None if that is not possible here."""
+    python = os.path.join(LAION_ENV, "bin", "python")
+    uv = shutil.which("uv") or os.path.expanduser("~/.local/bin/uv")
+    try:
+        if not os.path.exists(python):
+            if not os.path.exists(uv):
+                return None
+            log("  setting up the LAION music model (once, a few minutes) …")
+            subprocess.run([uv, "venv", "-q", "--python", "3.11", "--python-preference", "only-managed", LAION_ENV],
+                           check=True, capture_output=True)
+            subprocess.run([uv, "pip", "install", "-q", "--python", python, *LAION_PACKAGES],
+                           check=True, capture_output=True)
+        if not os.path.exists(LAION_CKPT):
+            log("  downloading the LAION music checkpoint (2.4 GB, once) …")
+            os.makedirs(os.path.dirname(LAION_CKPT), exist_ok=True)
+            subprocess.run(["curl", "-sL", "--fail", "-o", LAION_CKPT + ".part", LAION_URL], check=True)
+            os.replace(LAION_CKPT + ".part", LAION_CKPT)
+        return python
+    except (subprocess.CalledProcessError, OSError) as e:
+        log(f"  LAION music model not available ({e}); using the general CLAP model")
+        return None
 
-    def __init__(self, log=print):
+
+class _Laion:
+    """The original LAION music checkpoint, in its own process and Python environment."""
+
+    name = "laion-music"
+    templates = ("The genre of the music is {}.", "This is a {} song.")  # the phrasing of its training captions
+
+    def __init__(self, python: str):
+        import tempfile
+
+        worker = os.path.join(os.path.dirname(os.path.abspath(__file__)), "laion_worker.py")
+        self.proc = subprocess.Popen([python, worker, LAION_CKPT], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                     stderr=subprocess.DEVNULL, text=True, bufsize=1)
+        self.tmp = tempfile.mkdtemp(prefix="mixmatch-clap-")
+        first = self._read()
+        if not first.get("ready"):
+            raise RuntimeError(f"LAION worker did not start: {first}")
+
+    def _read(self) -> dict:
+        while True:
+            line = self.proc.stdout.readline()
+            if not line:
+                raise RuntimeError("LAION worker stopped")
+            if line.startswith("{"):
+                return json.loads(line)
+
+    def _ask(self, req: dict) -> np.ndarray:
+        self.proc.stdin.write(json.dumps(req) + "\n")
+        self.proc.stdin.flush()
+        out = self._read()
+        if "error" in out:
+            raise RuntimeError(out["error"])
+        return np.asarray(out["emb"], dtype=np.float32)
+
+    def text(self, phrases: list[str]) -> np.ndarray:
+        return self._ask({"text": phrases})
+
+    def audio(self, clips: list[np.ndarray]) -> np.ndarray:
+        path = os.path.join(self.tmp, "clips.npy")
+        np.save(path, np.stack(clips).astype(np.float32))
+        return self._ask({"audio": path})
+
+
+class _HF:
+    """laion/clap-htsat-unfused through transformers: the general model, the fallback."""
+
+    name = MODEL
+    templates = ("{} music", "a {} song", "this is a {} track")
+
+    def __init__(self):
         import torch
         from transformers import ClapModel, ClapProcessor
 
-        self.torch, self.log = torch, log
+        self.torch = torch
         self.model = ClapModel.from_pretrained(MODEL).eval()
         self.processor = ClapProcessor.from_pretrained(MODEL)
 
-    def _norm(self, x) -> np.ndarray:
+    def _np(self, x) -> np.ndarray:
         x = getattr(x, "pooler_output", x)  # transformers 5 returns an output object with the 512-d projection
-        x = x.detach().cpu().numpy().astype(np.float32)
+        return x.detach().cpu().numpy().astype(np.float32)
+
+    def text(self, phrases: list[str]) -> np.ndarray:
+        inputs = self.processor(text=phrases, return_tensors="pt", padding=True)
+        with self.torch.no_grad():
+            return self._np(self.model.get_text_features(**inputs))
+
+    def audio(self, clips: list[np.ndarray]) -> np.ndarray:
+        inputs = self.processor(audio=clips, sampling_rate=SR, return_tensors="pt")
+        with self.torch.no_grad():
+            return self._np(self.model.get_audio_features(**inputs))
+
+
+class Listener:
+    """Embeds audio files (cached) and text with the best CLAP model available here."""
+
+    def __init__(self, log=print, backend: str = "auto"):
+        self.log = log
+        self.backend = None
+        if backend in ("auto", "laion"):
+            python = ensure_laion(log)
+            if python:
+                try:
+                    self.backend = _Laion(python)
+                except Exception as e:
+                    log(f"  LAION music model failed to start ({str(e)[:100]}); using the general CLAP model")
+        if self.backend is None:
+            self.backend = _HF()
+
+    @staticmethod
+    def _unit(x: np.ndarray) -> np.ndarray:
         return x / np.maximum(np.linalg.norm(x, axis=-1, keepdims=True), 1e-9)
 
     def text(self, labels: list[str]) -> np.ndarray:
         """One embedding per label, averaged over a few phrasings: single prompts are noisy."""
-        out = []
-        for template in ("{} music", "a {} song", "this is a {} track"):
-            inputs = self.processor(text=[template.format(l) for l in labels], return_tensors="pt", padding=True)
-            with self.torch.no_grad():
-                out.append(self._norm(self.model.get_text_features(**inputs)))
-        mean = np.mean(out, axis=0)
-        return mean / np.linalg.norm(mean, axis=1, keepdims=True)
+        out = [self._unit(self.backend.text([t.format(l) for l in labels])) for t in self.backend.templates]
+        return self._unit(np.mean(out, axis=0))
 
     def clips(self, clips: list[np.ndarray]) -> np.ndarray:
-        inputs = self.processor(audio=clips, sampling_rate=SR, return_tensors="pt")
-        with self.torch.no_grad():
-            emb = self._norm(self.model.get_audio_features(**inputs))
-        mean = emb.mean(axis=0)
-        return mean / max(np.linalg.norm(mean), 1e-9)
+        return self._unit(self._unit(self.backend.audio(clips)).mean(axis=0))
 
     def file(self, path: str) -> np.ndarray:
         st = os.stat(path)
-        key = hashlib.sha1(f"{os.path.abspath(path)}|{st.st_size}|{st.st_mtime}|{MODEL}|v1".encode()).hexdigest()[:16]
+        key = hashlib.sha1(f"{os.path.abspath(path)}|{st.st_size}|{st.st_mtime}|{self.backend.name}|v1".encode()).hexdigest()[:16]
         cached = os.path.join(CACHE, key + ".npy")
         if os.path.exists(cached):
             return np.load(cached)

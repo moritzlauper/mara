@@ -161,7 +161,9 @@ mixmatch suggest-refs my-beat.wav --library               # also: similar songs 
 ```
 
 MixMatch listens to an export of your track with CLAP, an audio model that
-places music and descriptions in the same space: it names the closest styles,
+places music and descriptions in the same space (LAION's music checkpoint,
+which MixMatch sets up by itself on first use through uv, about 2.5 GB; the
+general CLAP model when that is not possible): it names the closest styles,
 estimates the tempo and, with `--library`, ranks the songs in a folder by how
 close they sound (cached, so a library is listened to once). Claude then
 suggests real tracks to mix against, with Bandcamp and Beatport search links.
