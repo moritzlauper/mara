@@ -83,7 +83,7 @@ Actions (unused fields null):
 - width: track, width_pct (Utility width, 100 = unchanged), bass_mono (true/false)
 - limiter: delta_db (Limiter gain on the master, ceiling fixed at -1 dB)
 - param: track, device_index, param (exact name), target (in the units Live displays, e.g. dB, ms, ratio)
-- load_device: track, name (e.g. "Compressor", "Glue Compressor"); configure it with param actions in later rounds
+- load_device: track, name (e.g. "Compressor", "Glue Compressor", or an installed plugin from "installed_plugins" such as "Pro-C 2" or "Pro-DS"; prefer a suitable installed plugin over Live's own device); configure it with param actions in later rounds
 Track keys: "t0", "t1", … normal tracks, "r0" … returns, "m" master."""
 
 

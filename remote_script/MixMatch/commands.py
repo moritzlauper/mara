@@ -53,7 +53,7 @@ TAP = "MixMatch Tap"
 def _stem(name):
     """Browser item name without a device file extension, lower case: «MixMatch Tap.amxd» → «mixmatch tap»."""
     name = name.lower()
-    for ext in (".amxd", ".adv", ".adg"):
+    for ext in (".amxd", ".adv", ".adg", ".vst3", ".component", ".vst"):
         if name.endswith(ext):
             return name[: -len(ext)]
     return name
@@ -194,12 +194,13 @@ class Commands:
         """Load a device into a track's chain: at the end, but before a «MixMatch Tap» so the tap keeps measuring last.
 
         `source` is «audio_effects» (built-in devices such as «EQ Eight», the
-        default) or «user_library» (e.g. the «MixMatch Tap» device itself).
+        default), «user_library» (e.g. the «MixMatch Tap» device itself) or
+        «plugins» (installed VST3/AU plugins such as «Pro-L 2»).
         """
         if self.browser is None:
             raise CommandError("browser not available")
         source = req.get("source", "audio_effects")
-        if source not in ("audio_effects", "user_library"):
+        if source not in ("audio_effects", "user_library", "plugins"):
             raise CommandError("unknown source %r" % source)
         track = self._track(req["track"])
         item = self._find_item(getattr(self.browser, source), req["name"].lower(), 6)
@@ -214,6 +215,25 @@ class Commands:
             new = list(track.devices)[-1]
             self.song.move_device(new, track, at)
         return {"index": at}
+
+    def list_plugins(self, _):
+        """Names of the installed plugins in Live's browser (VST3, AU, VST), without duplicates."""
+        root = getattr(self.browser, "plugins", None)
+        names, seen = [], set()
+
+        def walk(item, depth):
+            for child in getattr(item, "children", []):
+                if getattr(child, "is_loadable", False) and getattr(child, "is_device", True):
+                    key = _stem(child.name)
+                    if key not in seen:
+                        seen.add(key)
+                        names.append(child.name)
+                elif depth > 0:
+                    walk(child, depth - 1)
+
+        if root is not None:
+            walk(root, 4)
+        return {"plugins": names}
 
     def delete_device(self, req):
         """Remove the device at `device` (index) from a track's chain."""

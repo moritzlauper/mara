@@ -170,6 +170,7 @@ class Browser:
                                                     Item("Utilities", [Item("Utility")]),
                                                     Item("Dynamics", [Item("Limiter")])])
         self.user_library = Item("User Library", [Item("MixMatch", [Item("MixMatch Tap.amxd")])])
+        self.plugins = Item("Plug-Ins", [])   # none installed in the simulator
 
     def load_item(self, item):
         # Like Live: always appended to the chain of the selected track.

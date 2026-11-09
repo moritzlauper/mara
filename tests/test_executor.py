@@ -120,3 +120,17 @@ def test_neutral_eq_bands_count_as_free():
     rr = ex.apply([{"type": "eq", "track": "t0", "freq_hz": 3000, "gain_db": -1.5, "q": 1.0, "shape": "bell",
                     "reason": "test"}])
     assert rr.changes and not rr.skipped
+
+
+def test_installed_plugins_are_loaded_from_the_plugin_browser():
+    from mixmatch.actions import Executor
+    from mixmatch.sim import FACTORIES, Item, demo_project, limiter
+
+    song, hub, env, live = demo_project()
+    live.cmd.browser.plugins = Item("Plug-Ins", [Item("VST3", [Item("FabFilter", [Item("FabFilter Pro-C 2")])])])
+    FACTORIES["fabfilter pro-c 2"] = lambda: limiter()   # any device stands in for the plugin
+    ex = Executor(live, log=lambda *_: None)
+    ex.refresh()
+    assert ex.plugin_named("Pro-C 2") == "FabFilter Pro-C 2"
+    rr = ex.apply([{"type": "load_device", "track": "t0", "name": "Pro-C 2", "reason": "test"}])
+    assert not rr.skipped and song.tracks[0].devices[-1].class_name == "Limiter"

@@ -22,6 +22,14 @@ from dataclasses import dataclass, field
 from .bands import RATIO
 from .display import parse_display
 
+def _plain(name: str) -> str:
+    n = name.lower().strip()
+    for ext in (".vst3", ".component", ".vst"):
+        if n.endswith(ext):
+            n = n[: -len(ext)]
+    return n.removeprefix("fabfilter ").strip()
+
+
 def _aliases(name):
     """Parameter names differ between Live versions: EQ Eight «1 Resonance A» is «1 Q A» in Live 12,
     the Limiter's «Gain» is «Input Gain»."""
@@ -77,6 +85,22 @@ class Executor:
         self.set_state: dict = {}
         self.locks: set[tuple] = set()
         self.last_set: dict[tuple, float] = {}   # what we set last time, to notice the user's hand
+        self._plugins: list[str] | None = None
+
+    @property
+    def plugins(self) -> list[str]:
+        """Installed plugins (VST3/AU) as Live's browser lists them; read once."""
+        if self._plugins is None:
+            try:
+                self._plugins = list(self.live.request("list_plugins")["plugins"])
+            except Exception:  # older remote script or no browser: no plugins
+                self._plugins = []
+        return self._plugins
+
+    def plugin_named(self, name: str) -> str | None:
+        """The installed plugin whose name matches (case and «FabFilter » prefix ignored)."""
+        want = _plain(name)
+        return next((p for p in self.plugins if _plain(p) == want), None)
 
     # ── reading the set ─────────────────────────────────────────────────────
     def refresh(self) -> dict:
@@ -103,8 +127,9 @@ class Executor:
         return None
 
     def _device(self, key: str, *names: str) -> int | None:
+        plain = {_plain(n) for n in names}
         for d in self.track(key)["devices"]:
-            if d["class_name"].lower() in names or d["name"].lower() in names:
+            if d["class_name"].lower() in names or d["name"].lower() in names or _plain(d["name"]) in plain:
                 return d["index"]
         return None
 
@@ -139,9 +164,15 @@ class Executor:
     def _ensure_device(self, key: str, name: str, *classes: str) -> int:
         idx = self._device(key, *(c.lower() for c in classes))
         if idx is None:
-            self.live.load_device(key, name)
+            plugin = self.plugin_named(name)
+            if plugin:
+                at = self.live.load_device(key, plugin, source="plugins")
+            else:
+                at = self.live.load_device(key, name)
             self.refresh()
             idx = self._device(key, *(c.lower() for c in classes))
+            if idx is None and plugin and 0 <= at < len(self.track(key)["devices"]):
+                idx = at  # plugins show up under their own name, e.g. «FabFilter Pro-C 2»
             if idx is None:
                 raise RuntimeError(f"could not load {name} on {key}")
             self.log(f"  + {name} on {self.track(key)['name']}")

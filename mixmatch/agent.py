@@ -389,6 +389,7 @@ class Agent:
             "limiter": {"gain_db": self.ex.limiter_gain(), "max_gain_db": LIMITER_MAX_GAIN_DB,
                         "note": "at its maximum: the remaining loudness gap is accepted and does not count; do not "
                                 "raise faders to chase loudness" if self.limiter_at_cap() else ""},
+            "installed_plugins": self.ex.plugins[:80],
             "channels": channels,
             "masking": m["masking"][:8],
             "locked": [list(map(str, l)) for l in sorted(self.ex.locks, key=str)],
