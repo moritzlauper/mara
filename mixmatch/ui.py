@@ -719,7 +719,7 @@ td{padding:4px 6px;border-bottom:1px solid var(--line)}select,input,textarea{bac
 pre{max-height:260px;overflow:auto;font-size:12px;background:var(--bg);padding:10px;border-radius:8px;margin:0;white-space:pre-wrap}
 svg{width:100%;height:90px}.prog{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:12px}
 .prog i{display:block;width:160px;height:7px;border-radius:4px;background:var(--line);overflow:hidden}.prog b{display:block;height:100%;background:var(--accent)}
-.chartlabels{position:relative;height:16px;font-size:11px;color:var(--muted)}.chartlabels span{position:absolute;white-space:nowrap}
+.chartlabels{position:relative;height:30px;font-size:11px;color:var(--muted)}.chartlabels span{position:absolute;white-space:nowrap}
 .drop{margin-top:12px;border:2px dashed var(--line);border-radius:10px;padding:34px 16px;min-height:110px;display:flex;align-items:center;justify-content:center;text-align:center;color:var(--muted);font-size:14px}
 .drop.over{border-color:var(--accent);color:var(--accent)}.reflist li{display:flex;justify-content:space-between;gap:8px;align-items:center}
 .reflist li span{flex:1;min-width:0;overflow-wrap:anywhere}.reflist li button{flex-shrink:0}
@@ -746,7 +746,7 @@ header h1:hover{color:var(--accent2);text-shadow:3px 3px 0 var(--lime)}
   border:1px solid;border-color:var(--lo) var(--hi) var(--hi) var(--lo)}
 .pill.on{background:var(--lime);color:var(--on-bright);border-color:var(--lime-edge)}
 #phase{font-family:var(--mono);font-size:12px}
-main{gap:18px;padding:20px;grid-template-columns:repeat(auto-fit,minmax(min(100%,400px),1fr));align-items:start}
+main{gap:0 18px;padding:20px;grid-template-columns:repeat(auto-fit,minmax(min(100%,400px),1fr));align-items:start;grid-auto-rows:4px}
 section{background:var(--panel);border-radius:0;padding:0 14px 14px;
   border:2px solid;border-color:var(--hi) var(--lo) var(--lo) var(--hi);box-shadow:1px 1px 0 var(--shadow),4px 4px 0 var(--drop)}
 section>h2:first-child{margin:0 -14px 12px;padding:5px 10px;background:var(--title);color:#fff;
@@ -931,15 +931,20 @@ function chart(values, phases, runs) {
   phases = phases || []; runs = runs || [];
   const max = Math.max(...values) * 1.05, w = 300, h = 90, x = i => (i/(values.length-1))*w, y = v => h - (v/max)*h;
   // one line per phase: master and channels are measured differently, so their numbers are not joined
-  let svg = "", labels = "", from = 0;
+  let svg = "", labels = "", from = 0, lastPx = -1e9, row = 0;
+  const px = $("chart").getBoundingClientRect().width || 300;
   for (let i = 1; i <= values.length; i++) {
     if (i < values.length && phases[i] === phases[from] && runs[i] === runs[from]) continue;
     const seg = values.slice(from, i).map((v, j) => `${x(from + j)},${y(v)}`).join(" ");
     svg += i - from > 1 ? `<polyline fill="none" stroke="var(--accent)" stroke-width="2" points="${seg}"/>`
                         : `<circle cx="${x(from)}" cy="${y(values[from])}" r="2" fill="var(--accent)"/>`;
     if (from > 0) svg += `<line x1="${x(from) - w/(values.length-1)/2}" x2="${x(from) - w/(values.length-1)/2}" y1="0" y2="${h}" stroke="var(--line)" stroke-dasharray="${runs[from] !== runs[from-1] ? "4 3" : "0"}"/>`;
-    if (phases[from] !== phases[from-1] && phases[from])
-      labels += `<span style="left:${(x(from)/w)*100}%">${esc(phases[from])}${runs[from] !== runs[from-1] && from ? " (resumed)" : ""}</span>`;
+    if (phases[from] !== phases[from-1] && phases[from]) {
+      const at = (x(from) / w) * px;
+      row = at - lastPx < 70 ? 1 - row : 0;     // too close to the previous label: the other line
+      lastPx = at;
+      labels += `<span style="left:${(x(from)/w)*100}%;top:${row * 14}px">${esc(phases[from])}${runs[from] !== runs[from-1] && from ? " (resumed)" : ""}</span>`;
+    }
     from = i;
   }
   $("chart").innerHTML = svg; $("chartlabels").innerHTML = labels;
@@ -1100,6 +1105,21 @@ fetch("/api/project").then(r => r.json()).then(p => { savedDesc = $("desc").valu
 $("desc").addEventListener("input", descDirty);
 $("save_desc").onclick = async () => { const j = await post("/api/project", {description: $("desc").value});
   if (!j.error) { savedDesc = $("desc").value; descDirty(); $("msg").textContent = "Description saved."; } };
+// Masonry: grid rows of 4 px, each window spans as many as its height needs, so a short window does not leave
+// a gap under itself when its neighbour is tall (narrow screens with two columns especially).
+let packing = 0;
+function pack() {
+  if (packing) return;
+  packing = requestAnimationFrame(() => {
+    const gap = 18, unit = 4;                    // rows of 4 px, no row gap: 18 px of span keep windows apart
+    for (const sec of document.querySelector("main").children)
+      sec.style.gridRowEnd = "span " + Math.ceil((sec.scrollHeight + 4 + gap) / unit);
+    packing = 0;
+  });
+}
+const packer = new ResizeObserver(pack);
+packer.observe(document.querySelector("main"));
+for (const sec of document.querySelector("main").children) packer.observe(sec);
 loadRoles(); tick(); setInterval(tick, 1500);
 </script>
 </body>
