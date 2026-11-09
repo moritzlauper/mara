@@ -2,6 +2,7 @@ import numpy as np
 
 from conftest import write_audio
 from mixmatch.analysis import compare
+from mixmatch.bands import bands_between
 from mixmatch.reference import VOCAL_RANGE, ReferenceSet, profile
 
 
@@ -32,7 +33,8 @@ def test_beat_mode_uses_instrumental_stems_when_available(tmp_path, monkeypatch)
     song = write_audio(str(tmp_path / "song.wav"), vocals=True)
     rs = ReferenceSet([song], log=lambda *_: None)
     t = rs.target(beat=True)
-    assert "instrumental" in t.description and not t.one_sided
+    assert "instrumental" in t.description
+    assert t.one_sided == bands_between(20, 120)            # only the low end is one-sided, not the vocal range
     assert abs(t.loudness - rs.refs[0].full.loudness) < 1e-9          # loudness from the full song
     t2 = rs.target(beat=True, loudness_from="instrumental")
     assert abs(t2.loudness - rs.refs[0].inst.loudness) < 1e-9
