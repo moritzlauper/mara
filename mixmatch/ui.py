@@ -719,8 +719,6 @@ section{background:var(--panel);border-radius:0;padding:0 14px 14px;
   border:2px solid;border-color:var(--hi) var(--lo) var(--lo) var(--hi);box-shadow:1px 1px 0 var(--shadow),4px 4px 0 var(--drop)}
 section>h2:first-child{margin:0 -14px 12px;padding:5px 10px;background:var(--title);color:#fff;
   font:400 12px var(--pixel);letter-spacing:.06em;text-transform:uppercase;display:flex;align-items:center;gap:8px}
-section>h2:first-child::after{content:"";margin-left:auto;width:11px;height:11px;background:var(--face);
-  border:1px solid;border-color:var(--hi) var(--lo) var(--lo) var(--hi)}
 section h2{font:400 12px var(--pixel);letter-spacing:.05em;color:var(--ink)}
 button{border-radius:0;background:var(--lime);color:var(--on-bright);border:2px solid var(--lime-edge);font:400 13px var(--pixel);
   padding:6px 12px;box-shadow:inset -2px -2px 0 rgba(0,0,0,.18),inset 2px 2px 0 rgba(255,255,255,.55)}
