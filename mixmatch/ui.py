@@ -233,6 +233,88 @@ def import_downloads(workdir: str, folder: str | None = None, minutes: float = 6
     return added
 
 
+def _words(text: str) -> str:
+    import unicodedata
+
+    text = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode().lower()
+    return " " + re.sub(r"[^a-z0-9]+", " ", re.sub(r"\(.*?\)|\[.*?\]", " ", text)).strip() + " "
+
+
+def matches(name: str, suggestion: dict) -> bool:
+    """A downloaded file name belongs to a suggestion: its title as whole words, and its lead artist."""
+    title_artist = suggestion["title"].split(" – ", 1)
+    if len(title_artist) != 2:
+        return False
+    artist, title = title_artist
+    lead = re.split(r",|&| x | and ", artist, maxsplit=1)[0]
+    n = _words(name)
+    return _words(title) in n and _words(lead) in n
+
+
+class DownloadWatcher:
+    """Picks up purchased or free downloads of suggested references: new, finished audio files or ZIPs in the
+    Downloads folder whose names match a suggestion go to references/ by themselves."""
+
+    PARTIAL = (".crdownload", ".part", ".download", ".tmp")
+
+    def __init__(self, workdir: str, folder: str | None = None):
+        self.workdir, self.folder = workdir, folder or os.path.expanduser("~/Downloads")
+        self.started, self.sizes, self.done, self.imported = time.time(), {}, set(), []
+
+    def scan(self, suggestions: list[dict]) -> list[str]:
+        import shutil
+        import zipfile
+
+        if not suggestions or not os.path.isdir(self.folder):
+            return []
+        added = []
+        target = os.path.join(self.workdir, "references")
+        for name in os.listdir(self.folder):
+            path = os.path.join(self.folder, name)
+            if path in self.done or name.lower().endswith(self.PARTIAL) or not os.path.isfile(path):
+                continue
+            try:
+                stat = os.stat(path)
+            except OSError:
+                continue
+            if stat.st_mtime < self.started:
+                continue
+            if self.sizes.get(path) != stat.st_size:     # still growing: look again next time
+                self.sizes[path] = stat.st_size
+                continue
+            self.done.add(path)
+            os.makedirs(target, exist_ok=True)
+            if name.lower().endswith(AUDIO) and any(matches(name, s) for s in suggestions):
+                shutil.copy2(path, os.path.join(target, name))
+                added.append(name)
+            elif name.lower().endswith(".zip"):
+                try:
+                    with zipfile.ZipFile(path) as z:
+                        for member in z.namelist():
+                            base = os.path.basename(member)
+                            if base.lower().endswith(AUDIO) and not base.startswith("._") and \
+                                    any(matches(base, s) or (matches(name, s) and len(z.namelist()) <= 3)
+                                        for s in suggestions):
+                                with z.open(member) as src, open(os.path.join(target, base), "wb") as dst:
+                                    shutil.copyfileobj(src, dst)
+                                added.append(base)
+                except zipfile.BadZipFile:
+                    continue
+        self.imported += added
+        return added
+
+    def run(self, every: float = 3.0):
+        def loop():
+            while True:
+                try:
+                    self.scan([t for t in buy_list(self.workdir)])
+                except Exception:
+                    pass
+                time.sleep(every)
+
+        threading.Thread(target=loop, daemon=True).start()
+
+
 def references(workdir: str) -> list[str]:
     folder = os.path.join(workdir, "references")
     if not os.path.isdir(folder):
@@ -265,7 +347,7 @@ class _Cached:
         return self.value
 
 
-def make_handler(runner: Runner):
+def make_handler(runner: Runner, watcher: "DownloadWatcher | None" = None):
     workdir = runner.workdir
     project_refs = _Cached(project_references)
     ab_state = {"which": None}
@@ -297,6 +379,7 @@ def make_handler(runner: Runner):
                                         "reference_files": references(workdir), "to_get": buy_list(workdir),
                                         "project_references": project_refs.get(), "live": project_refs.reachable,
                                         "ab": ab_state["which"],
+                                        "auto_imported": watcher.imported[-10:] if watcher else [],
                                         "ab_ready": __import__("mixmatch.ab", fromlist=["latest_before"]).latest_before(
                                             os.path.join(workdir, "runs")) is not None})
             if self.path == "/api/project":
@@ -403,7 +486,9 @@ def make_handler(runner: Runner):
 
 def serve(workdir: str = ".", port: int = PORT, open_browser: bool = True) -> None:
     runner = Runner(os.path.abspath(workdir))
-    server = ThreadingHTTPServer(("127.0.0.1", port), make_handler(runner))
+    watcher = DownloadWatcher(runner.workdir)
+    watcher.run()
+    server = ThreadingHTTPServer(("127.0.0.1", port), make_handler(runner, watcher))
     url = f"http://127.0.0.1:{port}"
     print(f"MixMatch interface: {url}  (Ctrl+C to quit)")
     if open_browser:
@@ -528,6 +613,9 @@ async function tick() {
   let s; try { s = await (await fetch("/api/state")).json(); } catch { return; }
   $("status").textContent = s.running ? "running" : (s.done ? "finished" : "idle"); $("status").className = "pill" + (s.running ? " on" : "");
   $("phase").textContent = s.phase || ""; $("start").disabled = s.running;
+  if (s.auto_imported && s.auto_imported.length !== lastImported) {
+    if (lastImported >= 0 && s.auto_imported.length) $("msg").textContent = "Picked up from Downloads: " + s.auto_imported.slice(-3).join(", ");
+    lastImported = s.auto_imported.length; lastRefs = ""; }
   for (const w of ["before", "after"]) { const b = $("ab_" + w); b.disabled = s.running || !s.ab_ready;
     b.className = s.ab === w ? "" : "ghost"; }
   $("live").textContent = s.live === null ? "Live …" : (s.live ? "Live connected" : "Live busy or closed (exporting?)");
@@ -558,15 +646,17 @@ async function tick() {
     const dl = t.links.Download, page = Object.entries(t.links).find(([k]) => !["Spotify", "Download", "Preview"].includes(k));
     const listen = t.links.Preview || (t.free && dl);
     const player = listen ? `<br><audio controls preload="none" src="${esc(listen)}" style="width:100%;height:30px;margin-top:4px"></audio>` : "";
+    const shop = t.links.Bandcamp || (page && page[1]);
     const btn = t.free ? (dl ? `<button class="small" data-use="${esc(dl)}" data-name="${esc(t.title)}">Use</button>`
-      : (page ? `<a href="${esc(page[1])}" target="_blank" rel="noopener"><button class="ghost small">Get</button></a>` : "")) : "";
+      : (page ? `<a href="${esc(page[1])}" target="_blank" rel="noopener"><button class="ghost small">Get</button></a>` : ""))
+      : (shop ? `<a href="${esc(shop)}" target="_blank" rel="noopener"><button class="ghost small">Buy</button></a>` : "");
     return `<li><b>${esc(t.title)}</b>${t.source ? ` <span class="pill">${esc(t.source)}</span>` : ""} ${btn}<br><span class="muted">${esc(t.why)}</span><br>` +
       Object.entries(t.links).filter(([k]) => k !== "Preview").map(([k, u]) => `<a href="${esc(u)}" target="_blank" rel="noopener">${esc(k)}</a>`).join(" · ") + player + "</li>";
   };
   const buy = s.to_get.filter(t => !t.free), free = s.to_get.filter(t => t.free);
   const getKey = JSON.stringify(s.to_get);
   if (getKey !== lastGet) { lastGet = getKey;
-  $("to_get").innerHTML = s.to_get.length ? (buy.length ? "<ul>" + buy.map(item).join("") + "</ul>" : "")
+  $("to_get").innerHTML = s.to_get.length ? (buy.length ? "<div class='muted' style='font-size:12px'>«Buy», download (WAV/FLAC/ZIP): MixMatch picks the file up from Downloads by itself.</div><ul>" + buy.map(item).join("") + "</ul>" : "")
     + (free.length ? "<h2 style='margin-top:12px'>Free (no purchase)</h2><ul>" + free.map(item).join("") + "</ul>"
       + "<div class='row'><button id='import_dl' class='ghost small'>Import from Downloads</button><span class='muted'>after «Get»: newest audio or ZIP from the last hour</span></div>" : "") : "–";
   document.querySelectorAll("[data-use]").forEach(b => b.onclick = async () => {
@@ -580,7 +670,7 @@ async function tick() {
   const log = $("log"), atEnd = log.scrollTop + log.clientHeight >= log.scrollHeight - 5;
   log.textContent = s.log.join("\n"); if (atEnd) log.scrollTop = log.scrollHeight;
 }
-let lastRefs = "", lastGet = "";
+let lastRefs = "", lastGet = "", lastImported = -1;
 const drop = $("drop");
 ["dragenter", "dragover"].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.add("over"); }));
 ["dragleave", "drop"].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.remove("over"); }));

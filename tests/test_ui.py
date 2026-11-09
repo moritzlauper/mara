@@ -130,3 +130,31 @@ def test_import_from_downloads_takes_new_audio_and_zips(tmp_path):
 
     with pytest.raises(ValueError):                                      # only Jamendo is fetched directly
         download_reference(str(tmp_path), "https://ncs.io/track.mp3", "x")
+
+
+def test_download_watcher_takes_only_finished_matching_downloads(tmp_path):
+    import os
+    import time as _t
+    import zipfile
+
+    from mixmatch.ui import DownloadWatcher, matches
+
+    sugg = [{"title": "SOPHIE – Immaterial", "free": False}, {"title": "Charli XCX, Kim Petras – Unlock It", "free": False}]
+    assert matches("SOPHIE - OIL OF EVERY PEARL'S UN-INSIDES - 09 Immaterial.flac", sugg[0])
+    assert not matches("Kick Sample 01.wav", sugg[0])
+
+    dl = tmp_path / "Downloads"
+    dl.mkdir()
+    w = DownloadWatcher(str(tmp_path), str(dl))
+    w.started -= 5
+    (dl / "SOPHIE - Immaterial.wav").write_bytes(b"RIFF")
+    (dl / "random beat.wav").write_bytes(b"RIFF")
+    (dl / "Charli XCX - Album.zip.crdownload").write_bytes(b"...")
+    with zipfile.ZipFile(dl / "Charli XCX - Album.zip", "w") as z:
+        z.writestr("Charli XCX - Album - 03 Unlock It.flac", b"fLaC")
+        z.writestr("Charli XCX - Album - 04 Other Song.flac", b"fLaC")
+    assert w.scan(sugg) == []                        # first look: sizes not settled yet
+    added = w.scan(sugg)
+    assert sorted(added) == ["Charli XCX - Album - 03 Unlock It.flac", "SOPHIE - Immaterial.wav"]
+    assert sorted(os.listdir(tmp_path / "references")) == sorted(added)
+    assert w.scan(sugg) == []                        # never twice
