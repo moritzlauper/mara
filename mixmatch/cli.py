@@ -130,7 +130,9 @@ def cmd_suggest_refs(args):
 
     if not args.no_suggest:
         print("\nAsking Claude for references to buy …")
-        result = suggest(desc, note=args.note or "")
+        from .project import description
+
+        result = suggest(desc, note=args.note or description())
         print(f"Style: {result['style']}")
         for s in result["suggestions"]:
             print(f"\n  {s['artist']} – {s['title']}\n    {s['why']}\n    listen: {s['links']['spotify']}\n"

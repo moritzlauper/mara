@@ -65,6 +65,7 @@ class Settings:
     jamendo: bool = False         # also try Creative Commons tracks from Jamendo
     audit: bool = True            # complete runs: remove effects that do nothing, bypass ones that harm the mix
     suggest: bool = True          # complete runs: write references to get and free ones (runs/…-buy.md)
+    fine: bool = True             # record the channel (or master) during the first measurement: narrow resonances
     audit_bars: int = 4           # A/B window per effect
 
 
@@ -118,6 +119,10 @@ class Agent:
         self.target_no_vocals = None        # used in parts where the vocal channels are silent
         self.loop: tuple[float, float] | None = None   # (start, length) of the loop the agent plays
         self.harmony: dict | None = None                # key and chords, from Live's MIDI clips
+        self.resonances: dict[str, list] = {}           # track key → narrow resonances (not notes of the key)
+        from . import project
+
+        self.description = project.description()        # the user's own words for the track
         self.beat = False
         self.logfile = None
 
@@ -362,8 +367,8 @@ class Agent:
         recording = autoref.capture(self.live, start, min(length, 64.0), tempo, self.log)
         if recording:
             listener = Listener(log=self.log)
-            self.write_suggestions(autoref.buy_list(recording, listener, self.harmony, log=self.log),
-                                   time.strftime("%Y%m%d-%H%M%S"))
+            self.write_suggestions(autoref.buy_list(recording, listener, self.harmony, note=self.description,
+                                                    log=self.log), time.strftime("%Y%m%d-%H%M%S"))
 
     def find_references(self, part: tuple[str, float, float]) -> None:
         """Listens to the loudest part and picks references from the library and Jamendo (see autoref)."""
@@ -373,7 +378,8 @@ class Agent:
         _, start, length = part
         tempo = self.ex.set_state.get("tempo") or 120
         picked, to_get = autoref.find(self.live, start, min(length, 64.0), tempo, library=self.s.library,
-                                      jamendo=self.s.jamendo, harmony=self.harmony, log=self.log)
+                                      jamendo=self.s.jamendo, harmony=self.harmony, note=self.description,
+                                      log=self.log)
         stamp = time.strftime("%Y%m%d-%H%M%S")
         self.write_suggestions(to_get, stamp)
         if not picked:
@@ -619,6 +625,7 @@ class Agent:
                 "measured": st.summary() if st else "silent in this section",
                 "loudness_vs_master_lu": round(st.loudness - m["master"].loudness, 1) if st and m["master"] else None,
                 "devices": device_summary(t),
+                **({"resonances": self.resonances[key]} if self.resonances.get(key) else {}),
             })
         ctx = {
             "section": section,
@@ -633,6 +640,8 @@ class Agent:
             "reference": m["ref"].summary() if m["ref"] else "no reference (pass --ref files or name tracks «REF …»)",
             "master_vs_reference": {**cmp.summary(), "_tonal_excess": [float(x) for x in cmp.tonal_excess]} if cmp else None,
             "master_devices": device_summary(self.ex.track("m")),
+            "master_resonances": self.resonances.get("m") or None,
+            "user_description": self.description or None,
             "limiter": {"gain_db": self.ex.limiter_gain(), "max_gain_db": LIMITER_MAX_GAIN_DB,
                         "at_max": self.limiter_at_cap()},
             "clipper": ({"plugin": self.ex.clipper()[0], "gain_db": self.ex.clipper_gain(),
@@ -755,9 +764,35 @@ class Agent:
                 self.play_loop(start, length)
                 self.section("final check", deadline, max_rounds=self.s.final_rounds)
 
+    def measure_fine(self, scoring: str, key: str) -> dict:
+        """The first measurement of a section, recording the channel (or master) at the same time to find narrow
+        resonances. Falls back to a plain measurement when recording is not possible (simulator, old script)."""
+        from . import autoref, fine
+
+        if not self.s.fine or key in self.resonances:
+            return self.measure(scoring)
+        try:
+            beats = min(self.loop[1] if self.loop else 32.0, self.s.bars * 4.0)
+            cap = autoref.capture_begin(self.live, beats, None if key == "m" else key)
+        except Exception:
+            self.resonances[key] = []
+            return self.measure(scoring)
+        m = self.measure(scoring)
+        try:
+            path = autoref.capture_end(self.live, cap)
+            found = fine.analyse(path, self.harmony)["resonances"] if path else []
+            self.resonances[key] = [r for r in found if r["prominence_db"] >= 5.0][:4]
+            if self.resonances[key]:
+                self.log("  resonances: " + ", ".join(f"{r['hz']:.0f} Hz +{r['prominence_db']} dB"
+                                                      for r in self.resonances[key]))
+        except Exception as e:
+            self.resonances[key] = []
+            self.log(f"  (no fine measurement: {str(e)[:80]})")
+        return m
+
     def section(self, name: str, deadline: float, focus: str | None = None, max_rounds: int | None = None,
                 scoring: str = "full") -> None:
-        m = self.measure(scoring)
+        m = self.measure_fine(scoring, focus or "m")
         best, stall = m["objective"], 0
         self.log(f"  distance {best:.2f}   ({_parts(m['parts'])})")
         for n in range(1, (max_rounds or self.s.max_rounds_per_section) + 1):

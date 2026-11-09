@@ -248,6 +248,10 @@ def make_handler(runner: Runner):
                                         "ab": ab_state["which"],
                                         "ab_ready": __import__("mixmatch.ab", fromlist=["latest_pair"]).latest_pair(
                                             os.path.join(workdir, "runs")) is not None})
+            if self.path == "/api/project":
+                from . import project
+
+                return self._send(200, project.load(os.path.join(workdir, project.PATH)))
             if self.path == "/api/roles":
                 path = os.path.join(workdir, "roles.json")
                 return self._send(200, json.load(open(path)) if os.path.exists(path) else {})
@@ -321,6 +325,14 @@ def make_handler(runner: Runner):
                     if not os.path.exists(path):
                         raise ValueError("no such reference")
                     return self._send(200, {"trash": trash(path)})
+                if self.path == "/api/project":
+                    from . import project
+
+                    path = os.path.join(workdir, project.PATH)
+                    data = project.load(path)
+                    data["description"] = str(body.get("description", "")).strip()
+                    project.save(data, path)
+                    return self._send(200, data)
                 if self.path == "/api/roles":
                     with open(os.path.join(workdir, "roles.json"), "w") as f:
                         json.dump(body, f, indent=2, ensure_ascii=False)
@@ -371,7 +383,7 @@ label{display:flex;gap:6px;align-items:center;color:var(--muted)}.row{display:fl
 .ev{padding:5px 8px;border-radius:6px;border-left:3px solid var(--line)}.ev.kept{border-color:var(--good)}.ev.undone{border-color:var(--bad)}
 .ev.phase{font-weight:600;border-color:var(--accent)}.ev.section{color:var(--accent)}.ev.action{color:var(--muted);padding-left:18px}.ev.warning{border-color:var(--warn)}
 ul{margin:0;padding-left:18px}li{margin:3px 0}a{color:var(--accent)}table{width:100%;border-collapse:collapse;font-size:13px}
-td{padding:4px 6px;border-bottom:1px solid var(--line)}select,input{background:var(--bg);color:var(--text);border:1px solid var(--line);border-radius:6px;padding:4px 6px;font:inherit}
+td{padding:4px 6px;border-bottom:1px solid var(--line)}select,input,textarea{background:var(--bg);color:var(--text);border:1px solid var(--line);border-radius:6px;padding:4px 6px;font:inherit}
 pre{max-height:260px;overflow:auto;font-size:12px;background:var(--bg);padding:10px;border-radius:8px;margin:0;white-space:pre-wrap}
 svg{width:100%;height:90px}
 .drop{margin-top:10px;border:1.5px dashed var(--line);border-radius:8px;padding:12px;text-align:center;color:var(--muted);font-size:13px}
@@ -402,6 +414,9 @@ button.small{padding:2px 8px;font-size:12px}button.danger{background:var(--bad);
 <section>
   <h2>Song</h2>
   <div id="song" class="muted">No run yet.</div>
+  <h2 style="margin-top:12px">Describe your track</h2>
+  <textarea id="desc" rows="2" style="width:100%" placeholder="e.g. Hyperpop, happy and bright; vocals come later"></textarea>
+  <div class="row"><button id="save_desc" class="ghost">Save</button><span class="muted">wins over the audio model, used by every run</span></div>
 </section>
 <section class="wide">
   <h2>What MixMatch does</h2>
@@ -500,6 +515,9 @@ drop.addEventListener("drop", async e => {
   }
   drop.textContent = "Drop audio files here to add them to references/"; lastRefs = ""; tick();
 });
+fetch("/api/project").then(r => r.json()).then(p => { $("desc").value = p.description || ""; });
+$("save_desc").onclick = async () => { const j = await post("/api/project", {description: $("desc").value});
+  if (!j.error) $("msg").textContent = "Description saved."; };
 loadRoles(); tick(); setInterval(tick, 1500);
 </script>
 </body>

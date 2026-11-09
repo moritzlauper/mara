@@ -303,17 +303,25 @@ class Commands:
 
     # ── capturing the master (for listening with CLAP) ──────────────────────
     def capture_start(self, req):
-        """New audio track recording the master (input «Resampling», monitoring off) into its first clip slot."""
+        """New audio track recording the master («Resampling») or, with `source`, one track after its devices,
+        into its first clip slot; monitoring off."""
         song = self.song
+        source = self._track(req["source"]) if req.get("source") else None
         song.create_audio_track(-1)
         track = list(song.tracks)[-1]
         track.name = "MixMatch Capture"
         inputs = list(getattr(track, "available_input_routing_types", []))
-        resampling = next((r for r in inputs if r.display_name.lower() == "resampling"), None)
-        if resampling is None:
+        want = source.name.lower() if source is not None else "resampling"
+        routing = next((r for r in inputs if r.display_name.lower() == want), None)
+        if routing is None:
             song.delete_track(len(list(song.tracks)) - 1)
-            raise CommandError("no «Resampling» input on the new track")
-        track.input_routing_type = resampling
+            raise CommandError("no input «%s» on the new track" % want)
+        track.input_routing_type = routing
+        if source is not None:
+            channels = list(getattr(track, "available_input_routing_channels", []))
+            post = next((c for c in channels if "post fx" in c.display_name.lower()), None)
+            if post is not None:
+                track.input_routing_channel = post
         track.current_monitoring_state = 2  # Off: hearing the master on it again would feed back
         track.arm = True
         slot = list(track.clip_slots)[0]

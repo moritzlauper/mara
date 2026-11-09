@@ -76,6 +76,8 @@ How to work:
 - Several references: the target is their average and "largest_tonal_differences_db" already ignores differences within their spread, so only chase what is listed there.
 - Respect the user's notes in the roles and never touch locked parameters.
 - Parameters marked "(automated)" follow automation in the arrangement (filter sweeps, build-ups): they are part of the arrangement, not the mix. Never change them; work around them.
+- "resonances" (on a channel) and "master_resonances" are narrow peaks found in a high-resolution recording, notes of the song's key already left out. A strong one (6 dB or more) on a pad, synth or bus is usually ringing: cut it narrowly at that exact frequency (q 6–12, -2 to -4 dB, shape bell). Leave weaker ones alone.
+- "user_description" is how the user hears the track; it wins over the audio model and over your own guesses about the style.
 - If the context has a "task" (channel pass), follow it: actions only on that one track, and none if it sits well.
 - If the context has a "final_check", follow it: that is the last look at the master after every channel was done.
 - Set "done" to true only when the remaining differences are small and nothing useful is left to try.
@@ -85,7 +87,7 @@ Actions (unused fields null):
 - volume: track, delta_db
 - pan: track, value (-50 left … 50 right)
 - send: track, name (the return's letter, e.g. "A"), delta_db (send level to that return; see the channel's "sends" and the returns among the channels)
-- eq: track, freq_hz, gain_db, q (0.3–4, null = default), shape (bell, low_shelf, high_shelf, low_cut, notch). Uses an EQ Eight on the track, added if missing. A band already near that frequency with the same shape is adjusted instead of adding one.
+- eq: track, freq_hz, gain_db, q (0.3–4 for tone, up to 12 for a listed resonance; null = default), shape (bell, low_shelf, high_shelf, low_cut, notch). Uses an EQ Eight on the track, added if missing. A band already near that frequency with the same shape is adjusted instead of adding one.
 - width: track, width_pct (Utility width, 100 = unchanged), bass_mono (true/false)
 - limiter: delta_db (Limiter gain on the master, ceiling fixed at -1 dB)
 - clipper: delta_db (drive into a clipper placed right before the master limiter, at most +1.5 dB per round and +4 dB in total; see "clipper" for whether one is installed). Use it once the limiter is at its maximum while the master is still quieter and more dynamic (higher PLR) than the target: it shaves the transient peaks so the master gets louder without the limiter working harder.

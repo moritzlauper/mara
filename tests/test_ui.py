@@ -93,3 +93,17 @@ def test_cached_keeps_the_last_answer_when_live_is_busy():
     assert c.value == [{"track": "ref", "file": "a.wav"}] and c.reachable is True
     c._refresh()                                           # Live busy: the last answer stays
     assert c.value == [{"track": "ref", "file": "a.wav"}] and c.reachable is False
+
+
+def test_description_is_saved_in_the_project(tmp_path):
+    server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(Runner(str(tmp_path))))
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    base = f"http://127.0.0.1:{server.server_address[1]}"
+    try:
+        req = urllib.request.Request(base + "/api/project", data=json.dumps({"description": " Hyperpop, happy "}).encode(),
+                                     headers={"Content-Type": "application/json"}, method="POST")
+        urllib.request.urlopen(req)
+        assert json.loads((tmp_path / "mixmatch.json").read_text())["description"] == "Hyperpop, happy"
+        assert json.load(urllib.request.urlopen(base + "/api/project"))["description"] == "Hyperpop, happy"
+    finally:
+        server.shutdown()

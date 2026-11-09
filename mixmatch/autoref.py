@@ -106,6 +106,29 @@ def capture(live, start: float, length: float, tempo: float, log=print) -> str |
     return path
 
 
+def capture_begin(live, beats: float, source: str | None = None) -> int:
+    """Starts recording `beats` of the master (or of track `source`) at the next bar; returns the capture track."""
+    req = {"beats": beats}
+    if source:
+        req["source"] = source
+    return live.request("capture_start", **req)["track"]
+
+
+def capture_end(live, track: int, timeout: float = 20.0) -> str | None:
+    """Waits for the recording to finish, deletes the capture track, returns the WAV path."""
+    deadline, path = time.time() + timeout, None
+    try:
+        while time.time() < deadline:
+            st = live.request("capture_status", track=track)
+            if st["file"] and not st["recording"]:
+                path = st["file"]
+                break
+            time.sleep(0.3)
+    finally:
+        live.request("capture_cleanup", track=track)
+    return path
+
+
 def mastered(path: str) -> bool:
     from .reference import profile
 
