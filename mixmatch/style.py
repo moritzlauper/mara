@@ -298,6 +298,50 @@ def free_links(artist: str, title: str, source: str) -> dict:
     return links
 
 
+def _norm(text: str) -> str:
+    import re
+    import unicodedata
+
+    text = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode().lower()
+    text = re.sub(r"\(.*?\)|\[.*?\]|feat\..*|ft\..*", "", text)
+    return re.sub(r"[^a-z0-9]+", " ", text).strip()
+
+
+def apple_preview(artist: str, title: str, country: str = "CH") -> dict:
+    """A 30-second preview from Apple's public iTunes Search API (no key needed), cached; {} if not found.
+    Artist and title must both match, so «SOPHIE» never plays Sophie Ellis-Bextor."""
+    import urllib.parse
+    import urllib.request
+
+    cache_path = os.path.join(BASE, "apple_previews.json")
+    try:
+        cache = json.load(open(cache_path))
+    except (OSError, ValueError):
+        cache = {}
+    key = f"{_norm(artist)}|{_norm(title)}"
+    if key in cache:
+        return cache[key]
+    found = {}
+    query = urllib.parse.urlencode({"term": f"{artist} {title}", "entity": "song", "limit": 10, "country": country})
+    try:
+        with urllib.request.urlopen(f"https://itunes.apple.com/search?{query}", timeout=15) as r:
+            results = json.load(r).get("results", [])
+    except OSError:
+        return {}                                     # offline: try again next time, nothing cached
+    import re
+
+    lead = lambda name: _norm(re.split(r",|&| x | and ", name, maxsplit=1)[0])   # first credited artist
+    for res in results:
+        a, t = lead(res.get("artistName", "")), _norm(res.get("trackName", ""))
+        if res.get("previewUrl") and _norm(title) and t == _norm(title) and a == lead(artist):
+            found = {"preview": res["previewUrl"], "apple": res.get("trackViewUrl", "")}
+            break
+    cache[key] = found
+    os.makedirs(BASE, exist_ok=True)
+    json.dump(cache, open(cache_path, "w"))
+    return found
+
+
 def search_links(artist: str, title: str) -> dict:
     from urllib.parse import quote_plus
 
@@ -386,7 +430,7 @@ def suggest(desc: dict, note: str = "", model: str = "opus") -> dict:
         raise RuntimeError(str(out.get("result"))[:300])
     result = out.get("structured_output") or json.loads(out["result"])
     for s in result["suggestions"]:
-        s["links"] = search_links(s["artist"], s["title"])
+        s["links"] = {**search_links(s["artist"], s["title"]), **apple_preview(s["artist"], s["title"])}
     for s in result.get("free_suggestions", []):
-        s["links"] = free_links(s["artist"], s["title"], s["source"])
+        s["links"] = {**free_links(s["artist"], s["title"], s["source"]), **apple_preview(s["artist"], s["title"])}
     return result

@@ -337,7 +337,8 @@ class Agent:
         self.log(f"Key: {self.harmony['key']} ({self.harmony['mode']}, from MIDI) · chords: {chords}")
 
     LINK_NAMES = {"spotify": "Spotify", "bandcamp": "Bandcamp", "beatport": "Beatport", "ncs": "NCS",
-                  "fma": "Free Music Archive", "jamendo": "Jamendo", "download": "Download", "preview": "Preview"}
+                  "fma": "Free Music Archive", "jamendo": "Jamendo", "download": "Download", "preview": "Preview",
+                  "apple": "Apple Music"}
 
     def write_suggestions(self, sugg: dict, stamp: str) -> None:
         """runs/…-buy.md: tracks to get and free ones, with links (the interface shows it too)."""

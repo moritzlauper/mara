@@ -70,3 +70,20 @@ def test_free_links_point_to_the_source():
     assert free_links("Artist", "Song", "NCS")["ncs"] == "https://ncs.io/music-search?q=Song"
     assert "freemusicarchive.org" in free_links("A", "B", "Free Music Archive")["fma"]
     assert "bandcamp.com" in free_links("A", "B", "free download by the artist")["bandcamp"]
+
+
+def test_apple_preview_needs_artist_and_title_to_match(tmp_path, monkeypatch):
+    import io
+    import json as _json
+
+    from mixmatch import style
+
+    monkeypatch.setattr(style, "BASE", str(tmp_path))
+    results = {"results": [
+        {"artistName": "Sophie Ellis-Bextor", "trackName": "Immaterial Love", "previewUrl": "https://wrong"},
+        {"artistName": "SOPHIE", "trackName": "Immaterial", "previewUrl": "https://right", "trackViewUrl": "https://am"},
+    ]}
+    monkeypatch.setattr(style.urllib.request if hasattr(style, "urllib") else __import__("urllib.request").request,
+                        "urlopen", lambda url, timeout=0: io.StringIO(_json.dumps(results)))
+    assert style.apple_preview("SOPHIE", "Immaterial") == {"preview": "https://right", "apple": "https://am"}
+    assert style.apple_preview("Nobody", "Nothing") == {}

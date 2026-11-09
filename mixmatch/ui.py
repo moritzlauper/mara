@@ -556,7 +556,7 @@ async function tick() {
   }
   const item = t => {
     const dl = t.links.Download, page = Object.entries(t.links).find(([k]) => !["Spotify", "Download", "Preview"].includes(k));
-    const listen = t.free && (t.links.Preview || dl);
+    const listen = t.links.Preview || (t.free && dl);
     const player = listen ? `<br><audio controls preload="none" src="${esc(listen)}" style="width:100%;height:30px;margin-top:4px"></audio>` : "";
     const btn = t.free ? (dl ? `<button class="small" data-use="${esc(dl)}" data-name="${esc(t.title)}">Use</button>`
       : (page ? `<a href="${esc(page[1])}" target="_blank" rel="noopener"><button class="ghost small">Get</button></a>` : "")) : "";
