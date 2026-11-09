@@ -182,6 +182,52 @@ def project_references() -> list[dict] | None:
         return None
 
 
+def download_reference(workdir: str, url: str, name: str) -> str:
+    """Downloads an allowed free track (Jamendo API links only) into references/."""
+    import urllib.request
+    from urllib.parse import urlparse
+
+    host = urlparse(url).hostname or ""
+    if not (host == "jamendo.com" or host.endswith(".jamendo.com")):
+        raise ValueError("only Jamendo downloads are fetched directly; use «Get» and «Import from Downloads»")
+    safe = re.sub(r"[^\w\-. ]+", "", name).strip() or "jamendo"
+    path = os.path.join(workdir, "references", safe[:80] + ".mp3")
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    urllib.request.urlretrieve(url, path + ".part")
+    os.replace(path + ".part", path)
+    return os.path.basename(path)
+
+
+def import_downloads(workdir: str, folder: str | None = None, minutes: float = 60) -> list[str]:
+    """Audio files (also inside ZIPs) that arrived in the Downloads folder in the last hour, copied to references/."""
+    import shutil
+    import zipfile
+
+    folder = folder or os.path.expanduser("~/Downloads")
+    since = time.time() - minutes * 60
+    target = os.path.join(workdir, "references")
+    os.makedirs(target, exist_ok=True)
+    added = []
+    for name in sorted(os.listdir(folder), key=lambda n: -os.path.getmtime(os.path.join(folder, n))):
+        path = os.path.join(folder, name)
+        if os.path.getmtime(path) < since or not os.path.isfile(path):
+            continue
+        if name.lower().endswith(AUDIO):
+            if not os.path.exists(os.path.join(target, name)):
+                shutil.copy2(path, os.path.join(target, name))
+                added.append(name)
+        elif name.lower().endswith(".zip"):
+            with zipfile.ZipFile(path) as z:
+                for member in z.namelist():
+                    base = os.path.basename(member)
+                    if base.lower().endswith(AUDIO) and not base.startswith("._") and \
+                            not os.path.exists(os.path.join(target, base)):
+                        with z.open(member) as src, open(os.path.join(target, base), "wb") as dst:
+                            shutil.copyfileobj(src, dst)
+                        added.append(base)
+    return added
+
+
 def references(workdir: str) -> list[str]:
     folder = os.path.join(workdir, "references")
     if not os.path.isdir(folder):
@@ -320,6 +366,12 @@ def make_handler(runner: Runner):
                 if self.path == "/api/stop":
                     runner.stop()
                     return self._send(200, {"ok": True})
+                if self.path == "/api/references/use":
+                    return self._send(200, {"saved": download_reference(workdir, body.get("url", ""),
+                                                                        body.get("name", ""))})
+                if self.path == "/api/references/import":
+                    added = import_downloads(workdir)
+                    return self._send(200, {"added": added})
                 if self.path == "/api/references/remove":
                     path = safe_reference(workdir, body.get("name", ""))
                     if not os.path.exists(path):
@@ -494,11 +546,23 @@ async function tick() {
       if (!j.error) $("msg").textContent = "Moved to the Trash: " + b.dataset.remove; lastRefs = ""; tick();
     });
   }
-  const item = t => `<li><b>${esc(t.title)}</b>${t.source ? ` <span class="pill">${esc(t.source)}</span>` : ""}<br><span class="muted">${esc(t.why)}</span><br>` +
-    Object.entries(t.links).map(([k, u]) => `<a href="${esc(u)}" target="_blank" rel="noopener">${esc(k)}</a>`).join(" · ") + "</li>";
+  const item = t => {
+    const dl = t.links.Download, page = Object.entries(t.links).find(([k]) => k !== "Spotify" && k !== "Download");
+    const btn = t.free ? (dl ? `<button class="small" data-use="${esc(dl)}" data-name="${esc(t.title)}">Use</button>`
+      : (page ? `<a href="${esc(page[1])}" target="_blank" rel="noopener"><button class="ghost small">Get</button></a>` : "")) : "";
+    return `<li><b>${esc(t.title)}</b>${t.source ? ` <span class="pill">${esc(t.source)}</span>` : ""} ${btn}<br><span class="muted">${esc(t.why)}</span><br>` +
+      Object.entries(t.links).map(([k, u]) => `<a href="${esc(u)}" target="_blank" rel="noopener">${esc(k)}</a>`).join(" · ") + "</li>";
+  };
   const buy = s.to_get.filter(t => !t.free), free = s.to_get.filter(t => t.free);
   $("to_get").innerHTML = s.to_get.length ? (buy.length ? "<ul>" + buy.map(item).join("") + "</ul>" : "")
-    + (free.length ? "<h2 style='margin-top:12px'>Free (no purchase)</h2><ul>" + free.map(item).join("") + "</ul>" : "") : "–";
+    + (free.length ? "<h2 style='margin-top:12px'>Free (no purchase)</h2><ul>" + free.map(item).join("") + "</ul>"
+      + "<div class='row'><button id='import_dl' class='ghost small'>Import from Downloads</button><span class='muted'>after «Get»: newest audio or ZIP from the last hour</span></div>" : "") : "–";
+  document.querySelectorAll("[data-use]").forEach(b => b.onclick = async () => {
+    b.disabled = true; b.textContent = "…"; const j = await post("/api/references/use", {url: b.dataset.use, name: b.dataset.name});
+    b.textContent = j.error ? "failed" : "added"; if (!j.error) { $("msg").textContent = "Added to references/: " + j.saved; lastRefs = ""; }
+  });
+  if ($("import_dl")) $("import_dl").onclick = async () => { const j = await post("/api/references/import");
+    if (!j.error) { $("msg").textContent = j.added.length ? "Imported: " + j.added.join(", ") : "Nothing new in Downloads (last hour)."; lastRefs = ""; } };
   $("effects").innerHTML = s.effects.length ? "<ul>" + s.effects.map(e => `<li>${esc(e)}</li>`).join("") + "</ul>" : "–";
   const log = $("log"), atEnd = log.scrollTop + log.clientHeight >= log.scrollHeight - 5;
   log.textContent = s.log.join("\n"); if (atEnd) log.scrollTop = log.scrollHeight;

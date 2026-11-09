@@ -107,3 +107,24 @@ def test_description_is_saved_in_the_project(tmp_path):
         assert json.load(urllib.request.urlopen(base + "/api/project"))["description"] == "Hyperpop, happy"
     finally:
         server.shutdown()
+
+
+def test_import_from_downloads_takes_new_audio_and_zips(tmp_path):
+    import zipfile
+
+    from mixmatch.ui import download_reference, import_downloads
+
+    dl = tmp_path / "Downloads"
+    dl.mkdir()
+    (dl / "free track.wav").write_bytes(b"RIFF")
+    (dl / "notes.pdf").write_bytes(b"%PDF")
+    with zipfile.ZipFile(dl / "album.zip", "w") as z:
+        z.writestr("Artist - Album/01 Song.flac", b"fLaC")
+        z.writestr("__MACOSX/._01 Song.flac", b"x")
+    added = import_downloads(str(tmp_path), str(dl))
+    assert sorted(added) == ["01 Song.flac", "free track.wav"]
+    assert import_downloads(str(tmp_path), str(dl)) == []                 # nothing twice
+    import pytest
+
+    with pytest.raises(ValueError):                                      # only Jamendo is fetched directly
+        download_reference(str(tmp_path), "https://ncs.io/track.mp3", "x")
