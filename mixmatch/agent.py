@@ -48,6 +48,8 @@ class Settings:
     loudness_from: str = "full"   # beat mode: loudness target from the full references or their instrumentals
     roles_file: str = "roles.json"
     log_dir: str = "runs"
+    focus: str = "sections"       # sections: work through cue points / loop | loud: only the loudest part
+    focus_bars: int = 16          # length of the loudest part
 
 
 @dataclass
@@ -130,6 +132,33 @@ class Agent:
                     for i, c in enumerate(cues[:-1]) if cues[i + 1]["time"] > c["time"]]
         loop = self.ex.set_state["loop"]
         return [("loop", loop["start"], loop["length"])]
+
+    def loudest_part(self, sections: list[tuple[str, float, float]]) -> tuple[str, float, float]:
+        """Plays the whole range once and returns the loudest `focus_bars` bars, measured at the master.
+
+        The references are judged by their loudest part (drop, chorus), so the mix should be too.
+        """
+        start = min(s[1] for s in sections)
+        total = max(s[1] + s[2] for s in sections) - start
+        tempo = self.ex.set_state.get("tempo") or 120
+        length = min(total, self.s.focus_bars * 4.0)
+        if length >= total:
+            return sections[0]
+        self.log(f"Looking for the loudest {self.s.focus_bars} bars: playing {total / 4:.0f} bars once "
+                 f"({total * 60 / tempo:.0f} s) …")
+        self.live.transport(loop_start=start, loop_length=total, loop=True, time=start, play=True)
+        t0 = self.env.now()
+        self.env.wait(total * 60 / tempo)
+        master_tap = next((t for t in self.hub.snapshot() if t.kind == "master"), None)
+        frames = master_tap.window(t0, self.env.now()) if master_tap else []
+        found = loudest_window(frames, t0, tempo, total, length)
+        if found is None:
+            self.log("  the master stayed silent; working on the whole range")
+            return sections[0]
+        offset, loudness = found
+        bar = (start + offset) / 4 + 1
+        self.log(f"  loudest part: bars {bar:.0f}–{bar + length / 4:.0f}, {loudness:.1f} LUFS")
+        return ("loudest part", start + offset, length)
 
     # ── 2. measure ──────────────────────────────────────────────────────────
     def measure(self) -> dict:
@@ -218,7 +247,10 @@ class Agent:
         if not self.references and not self.target:
             self.log("No reference found. Name the reference tracks «REF …» and put a tap on them; "
                      "until then only the balance between channels is worked on.")
-        for name, start, length in self.sections():
+        sections = self.sections()
+        if self.s.focus == "loud":
+            sections = [self.loudest_part(sections)]
+        for name, start, length in sections:
             if self.env.now() >= deadline:
                 break
             self.log(f"\n▶ {name}")
@@ -292,6 +324,24 @@ class Agent:
         first, last = self.history[0].before, min((h.after for h in kept), default=self.history[0].before)
         return (f"{len(self.history)} rounds, {len(kept)} kept, {undone} undone. "
                 f"Distance to target {first:.2f} → {last:.2f}.")
+
+
+def loudest_window(frames, t0: float, tempo: float, total_beats: float, length_beats: float,
+                   step_beats: float = 4.0) -> tuple[float, float] | None:
+    """Offset in beats (from the start of the range) and loudness of the loudest window, on a one-bar grid.
+
+    `frames` were recorded while the range played once from its start at time `t0`.
+    """
+    spb = 60.0 / tempo
+    best = None
+    offset = 0.0
+    while offset + length_beats <= total_beats + 1e-9:
+        a, b = t0 + offset * spb, t0 + (offset + length_beats) * spb
+        st = stats([f for f in frames if a <= f.t < b])
+        if st is not None and (best is None or st.loudness > best[1]):
+            best = (offset, st.loudness)
+        offset += step_beats
+    return best
 
 
 def _average(refs):

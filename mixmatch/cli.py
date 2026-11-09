@@ -1,6 +1,6 @@
 """Command line.
 
-    mixmatch run --ref a.wav --ref b.mp3 [--mode beat] [--minutes 10] [--assist] [--rules]
+    mixmatch run --ref a.wav --ref b.mp3 [--mode beat] [--focus loud] [--minutes 10] [--assist] [--rules]
     mixmatch refs a.wav b.mp3 [--mode beat]        analyse references (and split vocals) ahead of time
     mixmatch taps                                   put the «MixMatch Tap» on every channel and the master
     mixmatch check                                  connection, taps, roles
@@ -114,7 +114,8 @@ def cmd_run(args):
     time.sleep(args.wait)
     refset = _refset(args)
     Agent(live, hub, planner, Settings(minutes=args.minutes, assist=args.assist, roles_file=args.roles,
-                                       mode=args.mode, loudness_from=args.loudness_from),
+                                       mode=args.mode, loudness_from=args.loudness_from,
+                                       focus=args.focus, focus_bars=args.focus_bars),
           references=refset).run()
 
 
@@ -147,6 +148,10 @@ def main(argv=None):
         s.add_argument("--minutes", type=float, default=10.0)
         s.add_argument("--wait", type=float, default=6.0, help="seconds of playback before starting")
     sub.choices["run"].add_argument("--assist", action="store_true", help="ask before every round")
+    sub.choices["run"].add_argument("--focus", choices=["sections", "loud"], default="sections",
+                                    help="loud: find the loudest part of the song once and work only there, "
+                                         "like the references are measured at their loudest part")
+    sub.choices["run"].add_argument("--focus-bars", type=int, default=16, help="length of the loudest part in bars")
     sub.choices["run"].add_argument("--rules", action="store_true", help="rule-based planner instead of Claude")
     sub.choices["demo"].add_argument("--claude", action="store_true", help="use Claude in the simulator too")
     args = p.parse_args(argv)

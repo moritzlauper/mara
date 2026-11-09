@@ -5,3 +5,5 @@ runs/
 roles.json
 .pytest_cache/
 env.local
+references/
+.DS_Store

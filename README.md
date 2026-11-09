@@ -100,7 +100,10 @@ your beat with the references **without their vocals**:
 
 4. **Sections** (optional): set locators (cue points) at the starts of the
    parts, e.g. Intro, Drop, Break, Drop 2, End. MixMatch works through them one
-   by one. Without locators it uses the current loop.
+   by one. Without locators it uses the current loop. With `--focus loud` it
+   plays the range once, finds the loudest 16 bars (`--focus-bars`) at the
+   master and works only there, the same way the references are measured at
+   their loudest part.
 
 ## Use
 
@@ -110,6 +113,7 @@ mixmatch taps                                         # put the tap on every cha
 mixmatch check                                        # connection, taps, roles; writes roles.json
 mixmatch run --ref ~/refs/ --minutes 10               # mix (folder = all audio files in it)
 mixmatch run --ref a.wav --ref b.wav --mode beat      # beat without vocals
+mixmatch run --ref a.wav --focus loud                 # work on the loudest 16 bars (drop, chorus) only
 mixmatch run --ref a.wav --assist                     # suggest, ask before each round
 mixmatch demo                                         # try the loop on the built-in simulator
 ```

@@ -75,3 +75,18 @@ def test_claude_planner_request_and_loop(monkeypatch):
     ctx = json.loads(call["messages"][0]["content"])
     assert {"channels", "masking", "master_vs_reference", "history", "mode"} <= set(ctx)
     assert history and history[0].applied
+
+
+def test_loudest_window_finds_the_drop():
+    from mixmatch.agent import loudest_window
+    from mixmatch.taps import Frame
+
+    tempo, t0 = 120.0, 100.0                       # 2 beats per second, 64 beats = 32 s
+    frames = []
+    for i in range(320):                           # 10 frames per second
+        t = t0 + i * 0.1
+        level = 0.5 if 16 <= t - t0 < 24 else 0.05  # beats 32–48 are loud
+        frames.append(Frame(t, level, level / 4, 0.0, level * 2, [level / 5] * 31))
+    offset, loudness = loudest_window(frames, t0, tempo, total_beats=64, length_beats=16)
+    assert offset == 32
+    assert loudness > -20
