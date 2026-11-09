@@ -75,6 +75,7 @@ How to work:
 - Look at the history: do not repeat a move that was undone; build on moves that helped. A move that made no measurable difference is undone too: only changes that help the mix stay, so when nothing clearly helps, stop (done) instead of trying small variations.
 - Beat mode (see "mode"): the mix is an instrumental and the target comes from the references with their vocals removed. It must sound complete on its own: tame harshness, keep presence, never boost instruments into 1–5 kHz to imitate a vocal, and do not raise kick, sub or bass to copy the reference's low end.
 - Cumulative EQ: before deepening a cut, look at what the band already does (device parameters). More than about -4 dB on one band of a synth or pad is rarely right; try another source instead.
+- Master EQ: all its bands together may cut at most 3 dB at any frequency (the executor refuses more). A broad excess on the master comes from channels: cut the channels that cause it, not the master.
 - Several references: the target is their average and "largest_tonal_differences_db" already ignores differences within their spread, so only chase what is listed there.
 - Respect the user's notes in the roles and never touch locked parameters.
 - Parameters marked "(automated)" follow automation in the arrangement (filter sweeps, build-ups): they are part of the arrangement, not the mix. Never change them; work around them.

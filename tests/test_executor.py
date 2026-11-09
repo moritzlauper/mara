@@ -240,3 +240,21 @@ def test_neutral_device_detection():
     assert neutral_device(utility())
     assert not neutral_device(utility(**{"Bass Mono": "On"}))
     assert not neutral_device(utility(**{"Stereo Width": "80 %"}))
+
+
+def test_master_eq_cuts_at_most_three_db_in_sum():
+    import pytest
+
+    from mixmatch.actions import Executor
+    from mixmatch.sim import demo_project
+
+    song, hub, env, live = demo_project()
+    ex = Executor(live, log=lambda *_: None)
+    ex.refresh()
+    shelf = lambda f, g: {"type": "eq", "track": "m", "freq_hz": f, "gain_db": g, "q": 0.71, "shape": "high_shelf",
+                          "reason": "t"}
+    ex.apply([shelf(3000, -2.0)]); ex.refresh()
+    rr = ex.apply([shelf(8000, -2.0)])                     # together about -4 dB up top: refused
+    assert not rr.changes and any("master EQ would cut" in s for s in map(str, rr.skipped))
+    rr = ex.apply([shelf(8000, 1.0)])                      # a boost is always fine
+    assert rr.changes

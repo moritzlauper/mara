@@ -80,6 +80,45 @@ def _neutral(band: dict) -> bool:
 
 MAX_STEP = {"volume": 2.0, "eq": 3.0, "limiter": 2.0, "clipper": 1.5, "send": 3.0, "pan": 15.0, "width": 25.0}
 EQ_GAIN_LIMIT = 12.0
+MASTER_EQ_CUT_LIMIT_DB = 3.0   # all master EQ bands together cut at most this much anywhere; the rest on the channels
+
+
+def band_db(kind: str, f0: float, gain: float, q: float, f, fs: float = 48000.0):
+    """Gain in dB of one bell or shelf band at frequency `f` (RBJ cookbook biquads, as EQ Eight draws them).
+    Cuts and notches return 0: they are meant to remove, the cut limit is about tonal balance."""
+    import numpy as np
+
+    kind = kind.lower()
+    f = np.asarray(f, dtype=float)
+    if not any(k in kind for k in ("bell", "shelf")) or gain == 0:
+        return np.zeros_like(f)
+    A, w0 = 10 ** (gain / 40), 2 * math.pi * f0 / fs
+    alpha, cw = math.sin(w0) / (2 * max(q, 0.1)), math.cos(w0)
+    if "bell" in kind:
+        b = [1 + alpha * A, -2 * cw, 1 - alpha * A]
+        a = [1 + alpha / A, -2 * cw, 1 - alpha / A]
+    else:
+        sa = 2 * math.sqrt(A) * alpha
+        if "low" in kind:
+            b = [A * ((A + 1) - (A - 1) * cw + sa), 2 * A * ((A - 1) - (A + 1) * cw), A * ((A + 1) - (A - 1) * cw - sa)]
+            a = [(A + 1) + (A - 1) * cw + sa, -2 * ((A - 1) + (A + 1) * cw), (A + 1) + (A - 1) * cw - sa]
+        else:
+            b = [A * ((A + 1) + (A - 1) * cw + sa), -2 * A * ((A - 1) + (A + 1) * cw), A * ((A + 1) + (A - 1) * cw - sa)]
+            a = [(A + 1) - (A - 1) * cw + sa, 2 * ((A - 1) - (A + 1) * cw), (A + 1) - (A - 1) * cw - sa]
+    z = np.exp(-1j * 2 * math.pi * f / fs)
+    h = (b[0] + b[1] * z + b[2] * z ** 2) / (a[0] + a[1] * z + a[2] * z ** 2)
+    return 20 * np.log10(np.abs(h))
+
+
+def eq_curve(bands: list[dict], f):
+    """Summed response in dB of the bands that are on."""
+    import numpy as np
+
+    out = np.zeros(len(f))
+    for b in bands:
+        if b["on"]:
+            out += band_db(b["kind"], b["freq"], b["gain"], b.get("q", 0.71), f)
+    return out
 VOLUME_CEILING_DB = 6.0
 LIMITER_CEILING_DB = -1.0
 LIMITERS = ("limiter", "pro-l 2")   # Live's Limiter or FabFilter Pro-L 2 on the master
@@ -324,8 +363,10 @@ class Executor:
             typ = self._param(key, dev, f"{n} Filter Type A")
             if not (on and freq and gain and typ):
                 continue
+            q = self._param(key, dev, f"{n} Q A") or self._param(key, dev, f"{n} Resonance A")
+            qv = parse_display(q["display"]) if q else None
             out.append({"n": n, "on": on["value"] >= 0.5, "freq": self._db_of(freq), "gain": self._db_of(gain),
-                        "type": typ})
+                        "type": typ, "kind": str(typ.get("display", "")), "q": qv if qv and qv > 0 else 0.71})
         return out
 
     def _shape_index(self, typ: dict, shape: str) -> int:
@@ -347,6 +388,7 @@ class Executor:
         if same:  # adjust the band that already sits there
             b = same[0]
             new_gain = _clamp(b["gain"] + _clamp(float(a.get("gain_db") or 0), MAX_STEP["eq"]), EQ_GAIN_LIMIT)
+            self._check_master_cut(key, bands, {**b, "gain": new_gain})
             self._set(rr, key, dev, f"{b['n']} Gain A", target=new_gain)
             return
         # Off, or on but doing nothing (Live 12 starts EQ Eight with bands 1–4 on at 0 dB): free to use.
@@ -354,6 +396,10 @@ class Executor:
         if not free:
             raise RuntimeError("all eight EQ bands are in use")
         n = free[0]["n"]
+        if shape != "low_cut":
+            self._check_master_cut(key, bands, {"n": n, "on": True, "freq": freq, "kind": shape.replace("_", " "),
+                                                "gain": _clamp(float(a.get("gain_db") or 0), MAX_STEP["eq"]),
+                                                "q": float(a.get("q") or 0.71)})
         self._set(rr, key, dev, f"{n} Filter Type A", value=self._shape_index(free[0]["type"], shape))
         self._set(rr, key, dev, f"{n} Frequency A", target=freq)
         if shape != "low_cut":
@@ -361,6 +407,22 @@ class Executor:
         if a.get("q"):
             self._set(rr, key, dev, f"{n} Resonance A", target=float(a["q"]))
         self._set(rr, key, dev, f"{n} Filter On A", value=1)
+
+    def _check_master_cut(self, key: str, bands: list[dict], changed: dict) -> None:
+        """Refuses a master EQ change that would make the bands together cut more than the limit somewhere
+        (and deeper than now): a broad excess comes from channels and is fixed there."""
+        if key != self.master_key():
+            return
+        import numpy as np
+
+        f = np.geomspace(30, 16000, 200)
+        before = eq_curve(bands, f)
+        after = eq_curve([changed if b["n"] == changed["n"] else b for b in bands]
+                         + ([changed] if all(b["n"] != changed["n"] for b in bands) else []), f)
+        if after.min() < -MASTER_EQ_CUT_LIMIT_DB and after.min() < before.min() - 0.01:
+            at = f[int(np.argmin(after))]
+            raise RuntimeError(f"the master EQ would cut {-after.min():.1f} dB in sum around {at:.0f} Hz "
+                               f"(limit {MASTER_EQ_CUT_LIMIT_DB:.0f} dB): cut the channels that cause it instead")
 
     def _do_width(self, rr, a):
         key = a["track"]
