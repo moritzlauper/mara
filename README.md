@@ -77,7 +77,7 @@ your beat with the references **without their vocals**:
 ### Safety
 
 * Small steps only: at most ±2 dB volume, ±3 dB EQ, +2 dB limiter per round.
-* The limiter gain stops at +6 dB, a clipper in front of it at +4 dB; past
+* The limiter gain stops at +4 dB, a clipper in front of it at +3 dB; past
   that, the loudness gap is accepted.
 * Installed plugins are used where they help: FabFilter Pro-L 2 as the master
   limiter, Classic Clipper before it, Pro-C 2 and others when Claude asks for
