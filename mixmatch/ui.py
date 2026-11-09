@@ -185,7 +185,26 @@ def buy_list(workdir: str) -> list[dict]:
         for name, url in re.findall(r"\[([^\]]+)\]\((\S+?)\)", line):
             if out and not m:
                 out[-1]["links"][name] = url
+    from .style import cached_preview
+
+    missing = []
+    for item in out:
+        if "Preview" not in item["links"] and " – " in item["title"]:
+            artist, title = item["title"].split(" – ", 1)
+            found = cached_preview(artist, title)
+            if found.get("preview"):
+                item["links"]["Preview"] = found["preview"]
+            elif (artist, title) not in _PREVIEW_ASKED:
+                _PREVIEW_ASKED.add((artist, title))
+                missing.append((artist, title))
+    if missing:   # looked up once in the background (cached), the next refresh shows the players
+        from .style import apple_preview
+
+        threading.Thread(target=lambda: [apple_preview(a, t) for a, t in missing], daemon=True).start()
     return out
+
+
+_PREVIEW_ASKED: set = set()
 
 
 def trash(path: str) -> str:

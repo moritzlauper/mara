@@ -30,7 +30,10 @@ def test_parse_log():
     assert [e["kind"] for e in s["events"]][:4] == ["phase", "section", "round", "action"]
 
 
-def test_buy_list(tmp_path):
+def test_buy_list(tmp_path, monkeypatch):
+    import mixmatch.style as style
+    monkeypatch.setattr(style, "BASE", str(tmp_path / "cache"))          # no previews looked up before
+    monkeypatch.setattr(style, "apple_preview", lambda *a, **k: {})      # and no network
     (tmp_path / "runs").mkdir()
     (tmp_path / "runs" / "20261109-1-buy.md").write_text(
         "# References (hyperpop)\n\n## To get\n\n- **SOPHIE – Immaterial**: bright.  \n"
@@ -175,3 +178,16 @@ def test_a_resumed_run_shows_the_whole_history_and_its_progress(tmp_path):
     assert s["history"] == [6.0, 4.0, 2.5, 2.4]
     assert s["history_phase"] == ["master", "master", "channels", "channels"] and s["history_run"] == [1, 1, 1, 2]
     assert s["progress"]["done"] == 4 and s["progress_start"]["t"] == 100.0
+
+
+def test_buy_list_adds_a_preview_from_the_cache(tmp_path, monkeypatch):
+    import json as _json
+    import mixmatch.style as style
+    (tmp_path / "cache").mkdir()
+    (tmp_path / "cache" / "apple_previews.json").write_text(_json.dumps({"sophie|immaterial": {"preview": "https://p/1"}}))
+    monkeypatch.setattr(style, "BASE", str(tmp_path / "cache"))
+    monkeypatch.setattr(style, "apple_preview", lambda *a, **k: {})
+    (tmp_path / "runs").mkdir()
+    (tmp_path / "runs" / "20261109-1-buy.md").write_text(
+        "# References (x)\n\n## To get\n\n- **SOPHIE – Immaterial**: bright.  \n  [Spotify](https://s/1)\n")
+    assert buy_list(str(tmp_path))[0]["links"]["Preview"] == "https://p/1"

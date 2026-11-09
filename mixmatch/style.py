@@ -342,6 +342,15 @@ def apple_preview(artist: str, title: str, country: str = "CH") -> dict:
     return found
 
 
+def cached_preview(artist: str, title: str) -> dict:
+    """The Apple preview if it was looked up before (no network): for lists written before previews existed."""
+    try:
+        cache = json.load(open(os.path.join(BASE, "apple_previews.json")))
+    except (OSError, ValueError):
+        return {}
+    return cache.get(f"{_norm(artist)}|{_norm(title)}") or {}
+
+
 def search_links(artist: str, title: str) -> dict:
     from urllib.parse import quote_plus
 
