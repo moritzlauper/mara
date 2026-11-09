@@ -177,3 +177,27 @@ def test_a_plugin_without_parameters_is_removed_again():
     before = len(song.tracks[0].devices)
     rr = ex.apply([{"type": "load_device", "track": "t0", "name": "Pro-Q 3", "reason": "test"}])
     assert "no parameters" in rr.skipped[0]["error"] and len(song.tracks[0].devices) == before
+
+
+def test_clipper_goes_in_front_of_the_limiter_and_is_capped():
+    from mixmatch.actions import CLIPPER_MAX_GAIN_DB, Executor
+    from mixmatch.sim import FACTORIES, Device, Param, demo_project
+
+    FACTORIES["classic clipper"] = lambda: Device("Classic Clipper", "PluginDevice", [
+        Param("Device On", 0, 1, 1, str, True, ["Off", "On"]),
+        Param("Gain", -12, 12, 0, lambda v: f"{v:.1f} dB"),
+        Param("Output", -12, 12, 0, lambda v: f"{v:.1f} dB"),
+    ])
+    song, hub, env, live = demo_project()
+    _with_plugins(live, ["Classic Clipper"])
+    ex = Executor(live, log=lambda *_: None)
+    ex.refresh()
+    ex.apply([{"type": "limiter", "delta_db": 2.0, "reason": "test"}])
+    ex.refresh()
+    for _ in range(4):
+        rr = ex.apply([{"type": "clipper", "delta_db": 1.5, "reason": "test"}])
+        assert not rr.skipped, rr.skipped
+        ex.refresh()
+    names = [d.name for d in song.master_track.devices]
+    assert names.index("Classic Clipper") < names.index("Limiter")
+    assert abs(ex.clipper_gain() - CLIPPER_MAX_GAIN_DB) < 0.1

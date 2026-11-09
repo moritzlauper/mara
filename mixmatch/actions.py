@@ -51,12 +51,15 @@ def _neutral(band: dict) -> bool:
     return kind in ("bell", "low shelf", "high shelf") and abs(band["gain"]) < 0.05
 
 
-MAX_STEP = {"volume": 2.0, "eq": 3.0, "limiter": 2.0, "pan": 15.0, "width": 25.0}
+MAX_STEP = {"volume": 2.0, "eq": 3.0, "limiter": 2.0, "clipper": 1.5, "pan": 15.0, "width": 25.0}
 EQ_GAIN_LIMIT = 12.0
 VOLUME_CEILING_DB = 6.0
 LIMITER_CEILING_DB = -1.0
 LIMITERS = ("limiter", "pro-l 2")   # Live's Limiter or FabFilter Pro-L 2 on the master
-LIMITER_MAX_GAIN_DB = 6.0   # beyond this, limiting starts to flatten and distort the mix
+LIMITER_MAX_GAIN_DB = 6.0
+# Clippers before the master limiter, as (plugin, drive parameter); the first installed one is used.
+CLIPPERS = (("Classic Clipper", "Gain"),)
+CLIPPER_MAX_GAIN_DB = 4.0   # beyond this, limiting starts to flatten and distort the mix
 SHAPES = {"bell": ["bell"], "low_shelf": ["low shelf", "lowshelf"], "high_shelf": ["high shelf", "highshelf"],
           "low_cut": ["low cut 12", "lowcut 12", "low cut", "lowcut", "12 db"], "notch": ["notch"]}
 
@@ -170,14 +173,49 @@ class Executor:
         p["value"], p["display"] = res["value"], res["display"]
         return res
 
+    def _reindex(self, key: str, order: list[int | None]) -> None:
+        """Devices of a track moved: order[new index] = old index (None for a new device). Keeps locks and
+        remembered values on the same device instead of the same position."""
+        old_to_new = {old: new for new, old in enumerate(order) if old is not None}
+
+        def remap(entries):
+            out = type(entries)()
+            for item in entries:
+                k, dev, name = item
+                if k == key and isinstance(dev, int):
+                    if dev not in old_to_new:
+                        continue  # the device is gone
+                    item = (k, old_to_new[dev], name)
+                if isinstance(entries, dict):
+                    out[item] = entries[(k, dev, name)]
+                else:
+                    out.add(item)
+            return out
+
+        self.last_set = remap(self.last_set)
+        self.locks = remap(self.locks)
+
+    def _inserted(self, key: str, at: int, count_before: int) -> None:
+        self._reindex(key, list(range(at)) + [None] + list(range(at, count_before)))
+
+    def _deleted(self, key: str, idx: int, count_before: int) -> None:
+        self._reindex(key, [i for i in range(count_before) if i != idx])
+
+    def _moved(self, key: str, frm: int, to: int, count: int) -> None:
+        order = [i for i in range(count) if i != frm]
+        order.insert(to, frm)
+        self._reindex(key, order)
+
     def _ensure_device(self, key: str, name: str, *classes: str) -> int:
         idx = self._device(key, *(c.lower() for c in classes))
         if idx is None:
             plugin = self.plugin_named(name)
+            count = len(self.track(key)["devices"])
             if plugin:
                 at = self.live.load_device(key, plugin, source="plugins")
             else:
                 at = self.live.load_device(key, name)
+            self._inserted(key, at, count)
             self.refresh()
             idx = self._device(key, *(c.lower() for c in classes))
             if idx is None and plugin and 0 <= at < len(self.track(key)["devices"]):
@@ -185,7 +223,9 @@ class Executor:
             if idx is None:
                 raise RuntimeError(f"could not load {name} on {key}")
             if plugin and len(self.track(key)["devices"][idx]["params"]) <= 1:
+                count = len(self.track(key)["devices"])
                 self.live.delete_device(key, idx)
+                self._deleted(key, idx, count)
                 self.refresh()
                 raise RuntimeError(f"{plugin} shows Live no parameters (it would need «Configure» in Live); removed")
             self.log(f"  + {name} on {self.track(key)['name']}")
@@ -312,6 +352,47 @@ class Executor:
             raise KeyError("Limiter has no Gain parameter")
         target = max(0.0, min(LIMITER_MAX_GAIN_DB, self._db_of(gain) + _clamp(float(a["delta_db"]), MAX_STEP["limiter"])))
         self._set(rr, key, dev, "Gain", target=target)
+
+    def clipper(self) -> tuple[str, str] | None:
+        """(installed plugin name, drive parameter) of the clipper to use, None if none is installed."""
+        for name, param in CLIPPERS:
+            plugin = self.plugin_named(name)
+            if plugin:
+                return plugin, param
+        return None
+
+    def clipper_gain(self) -> float | None:
+        c = self.clipper()
+        if c is None:
+            return None
+        dev = self._device(self.master_key(), c[0])
+        if dev is None:
+            return 0.0
+        p = self._param(self.master_key(), dev, c[1])
+        return self._db_of(p) if p else None
+
+    def _do_clipper(self, rr, a):
+        """Drive into a clipper right before the master limiter: shaves peaks so the limiter works less."""
+        c = self.clipper()
+        if c is None:
+            raise RuntimeError("no clipper plugin installed")
+        plugin, param = c
+        key = self.master_key()
+        dev = self._device(key, plugin)
+        if dev is None:
+            dev = self._ensure_device(key, plugin, plugin)
+            lim = self._device(key, *LIMITERS)
+            if lim is not None and lim < dev:   # place it in front of the limiter
+                count = len(self.track(key)["devices"])
+                self.live.move_device(key, dev, lim)
+                self._moved(key, dev, lim, count)
+                self.refresh()
+                dev = self._device(key, plugin)
+        p = self._param(key, dev, param)
+        if p is None:
+            raise KeyError(f"{plugin} has no parameter {param!r}")
+        target = max(0.0, min(CLIPPER_MAX_GAIN_DB, self._db_of(p) + _clamp(float(a["delta_db"]), MAX_STEP["clipper"])))
+        self._set(rr, key, dev, param, target=target)
 
     def _do_param(self, rr, a):
         self._set(rr, a["track"], int(a["device_index"]), a["param"], target=float(a["target"]))

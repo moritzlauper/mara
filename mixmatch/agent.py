@@ -20,7 +20,7 @@ from dataclasses import dataclass, field, replace
 import numpy as np
 
 from . import roles as roles_mod
-from .actions import LIMITER_MAX_GAIN_DB, Executor
+from .actions import CLIPPER_MAX_GAIN_DB, LIMITER_MAX_GAIN_DB, Executor
 from .analysis import Comparison, compare, masking, objective, stats
 from .bands import CENTRES
 from .display import parse_display
@@ -309,8 +309,8 @@ class Agent:
         scored = cmp
         if cmp and scoring == "balance":
             scored = replace(cmp, loudness_diff=0.0, plr_diff=0.0)
-        elif cmp and cmp.loudness_diff < 0 and self.limiter_at_cap():
-            # The limiter is as far as it may go: the rest of the loudness gap is accepted, not chased with faders.
+        elif cmp and cmp.loudness_diff < 0 and self.loudness_exhausted():
+            # Limiter (and clipper) as far as they may go: the rest of the gap is accepted, not chased with faders.
             scored = replace(cmp, loudness_diff=0.0)
         return {"master": master, "ref": ref, "tracks": tracks, "cmp": cmp, "masking": masks,
                 "objective": objective(scored, penalty) if scored else penalty}
@@ -318,6 +318,13 @@ class Agent:
     def limiter_at_cap(self) -> bool:
         gain = self.ex.limiter_gain() if self.ex.set_state else None
         return gain is not None and gain >= LIMITER_MAX_GAIN_DB - 0.05
+
+    def loudness_exhausted(self) -> bool:
+        """Limiter at its cap, and the clipper too (or none installed)."""
+        if not self.limiter_at_cap():
+            return False
+        clip = self.ex.clipper_gain()
+        return clip is None or clip >= CLIPPER_MAX_GAIN_DB - 0.05
 
     def fader_gains(self) -> dict[str, float]:
         """dB the mixer adds after each channel's tap: its own fader plus those of the groups it sits in.
@@ -387,8 +394,11 @@ class Agent:
             "master_vs_reference": {**cmp.summary(), "_tonal_excess": [float(x) for x in cmp.tonal_excess]} if cmp else None,
             "master_devices": device_summary(self.ex.track("m")),
             "limiter": {"gain_db": self.ex.limiter_gain(), "max_gain_db": LIMITER_MAX_GAIN_DB,
-                        "note": "at its maximum: the remaining loudness gap is accepted and does not count; do not "
-                                "raise faders to chase loudness" if self.limiter_at_cap() else ""},
+                        "at_max": self.limiter_at_cap()},
+            "clipper": ({"plugin": self.ex.clipper()[0], "gain_db": self.ex.clipper_gain(),
+                         "max_gain_db": CLIPPER_MAX_GAIN_DB} if self.ex.clipper() else "none installed"),
+            "loudness_note": ("limiter and clipper are at their maximum: the remaining loudness gap is accepted and "
+                              "does not count; do not raise faders to chase loudness") if self.loudness_exhausted() else "",
             "installed_plugins": self.ex.plugins[:80],
             "channels": channels,
             "masking": m["masking"][:8],

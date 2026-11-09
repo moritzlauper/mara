@@ -307,6 +307,9 @@ class SimLive:
     def load_device(self, track, name, source="audio_effects"):
         return self.request("load_device", track=track, name=name, source=source)["index"]
 
+    def move_device(self, track, device, to):
+        self.request("move_device", track=track, device=device, to=to)
+
     def delete_device(self, track, device):
         self.request("delete_device", track=track, device=device)
 
