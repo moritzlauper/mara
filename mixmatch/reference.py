@@ -51,7 +51,9 @@ def load(path: str) -> tuple[np.ndarray, int]:
 
 
 def file_frames(path: str) -> list[Frame]:
-    from scipy.signal import butter, sosfilt
+    from scipy.signal import butter, iirpeak, lfilter, sosfilt
+
+    from .bands import Q
 
     data, sr = load(path)
     left, right = data[:, 0].astype(np.float64), data[:, 1].astype(np.float64)
@@ -67,12 +69,12 @@ def file_frames(path: str) -> list[Frame]:
 
     bands = []
     for fc in CENTRES:
-        lo, hi = fc / 2 ** (1 / 6), min(fc * 2 ** (1 / 6), sr / 2 * 0.99)
-        if lo >= hi:
+        if fc >= sr / 2 * 0.99:
             bands.append(np.zeros(n))
             continue
-        sos = butter(2, [lo, hi], btype="bandpass", fs=sr, output="sos")
-        bands.append(frame_rms(sosfilt(sos, mid)))
+        # Two-pole resonators like the tap's fffb~, so mix and reference have the same band shape.
+        b, a = iirpeak(fc, Q, fs=sr)
+        bands.append(frame_rms(lfilter(b, a, mid)))
     bands = np.array(bands).T                                     # n × 31
     s_low = frame_rms(sosfilt(butter(2, 150, btype="lowpass", fs=sr, output="sos"), side))
     m_rms, s_rms = frame_rms(mid), frame_rms(side)
@@ -96,7 +98,7 @@ def loudest_part(frames: list[Frame]) -> list[Frame]:
 # ── cache ──────────────────────────────────────────────────────────────────
 def _key(path: str, what: str) -> str:
     st = os.stat(path)
-    h = hashlib.sha1(f"{os.path.abspath(path)}|{st.st_size}|{st.st_mtime}|{what}|v1".encode()).hexdigest()[:16]
+    h = hashlib.sha1(f"{os.path.abspath(path)}|{st.st_size}|{st.st_mtime}|{what}|v2".encode()).hexdigest()[:16]
     return os.path.join(CACHE, f"{h}.json")
 
 

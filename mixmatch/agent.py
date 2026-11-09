@@ -12,14 +12,16 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from . import roles as roles_mod
 from .actions import Executor
 from .analysis import Comparison, compare, masking, objective, stats
 from .bands import CENTRES
+from .display import parse_display
 from .planner import device_summary
 
 VOCAL_ROLES = {"lead_vocal", "backing_vocal", "vocal_fx"}
@@ -167,7 +169,8 @@ class Agent:
         start = end - self.window_seconds()
         master_tap = next((t for t in self.hub.snapshot() if t.kind == "master"), None)  # «Main» in Live 12
         master = stats(master_tap.window(start, end)) if master_tap else None
-        tracks = {k: stats(tap.window(start, end)) for k, tap in self.tap_of.items()}
+        gains = self.fader_gains()
+        tracks = {k: post_fader(stats(tap.window(start, end)), gains.get(k, 0.0)) for k, tap in self.tap_of.items()}
         if self.target:
             ref = self.target.stats
             cmp = compare(master, ref, self.target.loudness, self.target.tolerance, self.target.one_sided) if master else None
@@ -182,6 +185,30 @@ class Agent:
         penalty = sum(m["severity"] * min(m["priority_a"], m["priority_b"]) / 5 for m in masks[:4])
         return {"master": master, "ref": ref, "tracks": tracks, "cmp": cmp, "masking": masks,
                 "objective": objective(cmp, penalty) if cmp else penalty}
+
+    def fader_gains(self) -> dict[str, float]:
+        """dB the mixer adds after each channel's tap: its own fader plus those of the groups it sits in.
+
+        The tap is the last device, so it measures before the fader; this turns its numbers into what reaches the mix.
+        """
+        tracks = self.live.get_set()["tracks"]
+        groups = {t["name"]: t for t in tracks if t.get("is_group")}
+
+        def volume(t):
+            v = next((parse_display(p["display"]) for p in t["mixer"] if p["name"] == "Volume"), None)
+            return 0.0 if v is None else v
+
+        out = {}
+        for t in tracks:
+            if t["kind"] == "master":
+                continue
+            gain, seen, parent = volume(t), set(), groups.get(t.get("group"))
+            while parent is not None and parent["name"] not in seen:
+                seen.add(parent["name"])
+                gain += volume(parent)
+                parent = groups.get(parent.get("group"))
+            out[t["key"]] = gain
+        return out
 
     def _maskings(self, tracks: dict) -> list[dict]:
         out = []
@@ -324,6 +351,15 @@ class Agent:
         first, last = self.history[0].before, min((h.after for h in kept), default=self.history[0].before)
         return (f"{len(self.history)} rounds, {len(kept)} kept, {undone} undone. "
                 f"Distance to target {first:.2f} → {last:.2f}.")
+
+
+def post_fader(st, gain_db: float):
+    """Stats shifted by the mixer gain after the tap; None when the fader is all the way down."""
+    if st is None or gain_db == -math.inf:
+        return None
+    if gain_db == 0.0:
+        return st
+    return replace(st, loudness=st.loudness + gain_db, bands_db=st.bands_db + gain_db, peak_db=st.peak_db + gain_db)
 
 
 def loudest_window(frames, t0: float, tempo: float, total_beats: float, length_beats: float,

@@ -193,9 +193,12 @@ def eq_response(device) -> np.ndarray:
     return out
 
 
-def track_output(t: Track) -> tuple[np.ndarray, float, float, float]:
-    """Band levels (dB), plr, width, low side after the mixer and devices."""
-    spec = t.spectrum + _vol_db(t.mixer_device.volume.value)
+def track_output(t: Track, fader: bool = True) -> tuple[np.ndarray, float, float, float]:
+    """Band levels (dB), plr, width, low side after the devices and, with `fader`, the mixer.
+
+    Like in Live, a tap as the last device measures before the fader: fader=False.
+    """
+    spec = t.spectrum + (_vol_db(t.mixer_device.volume.value) if fader else 0.0)
     width, low_side, plr = t.width_db, t.low_side_db, t.plr
     for d in t.devices:
         if d.class_name == "Eq8":
@@ -264,7 +267,7 @@ class SimEnv:
         for _ in range(steps):
             self.t += 0.1
             for i, tr in enumerate(self.song.tracks):
-                f = self._frame(*track_output(tr))
+                f = self._frame(*track_output(tr, fader=False))
                 self.hub.taps[i + 1].frames.append(f)
             self.hub.taps[999].frames.append(self._frame(*master_output(self.song, self.refs)))
 

@@ -1,8 +1,8 @@
 """Turns tap frames into numbers the agent can compare.
 
 All levels are in dB. Loudness is an approximation of short-term LUFS from the
-band levels (K-weighting applied per band), good enough to compare a mix with a
-reference measured the same way; it is not a certified meter.
+band levels (K-weighting applied per band, bands scaled to the measured mid
+power), within about a dB of a real meter; it is not a certified meter.
 """
 from __future__ import annotations
 
@@ -21,14 +21,19 @@ def db(x: float | np.ndarray) -> float | np.ndarray:
     return 20 * np.log10(np.maximum(x, 1e-9))
 
 
-def _k_weight_db(f: float) -> float:
-    """Rough K-weighting (ITU-R BS.1770): high-pass around 40 Hz, +4 dB shelf above ~1.5 kHz."""
-    hp = -10 * math.log10(1 + (38.0 / f) ** 4)
-    shelf = 4.0 / (1 + (1500.0 / f) ** 2)
-    return hp + shelf
+def _k_weights() -> np.ndarray:
+    """K-weighting (ITU-R BS.1770) as power weights at the band centres, from the standard 48 kHz filters."""
+    from scipy.signal import freqz
+
+    shelf = ([1.53512485958697, -2.69169618940638, 1.19839281085285], [1.0, -1.69065929318241, 0.73248077421585])
+    highpass = ([1.0, -2.0, 1.0], [1.0, -1.99004745483398, 0.99007225036621])
+    h = np.ones(len(CENTRES), dtype=complex)
+    for b, a in (shelf, highpass):
+        h *= freqz(b, a, worN=CENTRES, fs=48000)[1]
+    return np.abs(h) ** 2
 
 
-K_WEIGHT = np.array([10 ** (_k_weight_db(f) / 10) for f in CENTRES])  # power weights
+K_WEIGHT = _k_weights()
 
 
 @dataclass
@@ -69,7 +74,12 @@ def stats(frames: list[Frame]) -> Stats | None:
     if not live:
         return None
     bands = np.array([f.bands for f in live])            # rms per band
-    power = (bands**2).mean(axis=0)                       # mean power per band
+    # The bands overlap and the tap's filter bank has gain, so their sum is louder than the signal.
+    # Scale each frame so the band powers add up to the (exactly measured) mid power.
+    band_sum = (bands**2).sum(axis=1)
+    mid_power = np.array([f.m_rms**2 for f in live])
+    scale = np.where(band_sum > 0, mid_power / np.maximum(band_sum, 1e-30), 1.0)
+    power = (bands**2 * scale[:, None]).mean(axis=0)     # mean power per band
     m = np.sqrt(np.mean([f.m_rms**2 for f in live]))
     s = np.sqrt(np.mean([f.s_rms**2 for f in live]))
     s_low = np.sqrt(np.mean([f.s_low_rms**2 for f in live]))
