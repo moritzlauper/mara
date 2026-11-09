@@ -478,7 +478,7 @@ def make_handler(runner: Runner, watcher: "DownloadWatcher | None" = None):
             if self.path == "/":
                 return self._send(200, PAGE, "text/html")
             if self.path.startswith("/fonts/"):   # bundled fonts (OFL), so the page needs no internet
-                name = os.path.basename(self.path)
+                name = os.path.basename(self.path.split("?")[0])
                 path = os.path.join(FONTS, name)
                 if name.endswith((".woff2", ".css")) and os.path.isfile(path):
                     with open(path, "rb") as f:
@@ -653,7 +653,7 @@ PAGE = r"""<!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>MARA</title>
-<link rel="stylesheet" href="/fonts/fonts.css">
+<link rel="stylesheet" href="/fonts/fonts.css?v=__FONTS_VERSION__">
 <style>
 :root{
   /* desktop of an old operating system, in MARA's own colours */
@@ -798,10 +798,11 @@ ul.part-why{padding-left:18px}ul.part-why li{margin:2px 0}
   <div class="scale"><i id="scale_mark"></i></div>
   <div class="scale-labels"><span>like the reference</span><span>far off</span></div>
   <p class="hint" id="scope"></p>
+  <svg id="chart" viewBox="0 0 300 90" preserveAspectRatio="none"></svg><div id="chartlabels" class="chartlabels"></div>
   <div id="phases"></div>
   <h3 class="sub">What is still different</h3>
   <div class="parts" id="parts"><span class="muted">–</span></div>
-  <svg id="chart" hidden></svg><div id="chartlabels" hidden></div>
+
 </section>
 <section>
   <h2>Song</h2>
@@ -861,7 +862,6 @@ async function loadRoles() {
   };
 }
 function chart(values, phases, runs) {
-  return;   // replaced by the phase rows in «How close to the reference»
   if (values.length < 2) { $("chart").innerHTML = ""; $("chartlabels").innerHTML = ""; return; }
   phases = phases || []; runs = runs || [];
   const max = Math.max(...values) * 1.05, w = 300, h = 90, x = i => (i/(values.length-1))*w, y = v => h - (v/max)*h;
@@ -954,7 +954,7 @@ async function tick() {
     b.className = s.ab === w ? "on" : ""; }
   $("live").textContent = s.live === null ? "Live …" : (s.live ? "Live connected" : "Live busy or closed (exporting?)");
   $("live").className = "pill" + (s.live ? " on" : "");
-  closeness(s); progress(s);
+  closeness(s); chart(s.history, s.history_phase, s.history_run); progress(s);
   $("song").innerHTML = [s.key && `<div><b>${esc(s.key)}</b></div>`, s.style && `<div class="muted">sounds like ${esc(s.style)}</div>`].filter(Boolean).join("") || "No run yet.";
   $("events").innerHTML = s.events.slice().reverse().map(e => `<div class="ev ${e.kind}">${esc(e.text)}</div>`).join("");
   const refsKey = JSON.stringify(s.reference_files) + JSON.stringify(s.project_references) + s.references.length;
@@ -1024,4 +1024,5 @@ loadRoles(); tick(); setInterval(tick, 1500);
 </body>
 </html>
 """
+PAGE = PAGE.replace("__FONTS_VERSION__", str(int(os.path.getmtime(os.path.join(FONTS, "fonts.css")))))
 PAGE = PAGE.replace("__ROLE_GROUPS__", json.dumps(__import__("mixmatch.roles", fromlist=["ROLE_GROUPS"]).ROLE_GROUPS))
