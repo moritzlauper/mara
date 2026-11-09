@@ -37,6 +37,23 @@ def to_wav(path: str) -> str:
     return out
 
 
+def preview_name(workdir: str, filename: str) -> str | None:
+    """«Artist – Title (Apple preview)» for a downloaded Apple preview («mzaf_….plus.aac.p.m4a»), found through the
+    suggestion lists and the preview cache; None for any other file."""
+    from .style import cached_preview
+
+    stem = os.path.basename(filename).split(".")[0]
+    if not stem.startswith("mzaf_"):
+        return None
+    for path in sorted(glob.glob(os.path.join(workdir, "runs", "*-buy.md")), reverse=True):
+        for title in re.findall(r"^- \*\*(.+?)\*\*", open(path).read(), flags=re.M):
+            if " – " in title:
+                url = cached_preview(*title.split(" – ", 1)).get("preview", "")
+                if url.rsplit("/", 1)[-1].split(".")[0] == stem:
+                    return f"{title} (Apple preview)".replace("/", "-")
+    return None
+
+
 def duration_s(path: str) -> float:
     import soundfile as sf
 
@@ -504,6 +521,11 @@ def make_handler(runner: Runner, watcher: "DownloadWatcher | None" = None):
                 os.replace(path + ".part", path)
                 if path.lower().endswith(CONVERT):
                     path = to_wav(path)
+                nice = preview_name(workdir, path)
+                if nice:   # an Apple preview: named after the track instead of Apple's file name
+                    target = os.path.join(os.path.dirname(path), nice + os.path.splitext(path)[1])
+                    os.replace(path, target)
+                    path = target
                 out = {"saved": os.path.basename(path)}
                 try:
                     secs = duration_s(path)
@@ -638,6 +660,7 @@ svg{width:100%;height:90px}.prog{margin-left:auto;display:flex;align-items:cente
 .chartlabels{position:relative;height:16px;font-size:11px;color:var(--muted)}.chartlabels span{position:absolute;white-space:nowrap}
 .drop{margin-top:10px;border:1.5px dashed var(--line);border-radius:8px;padding:12px;text-align:center;color:var(--muted);font-size:13px}
 .drop.over{border-color:var(--accent);color:var(--accent)}.reflist li{display:flex;justify-content:space-between;gap:8px;align-items:center}
+.reflist li span{flex:1;min-width:0;overflow-wrap:anywhere}.reflist li button{flex-shrink:0}
 button.small{padding:2px 8px;font-size:12px}button.danger{background:var(--bad);color:#fff;border-color:var(--bad)}
 </style>
 </head>

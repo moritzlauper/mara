@@ -220,3 +220,17 @@ def test_an_m4a_reference_becomes_a_wav(tmp_path):
     subprocess.run(["afconvert", "-f", "m4af", "-d", "aac", str(wav), str(m4a)], check=True)
     out = to_wav(str(m4a))
     assert out.endswith("song.wav") and not m4a.exists() and abs(duration_s(out) - 2.0) < 0.1
+
+
+def test_an_apple_preview_is_named_after_its_track(tmp_path, monkeypatch):
+    import json as _json
+    import mixmatch.style as style
+    from mixmatch.ui import preview_name
+    (tmp_path / "cache").mkdir()
+    (tmp_path / "cache" / "apple_previews.json").write_text(_json.dumps(
+        {"sophie|immaterial": {"preview": "https://a/x/mzaf_161.plus.aac.p.m4a"}}))
+    monkeypatch.setattr(style, "BASE", str(tmp_path / "cache"))
+    (tmp_path / "runs").mkdir()
+    (tmp_path / "runs" / "20261109-1-buy.md").write_text("## To get\n\n- **SOPHIE – Immaterial**: bright.\n")
+    assert preview_name(str(tmp_path), "mzaf_161.plus.aac.p.wav") == "SOPHIE – Immaterial (Apple preview)"
+    assert preview_name(str(tmp_path), "my song.wav") is None
