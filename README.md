@@ -89,9 +89,11 @@ your beat with the references **without their vocals**:
    Settings → Link, Tempo & MIDI pick «MixMatch» as a control surface (input and
    output: None). The status bar shows «MixMatch listening on port 9877».
 
-3. **Taps**: put `device/MixMatch Tap.amxd` as the **last** device on every
-   channel you want mixed and on the master. Copy `device/mixmatch_tap.js` next
-   to the .amxd (or into your User Library) so the device finds it. If Live
+3. **Taps**: copy `device/MixMatch Tap.amxd` and `device/mixmatch_tap.js`
+   into a folder of your User Library (e.g. `User Library/MixMatch`). Then
+   `mixmatch taps` puts the tap as the **last** device on every channel and on
+   the master (groups and returns are skipped; run it again after adding
+   tracks). You can also drag it onto the channels by hand. If Live
    does not open the .amxd, open `device/MixMatch Tap.maxpat` in Max (create an
    empty Max Audio Effect in Live, edit, paste the patch) and save it as a
    device.
@@ -104,6 +106,7 @@ your beat with the references **without their vocals**:
 
 ```bash
 mixmatch refs ~/refs/song1.wav ~/refs/song2.mp3       # analyse references once (and split vocals)
+mixmatch taps                                         # put the tap on every channel and the master
 mixmatch check                                        # connection, taps, roles; writes roles.json
 mixmatch run --ref ~/refs/ --minutes 10               # mix (folder = all audio files in it)
 mixmatch run --ref a.wav --ref b.wav --mode beat      # beat without vocals

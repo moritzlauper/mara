@@ -61,8 +61,8 @@ class LiveClient:
     def batch(self, changes: list[dict]) -> dict:
         return self.request("batch", changes=changes)
 
-    def load_device(self, track: str, name: str) -> int:
-        return self.request("load_device", track=track, name=name)["index"]
+    def load_device(self, track: str, name: str, source: str = "audio_effects") -> int:
+        return self.request("load_device", track=track, name=name, source=source)["index"]
 
     def transport(self, **kw) -> dict:
         return self.request("transport", **kw)

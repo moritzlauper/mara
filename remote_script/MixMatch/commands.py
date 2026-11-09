@@ -47,6 +47,15 @@ def _display(param, value=None):
         return str(param.value if value is None else value)
 
 
+def _stem(name):
+    """Browser item name without a device file extension, lower case: «MixMatch Tap.amxd» → «mixmatch tap»."""
+    name = name.lower()
+    for ext in (".amxd", ".adv", ".adg"):
+        if name.endswith(ext):
+            return name[: -len(ext)]
+    return name
+
+
 def _param_info(index, p):
     return {
         "index": index,
@@ -178,17 +187,27 @@ class Commands:
         return {"value": p.value, "display": _display(p), "min": p.min, "max": p.max}
 
     def load_device(self, req):
-        """Load a built-in device (e.g. «EQ Eight») at the end of a track's chain."""
+        """Load a device at the end of a track's chain.
+
+        `source` is «audio_effects» (built-in devices such as «EQ Eight», the
+        default) or «user_library» (e.g. the «MixMatch Tap» device).
+        """
         if self.browser is None:
             raise CommandError("browser not available")
+        source = req.get("source", "audio_effects")
+        if source not in ("audio_effects", "user_library"):
+            raise CommandError("unknown source %r" % source)
         track = self._track(req["track"])
-        item = self._find_item(self.browser.audio_effects, req["name"].lower(), 4)
+        item = self._find_item(getattr(self.browser, source), req["name"].lower(), 6)
         if item is None:
             raise CommandError("device %r not found in the browser" % req["name"])
-        before = len(list(track.devices))
+        devices = list(track.devices)
         self.song.view.selected_track = track
+        if devices:
+            # Live inserts after the selected device, so select the last one to append.
+            self.song.view.select_device(devices[-1])
         self.browser.load_item(item)
-        return {"index": before}
+        return {"index": len(devices)}
 
     def transport(self, req):
         if "loop_start" in req:
@@ -229,7 +248,7 @@ class Commands:
 
     def _find_item(self, parent, name, depth):
         for child in getattr(parent, "children", []):
-            if child.name.lower() == name and getattr(child, "is_loadable", True):
+            if _stem(child.name) == name and getattr(child, "is_loadable", True):
                 return child
         if depth > 0:
             for child in getattr(parent, "children", []):

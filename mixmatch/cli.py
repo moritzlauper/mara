@@ -2,6 +2,7 @@
 
     mixmatch run --ref a.wav --ref b.mp3 [--mode beat] [--minutes 10] [--assist] [--rules]
     mixmatch refs a.wav b.mp3 [--mode beat]        analyse references (and split vocals) ahead of time
+    mixmatch taps                                   put the «MixMatch Tap» on every channel and the master
     mixmatch check                                  connection, taps, roles
     mixmatch demo [--claude]                        run the loop on the built-in simulator
 
@@ -65,6 +66,37 @@ def cmd_refs(args):
         print(f"  loudness {t.loudness:.1f} LUFS, PLR {t.stats.plr:.1f} dB, width {t.stats.width_db:.1f} dB")
 
 
+TAP = "MixMatch Tap"
+
+
+def add_taps(live, log=print) -> int:
+    """Append the tap device to every normal track and the master that has none yet. Groups and returns are skipped."""
+    added = 0
+    for t in live.get_set()["tracks"]:
+        if t["is_group"] or t["kind"] == "return":
+            continue
+        if any(d["name"] == TAP for d in t["devices"]):
+            continue
+        live.load_device(t["key"], TAP, source="user_library")
+        log(f"  + tap on {t['name']}")
+        added += 1
+    return added
+
+
+def cmd_taps(args):
+    from .live_client import LiveClient, LiveError
+
+    try:
+        live = LiveClient().connect()
+    except OSError:
+        sys.exit("Cannot reach Live on port 9877. Is «MixMatch» selected as a control surface in Live's settings?")
+    try:
+        n = add_taps(live)
+    except LiveError as e:
+        sys.exit(f"{e}. Copy «{TAP}.amxd» and mixmatch_tap.js into a folder of your User Library.")
+    print(f"{n} tap(s) added." if n else "Every channel already has a tap.")
+
+
 def cmd_check(args):
     live, hub = _connect()
     print("Connected to Live. Play the song for a few seconds so the taps report …")
@@ -101,7 +133,8 @@ def cmd_demo(args):
 def main(argv=None):
     p = argparse.ArgumentParser(prog="mixmatch", description="Mixing agent for Ableton Live")
     sub = p.add_subparsers(dest="cmd", required=True)
-    for name, fn in (("run", cmd_run), ("refs", cmd_refs), ("check", cmd_check), ("demo", cmd_demo)):
+    for name, fn in (("run", cmd_run), ("refs", cmd_refs), ("check", cmd_check), ("demo", cmd_demo),
+                     ("taps", cmd_taps)):
         s = sub.add_parser(name)
         s.set_defaults(fn=fn)
         s.add_argument("ref_files", nargs="*", help=argparse.SUPPRESS)

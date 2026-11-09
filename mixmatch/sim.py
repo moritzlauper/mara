@@ -93,7 +93,11 @@ def limiter():
     ])
 
 
-FACTORIES = {"eq eight": eq_eight, "utility": utility, "limiter": limiter}
+def tap():
+    return Device("MixMatch Tap", "MxDeviceAudioEffect", [Param("Device On", 0, 1, 1, str, True, ["Off", "On"])])
+
+
+FACTORIES = {"eq eight": eq_eight, "utility": utility, "limiter": limiter, "mixmatch tap.amxd": tap}
 
 
 class Mixer:
@@ -121,6 +125,10 @@ class Cue:
 
 class View:
     selected_track = None
+    selected_device = None
+
+    def select_device(self, device):
+        self.selected_device = device
 
 
 class Song:
@@ -149,9 +157,14 @@ class Browser:
         self.audio_effects = Item("Audio Effects", [Item("EQ & Filters", [Item("EQ Eight")]),
                                                     Item("Utilities", [Item("Utility")]),
                                                     Item("Dynamics", [Item("Limiter")])])
+        self.user_library = Item("User Library", [Item("MixMatch", [Item("MixMatch Tap.amxd")])])
 
     def load_item(self, item):
-        self.song.view.selected_track.devices.append(FACTORIES[item.name.lower()]())
+        # Like Live: insert after the selected device of the track, else at the front.
+        view = self.song.view
+        devices = view.selected_track.devices
+        at = devices.index(view.selected_device) + 1 if view.selected_device in devices else 0
+        devices.insert(at, FACTORIES[item.name.lower()]())
 
 
 # ── sound model ────────────────────────────────────────────────────────────
@@ -273,8 +286,8 @@ class SimLive:
     def batch(self, changes):
         return self.request("batch", changes=changes)
 
-    def load_device(self, track, name):
-        return self.request("load_device", track=track, name=name)["index"]
+    def load_device(self, track, name, source="audio_effects"):
+        return self.request("load_device", track=track, name=name, source=source)["index"]
 
     def transport(self, **kw):
         return self.request("transport", **kw)
