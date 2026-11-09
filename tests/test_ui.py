@@ -1,5 +1,6 @@
 import json
 import threading
+import urllib.error
 import urllib.request
 from http.server import ThreadingHTTPServer
 
@@ -48,5 +49,30 @@ def test_server_state_and_roles(tmp_path):
                                      headers={"Content-Type": "application/json"}, method="POST")
         urllib.request.urlopen(req)
         assert json.loads((tmp_path / "roles.json").read_text())["Kick"]["role"] == "sub"
+    finally:
+        server.shutdown()
+
+
+def test_references_can_be_added_and_removed_to_the_trash(tmp_path, monkeypatch):
+    monkeypatch.setenv("MIXMATCH_TRASH", str(tmp_path / "trash"))
+    server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(Runner(str(tmp_path))))
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    base = f"http://127.0.0.1:{server.server_address[1]}"
+
+    def call(method, path, data=b"", ctype="application/octet-stream"):
+        req = urllib.request.Request(base + path, data=data, method=method, headers={"Content-Type": ctype})
+        try:
+            return json.load(urllib.request.urlopen(req))
+        except urllib.error.HTTPError as e:
+            return json.load(e)
+
+    try:
+        assert call("PUT", "/api/references/song%20one.wav", b"RIFF....")["saved"] == "song one.wav"
+        assert (tmp_path / "references" / "song one.wav").exists()
+        assert "error" in call("PUT", "/api/references/..%2Fevil.wav", b"x")           # stays inside references/
+        assert "error" in call("PUT", "/api/references/notes.txt", b"x")                # audio only
+        out = call("POST", "/api/references/remove", json.dumps({"name": "song one.wav"}).encode(), "application/json")
+        assert out["trash"].endswith("song one.wav") and not (tmp_path / "references" / "song one.wav").exists()
+        assert (tmp_path / "trash" / "song one.wav").exists()
     finally:
         server.shutdown()

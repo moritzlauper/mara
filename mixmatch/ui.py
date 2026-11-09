@@ -142,6 +142,27 @@ def buy_list(workdir: str) -> list[dict]:
     return out
 
 
+def trash(path: str) -> str:
+    """Moves a file to the macOS Trash (MIXMATCH_TRASH overrides), so a removed reference can be put back."""
+    folder = os.environ.get("MIXMATCH_TRASH") or os.path.expanduser("~/.Trash")
+    os.makedirs(folder, exist_ok=True)
+    name = os.path.basename(path)
+    target = os.path.join(folder, name)
+    if os.path.exists(target):
+        stem, ext = os.path.splitext(name)
+        target = os.path.join(folder, f"{stem} {time.strftime('%H.%M.%S')}{ext}")
+    os.replace(path, target)
+    return target
+
+
+def safe_reference(workdir: str, name: str) -> str:
+    """Path of a file directly inside references/; refuses anything else (no ../, no other folders)."""
+    base = os.path.basename(name or "")
+    if not base or base != name or not base.lower().endswith(AUDIO):
+        raise ValueError(f"not an audio file name: {name!r}")
+    return os.path.join(workdir, "references", base)
+
+
 def references(workdir: str) -> list[str]:
     folder = os.path.join(workdir, "references")
     if not os.path.isdir(folder):
@@ -183,6 +204,31 @@ def make_handler(runner: Runner):
                 return self._send(200, json.load(open(path)) if os.path.exists(path) else {})
             self._send(404, {"error": "not found"})
 
+        def do_PUT(self):
+            """Upload a reference: PUT /api/references/<file name> with the file as body."""
+            try:
+                from urllib.parse import unquote
+
+                if not self.path.startswith("/api/references/"):
+                    return self._send(404, {"error": "not found"})
+                path = safe_reference(workdir, unquote(self.path[len("/api/references/"):]))
+                size = int(self.headers.get("Content-Length") or 0)
+                if size <= 0 or size > 1_000_000_000:
+                    raise ValueError("empty or too large")
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+                with open(path + ".part", "wb") as f:
+                    left = size
+                    while left:
+                        chunk = self.rfile.read(min(1 << 20, left))
+                        if not chunk:
+                            raise ValueError("upload cut off")
+                        f.write(chunk)
+                        left -= len(chunk)
+                os.replace(path + ".part", path)
+                self._send(200, {"saved": os.path.basename(path)})
+            except Exception as e:
+                self._send(400, {"error": str(e)})
+
         def do_POST(self):
             try:
                 body = self._body()
@@ -206,6 +252,11 @@ def make_handler(runner: Runner):
                 if self.path == "/api/stop":
                     runner.stop()
                     return self._send(200, {"ok": True})
+                if self.path == "/api/references/remove":
+                    path = safe_reference(workdir, body.get("name", ""))
+                    if not os.path.exists(path):
+                        raise ValueError("no such reference")
+                    return self._send(200, {"trash": trash(path)})
                 if self.path == "/api/roles":
                     with open(os.path.join(workdir, "roles.json"), "w") as f:
                         json.dump(body, f, indent=2, ensure_ascii=False)
@@ -259,6 +310,9 @@ ul{margin:0;padding-left:18px}li{margin:3px 0}a{color:var(--accent)}table{width:
 td{padding:4px 6px;border-bottom:1px solid var(--line)}select,input{background:var(--bg);color:var(--text);border:1px solid var(--line);border-radius:6px;padding:4px 6px;font:inherit}
 pre{max-height:260px;overflow:auto;font-size:12px;background:var(--bg);padding:10px;border-radius:8px;margin:0;white-space:pre-wrap}
 svg{width:100%;height:90px}
+.drop{margin-top:10px;border:1.5px dashed var(--line);border-radius:8px;padding:12px;text-align:center;color:var(--muted);font-size:13px}
+.drop.over{border-color:var(--accent);color:var(--accent)}.reflist li{display:flex;justify-content:space-between;gap:8px;align-items:center}
+button.small{padding:2px 8px;font-size:12px}button.danger{background:var(--bad);color:#fff;border-color:var(--bad)}
 </style>
 </head>
 <body>
@@ -290,7 +344,8 @@ svg{width:100%;height:90px}
 </section>
 <section>
   <h2>References</h2>
-  <div id="refs_used"></div><h2 style="margin-top:12px">To get</h2><div id="to_get" class="muted">–</div>
+  <div id="refs_used"></div>
+  <div id="drop" class="drop">Drop audio files here to add them to references/</div><h2 style="margin-top:12px">To get</h2><div id="to_get" class="muted">–</div>
 </section>
 <section>
   <h2>Effects</h2><div id="effects" class="muted">–</div>
@@ -339,14 +394,36 @@ async function tick() {
   $("parts").innerHTML = parts.map(([k, v]) => `<div class="bar"><span>${esc(k)}</span><i style="width:${(v/top)*100}%"></i><span>${v.toFixed(2)}</span></div>`).join("");
   $("song").innerHTML = [s.key && `<div><b>${esc(s.key)}</b></div>`, s.style && `<div class="muted">sounds like ${esc(s.style)}</div>`].filter(Boolean).join("") || "No run yet.";
   $("events").innerHTML = s.events.slice().reverse().map(e => `<div class="ev ${e.kind}">${esc(e.text)}</div>`).join("");
-  $("refs_used").innerHTML = (s.reference_files.length ? "<ul>" + s.reference_files.map(f => `<li>${esc(f)}</li>`).join("") + "</ul>" : "<span class='muted'>references/ is empty</span>")
-    + (s.references.length ? "<div class='muted' style='margin-top:6px'>picked: " + s.references.map(esc).join("<br>") + "</div>" : "");
+  const refsKey = JSON.stringify(s.reference_files) + s.references.length;
+  if (refsKey !== lastRefs) { lastRefs = refsKey;
+    $("refs_used").innerHTML = (s.reference_files.length ? "<ul class='reflist'>" + s.reference_files.map(f =>
+      `<li><span>${esc(f)}</span><button class="ghost small" data-remove="${esc(f)}">remove</button></li>`).join("") + "</ul>"
+      : "<span class='muted'>references/ is empty</span>")
+      + (s.references.length ? "<div class='muted' style='margin-top:6px'>picked: " + s.references.map(esc).join("<br>") + "</div>" : "");
+    document.querySelectorAll("[data-remove]").forEach(b => b.onclick = async () => {
+      if (!b.classList.contains("danger")) { b.classList.add("danger"); b.textContent = "really? (to Trash)"; return; }
+      const j = await post("/api/references/remove", {name: b.dataset.remove});
+      if (!j.error) $("msg").textContent = "Moved to the Trash: " + b.dataset.remove; lastRefs = ""; tick();
+    });
+  }
   $("to_get").innerHTML = s.to_get.length ? "<ul>" + s.to_get.map(t => `<li><b>${esc(t.title)}</b><br><span class="muted">${esc(t.why)}</span><br>` +
     Object.entries(t.links).map(([k, u]) => `<a href="${esc(u)}" target="_blank" rel="noopener">${k}</a>`).join(" · ") + "</li>").join("") + "</ul>" : "–";
   $("effects").innerHTML = s.effects.length ? "<ul>" + s.effects.map(e => `<li>${esc(e)}</li>`).join("") + "</ul>" : "–";
   const log = $("log"), atEnd = log.scrollTop + log.clientHeight >= log.scrollHeight - 5;
   log.textContent = s.log.join("\n"); if (atEnd) log.scrollTop = log.scrollHeight;
 }
+let lastRefs = "";
+const drop = $("drop");
+["dragenter", "dragover"].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.add("over"); }));
+["dragleave", "drop"].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.remove("over"); }));
+drop.addEventListener("drop", async e => {
+  for (const file of e.dataTransfer.files) {
+    drop.textContent = "Adding " + file.name + " …";
+    const r = await fetch("/api/references/" + encodeURIComponent(file.name), {method: "PUT", body: file});
+    const j = await r.json(); $("msg").textContent = j.error ? file.name + ": " + j.error : "Added " + j.saved;
+  }
+  drop.textContent = "Drop audio files here to add them to references/"; lastRefs = ""; tick();
+});
 loadRoles(); tick(); setInterval(tick, 1500);
 </script>
 </body>
