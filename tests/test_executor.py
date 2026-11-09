@@ -102,3 +102,21 @@ def test_undo_with_live_12_names_does_not_lock():
     ex.undo(rr)
     ex.refresh()
     assert not ex.locks
+
+
+def test_neutral_eq_bands_count_as_free():
+    """Live 12 opens EQ Eight with bands 1–4 switched on at 0 dB; they must not block new cuts."""
+    from mixmatch.actions import Executor
+    from mixmatch.sim import demo_project
+
+    song, hub, env, live = demo_project()
+    live.load_device("t0", "EQ Eight")
+    eq = song.tracks[0].devices[-1]
+    for n in range(1, 9):                       # all eight on: 1–4 neutral bells, 5–8 real cuts
+        eq.p(f"{n} Filter On A").value = 1
+        eq.p(f"{n} Gain A").value = 0.0 if n <= 4 else -2.0
+    ex = Executor(live, log=lambda *_: None)
+    ex.refresh()
+    rr = ex.apply([{"type": "eq", "track": "t0", "freq_hz": 3000, "gain_db": -1.5, "q": 1.0, "shape": "bell",
+                    "reason": "test"}])
+    assert rr.changes and not rr.skipped

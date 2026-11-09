@@ -35,6 +35,12 @@ def _aliases(name):
     return out
 
 
+def _neutral(band: dict) -> bool:
+    """A bell or shelf at 0 dB changes nothing; cuts and notches act even at 0 dB gain."""
+    kind = str(band["type"].get("display", "")).lower()
+    return kind in ("bell", "low shelf", "high shelf") and abs(band["gain"]) < 0.05
+
+
 MAX_STEP = {"volume": 2.0, "eq": 3.0, "limiter": 2.0, "pan": 15.0, "width": 25.0}
 EQ_GAIN_LIMIT = 12.0
 VOLUME_CEILING_DB = 6.0
@@ -221,7 +227,8 @@ class Executor:
             new_gain = _clamp(b["gain"] + _clamp(float(a.get("gain_db") or 0), MAX_STEP["eq"]), EQ_GAIN_LIMIT)
             self._set(rr, key, dev, f"{b['n']} Gain A", target=new_gain)
             return
-        free = [b for b in bands if not b["on"]]
+        # Off, or on but doing nothing (Live 12 starts EQ Eight with bands 1–4 on at 0 dB): free to use.
+        free = [b for b in bands if not b["on"] or _neutral(b)]
         if not free:
             raise RuntimeError("all eight EQ bands are in use")
         n = free[0]["n"]
