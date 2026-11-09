@@ -903,10 +903,7 @@ class Agent:
                 self.log("  time is up")
                 return
             self.ex.refresh()
-            try:
-                plan = self.planner.plan(self.context(name, m, focus))
-            except Exception as e:  # e.g. no API credit left, network down: stop cleanly, keep what was done
-                raise PlannerFailed(str(e)) from e
+            plan = self.plan_with_retries(self.context(name, m, focus))
             self.log(f"  round {n}: {plan.get('assessment', '')}")
             actions = plan.get("actions", [])
             if focus is not None:
@@ -965,6 +962,23 @@ class Agent:
             if plan.get("done") or stall >= self.s.stall_rounds:
                 self.log("  no further improvement in this section" if stall else "  targets reached")
                 return
+
+    TRANSIENT = ("can't reach", "cannot reach", "enotfound", "network", "timed out", "timeout", "connection",
+                 "econnreset", "overloaded", "529", "503", "502", "temporarily")
+    RETRY_WAITS = (15, 30, 60, 120, 120, 120, 120)     # about ten minutes in all
+
+    def plan_with_retries(self, context: dict) -> dict:
+        """The planner's next round. A network outage or an overloaded server is waited out (the song keeps
+        playing); anything else, or an outage over about ten minutes, stops the run cleanly."""
+        for wait in (*self.RETRY_WAITS, None):
+            try:
+                return self.planner.plan(context)
+            except Exception as e:
+                msg = str(e)
+                if wait is None or not any(w in msg.lower() for w in self.TRANSIENT):
+                    raise PlannerFailed(msg) from e
+                self.log(f"  ⚠ planner not reachable ({msg[:90]}): trying again in {wait} s")
+                self.env.wait(wait)
 
     def _record(self, rnd: Round) -> None:
         self.history.append(rnd)

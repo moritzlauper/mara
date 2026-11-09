@@ -419,3 +419,36 @@ def test_progress_rises_round_by_round_and_ends_at_the_total(tmp_path):
     done = [p["done"] for p in points]
     assert done == sorted(done) and len(set(done)) > 6          # it moves often, never back
     assert abs(points[-1]["done"] - points[-1]["total"]) < 0.01  # 100% at the end
+
+
+def test_a_network_outage_is_waited_out():
+    song, hub, env, live = demo_project()
+    env.wait(5)
+
+    class Flaky(RulePlanner):
+        calls = 0
+
+        def plan(self, ctx):
+            Flaky.calls += 1
+            if Flaky.calls <= 2:
+                raise RuntimeError("claude -p (haiku): API Error: Can't reach the API server (ENOTFOUND)")
+            return super().plan(ctx)
+
+    logs = []
+    agent = Agent(live, hub, Flaky(), Settings(minutes=1, settle=1.0), env=env, log=logs.append)
+    history = agent.run()
+    assert history and not any("Stopped" in l for l in logs)
+    assert sum("trying again" in l for l in logs) == 2
+
+
+def test_a_real_planner_error_still_stops_the_run():
+    song, hub, env, live = demo_project()
+    env.wait(5)
+
+    class Broken(RulePlanner):
+        def plan(self, ctx):
+            raise RuntimeError("invalid schema")
+
+    logs = []
+    Agent(live, hub, Broken(), Settings(minutes=1, settle=1.0), env=env, log=logs.append).run()
+    assert any("Stopped: the planner failed" in l for l in logs)
