@@ -658,7 +658,7 @@ pre{max-height:260px;overflow:auto;font-size:12px;background:var(--bg);padding:1
 svg{width:100%;height:90px}.prog{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:12px}
 .prog i{display:block;width:160px;height:7px;border-radius:4px;background:var(--line);overflow:hidden}.prog b{display:block;height:100%;background:var(--accent)}
 .chartlabels{position:relative;height:16px;font-size:11px;color:var(--muted)}.chartlabels span{position:absolute;white-space:nowrap}
-.drop{margin-top:10px;border:1.5px dashed var(--line);border-radius:8px;padding:12px;text-align:center;color:var(--muted);font-size:13px}
+.drop{margin-top:12px;border:2px dashed var(--line);border-radius:10px;padding:34px 16px;min-height:110px;display:flex;align-items:center;justify-content:center;text-align:center;color:var(--muted);font-size:14px}
 .drop.over{border-color:var(--accent);color:var(--accent)}.reflist li{display:flex;justify-content:space-between;gap:8px;align-items:center}
 .reflist li span{flex:1;min-width:0;overflow-wrap:anywhere}.reflist li button{flex-shrink:0}
 button.small{padding:2px 8px;font-size:12px}button.danger{background:var(--bad);color:#fff;border-color:var(--bad)}
