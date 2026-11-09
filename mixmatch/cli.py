@@ -157,7 +157,8 @@ def cmd_run(args):
     planner = make_planner("rules" if args.rules else args.planner)
     print(f"Planner: {getattr(planner, 'model', None) or 'rules (no Claude Code, no ANTHROPIC_API_KEY, or --rules)'}")
     refset = _refset(args)
-    live.transport(play=True)
+    loop = live.get_set()["loop"]
+    live.transport(time=loop["start"], play=True)   # start inside the song, not wherever playback last stopped
     try:
         time.sleep(args.wait)
         Agent(live, hub, planner, Settings(minutes=args.minutes, assist=args.assist, roles_file=args.roles,
