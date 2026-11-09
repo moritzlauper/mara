@@ -493,3 +493,24 @@ def test_a_channel_outside_the_loudest_part_is_not_compared_with_the_references(
     assert m["cmp"] is None and set(m["parts"]) <= {"masking", "low_side"}
     ctx = agent.context("channel Bass", m, focus="t1")
     assert "outside the song's loudest part" in ctx["scope"] and ctx["master_vs_reference"] is None
+
+
+def test_effect_audit_leaves_moving_effects_alone(tmp_path):
+    from mixmatch.sim import Device, Param
+
+    song, hub, env, live = demo_project()
+    phaser = Device("Phaser-Flanger", "PhaserNew", [Param("Device On", 0, 1, 1, str, True, ["Off", "On"]),
+                                                     Param("Amount", 0, 1, 0.5, lambda v: f"{v * 100:.0f} %")])
+    song.tracks[3].devices.append(phaser)
+    env.wait(5)
+    logs = []
+
+    class Idle:
+        def plan(self, ctx):
+            return {"assessment": "fine", "done": True, "actions": []}
+
+    agent = Agent(live, hub, Idle(), Settings(minutes=None, complete=True, focus="loud", settle=1.0,
+                                              roles_file=str(tmp_path / "r.json"), log_dir=str(tmp_path)),
+                  env=env, log=logs.append)
+    agent.run()
+    assert not any("Phaser-Flanger" in l and ("bypassed" in l or "kept" in l) for l in logs)

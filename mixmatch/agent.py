@@ -239,6 +239,11 @@ class Agent:
     MIXING_TOOLS = ("eq8", "compressor2", "gluecompressor", "multibanddynamics", "stereogain", "channeleq",
                     "filtereq3", "pro-q", "pro-c", "pro-mb", "pro-ds")
     METERS = ("loudness meter", "span", "spectrum", "analyzer", "analyser", "tuner", "meter", "insight", "youlean")
+    # Effects that move over time or add space: an average over a few bars hides what they do, so «does nothing»
+    # would be a wrong verdict. They are left alone.
+    MOVING = ("phaser", "flanger", "chorus", "ensemble", "auto filter", "auto pan", "autopan", "tremolo", "vibrato",
+              "shifter", "frequency shifter", "lfo", "delay", "echo", "reverb", "valhalla", "beat repeat", "grain",
+              "spectral", "resonator", "corpus", "vocoder", "roar", "shaperbox", "kickstart", "duck")
 
     def audit_effects(self, main: tuple[str, float, float], deadline: float) -> None:
         """Removes EQ Eights and Utilities that change nothing; listens to every other audio effect on and off
@@ -263,7 +268,8 @@ class Agent:
                 name, cls = d["name"].lower(), d.get("class_name", "").lower()
                 on = next((p for p in d["params"] if p["name"] == "Device On"), None)
                 if (d.get("type", 2) != 2 or d["name"] == TAP or on is None or on["value"] < 0.5
-                        or any(p.get("automated") for p in d["params"]) or any(m in name for m in self.METERS)):
+                        or any(p.get("automated") for p in d["params"]) or any(m in name for m in self.METERS)
+                        or any(m in name or m in cls for m in self.MOVING)):
                     continue
                 if key == "m" and (cls == "limiter" or any(x in name for x in LIMITERS)
                                    or any(c.lower() in name for c, _ in CLIPPERS)):
