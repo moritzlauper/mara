@@ -152,6 +152,22 @@ measurements) and taste decisions. MixMatch measures; it does not hear. Claude
 plans from the numbers, the channel roles and the history of earlier rounds,
 and explains each step. The last bit of character and depth is still yours.
 
+## Finding references
+
+```bash
+pip install -e ".[style]"                                  # CLAP, runs locally
+mixmatch suggest-refs my-beat.wav --note "PS2-style DnB"  # style, tempo, references to buy
+mixmatch suggest-refs my-beat.wav --library               # also: similar songs in ~/Music
+```
+
+MixMatch listens to an export of your track with CLAP, an audio model that
+places music and descriptions in the same space: it names the closest styles,
+estimates the tempo and, with `--library`, ranks the songs in a folder by how
+close they sound (cached, so a library is listened to once). Claude then
+suggests real tracks to mix against, with Bandcamp and Beatport search links.
+Buy the ones you like and put the WAVs into `references/`; MixMatch does not
+download music itself.
+
 ## Development
 
 ```bash

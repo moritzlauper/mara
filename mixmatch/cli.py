@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 import time
 
@@ -101,6 +102,35 @@ def cmd_taps(args):
     print(f"{n} tap(s) added." if n else "Every channel already has a tap.")
 
 
+def cmd_suggest_refs(args):
+    """Style of a track, similar tracks in the user's library, and references to buy."""
+    try:
+        from .style import Listener, describe, library_files, similar, suggest
+    except ImportError:
+        sys.exit('Needs the style extra: pip install -e ".[style]"')
+    if not args.track or not os.path.exists(args.track):
+        sys.exit("Give an export of your track: mixmatch suggest-refs my-beat.wav")
+    print("Listening (CLAP) …")
+    listener = Listener()
+    desc = describe(args.track, listener)
+    print(f"\nYour track: about {desc['tempo_bpm']} BPM, {desc['loudness_lufs']} LUFS in its loudest part")
+    print("Sounds like: " + ", ".join(f"{s['style']} ({s['score']:.2f})" for s in desc["styles_clap"][:5]))
+
+    if args.library:
+        files = library_files(args.library)
+        print(f"\nIn your library ({len(files)} songs in {args.library}; the first time takes a while, then it is cached):")
+        for path, score in similar(listener, desc["_embedding"], files, top=args.top, exclude=args.track):
+            print(f"  {score:.2f}  {path}")
+
+    if not args.no_suggest:
+        print("\nAsking Claude for references to buy …")
+        result = suggest(desc, note=args.note or "")
+        print(f"Style: {result['style']}")
+        for s in result["suggestions"]:
+            print(f"\n  {s['artist']} – {s['title']}\n    {s['why']}\n    {s['links']['bandcamp']}\n    {s['links']['beatport']}")
+    print("\nPut the references you pick (WAV, AIFF, FLAC or MP3) into references/ and run mixmatch run.")
+
+
 def cmd_check(args):
     live, hub = _connect()
     print("Connected to Live. Play the song for a few seconds so the taps report …")
@@ -170,8 +200,17 @@ def main(argv=None):
                                     help="auto: local Claude Code on your subscription if installed, else the API key")
     sub.choices["run"].add_argument("--rules", action="store_true", help="rule-based planner instead of Claude")
     sub.choices["demo"].add_argument("--claude", action="store_true", help="use Claude in the simulator too")
+    sr = sub.add_parser("suggest-refs", help="style of your track, similar songs in your library, references to buy")
+    sr.set_defaults(fn=cmd_suggest_refs)
+    sr.add_argument("track", nargs="?", help="an export of your track (WAV, AIFF, FLAC, MP3)")
+    sr.add_argument("--library", nargs="?", const="~/Music", default=None,
+                    help="also search this folder for similar songs (default ~/Music); cached after the first time")
+    sr.add_argument("--top", type=int, default=10, help="how many similar songs to list")
+    sr.add_argument("--note", help="describe your track in your own words, e.g. «PS2-style DnB»")
+    sr.add_argument("--no-suggest", action="store_true", help="do not ask Claude for references to buy")
     args = p.parse_args(argv)
-    args.ref = args.ref + args.ref_files
+    if hasattr(args, "ref_files"):
+        args.ref = args.ref + args.ref_files
     args.fn(args)
 
 

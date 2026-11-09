@@ -11,6 +11,7 @@ dependencies = ["numpy", "scipy", "soundfile", "python-osc", "anthropic>=0.80"]
 
 [project.optional-dependencies]
 stems = ["demucs"]          # removes vocals from references for beat mode
+style = ["transformers", "torch"]   # CLAP: style of a track, similar songs in a library (suggest-refs)
 dev = ["pytest"]
 
 [project.scripts]
