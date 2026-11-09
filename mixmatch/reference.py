@@ -37,6 +37,8 @@ CACHE = os.environ.get("MIXMATCH_CACHE", os.path.expanduser("~/.cache/mixmatch")
 HOP = 0.1          # seconds, like the taps
 BLOCK = 3.0        # seconds per block when looking for the loudest part
 LOUDEST_SHARE = 0.3
+LOUD_WITHIN_LU = 3.0   # a block counts only this close to the loudest one: no fades, intros or breakdowns
+SHORT_CLIP_S = 60.0    # shorter files (e.g. 30 s previews) count half, and not for loudness and dynamics
 VOCAL_RANGE = bands_between(200, 5000)
 VOCAL_ROOM_DB = 4.0   # beat mode: how far under the song the vocal range may sit
 
@@ -93,13 +95,24 @@ def loudest_part(frames: list[Frame]) -> list[Frame]:
         return frames
     scored.sort(key=lambda x: -x[0])
     keep = scored[: max(1, int(len(scored) * LOUDEST_SHARE))]
+    keep = [k for k in keep if k[0] >= keep[0][0] - LOUD_WITHIN_LU]
     return [f for _, b in keep for f in b]
+
+
+def _seconds(path: str) -> float:
+    try:
+        import soundfile as sf
+
+        info = sf.info(path)
+        return info.frames / info.samplerate
+    except Exception:
+        return 300.0
 
 
 # ── cache ──────────────────────────────────────────────────────────────────
 def _key(path: str, what: str) -> str:
     st = os.stat(path)
-    h = hashlib.sha1(f"{os.path.abspath(path)}|{st.st_size}|{st.st_mtime}|{what}|v2".encode()).hexdigest()[:16]
+    h = hashlib.sha1(f"{os.path.abspath(path)}|{st.st_size}|{st.st_mtime}|{what}|v3".encode()).hexdigest()[:16]
     return os.path.join(CACHE, f"{h}.json")
 
 
@@ -160,6 +173,11 @@ class Reference:
     path: str
     full: Stats
     inst: Stats | None = None
+    seconds: float = 300.0   # length of the file; short clips weigh less
+
+    @property
+    def short(self) -> bool:
+        return self.seconds < SHORT_CLIP_S
 
 
 @dataclass
@@ -175,13 +193,14 @@ class Target:
     anchor: list[int] = field(default_factory=list)     # bands that set the level of the comparison
 
 
-def _mean_stats(items: list[Stats]) -> Stats:
-    bands = np.mean([s.bands_db for s in items], axis=0)
-    loud = float(np.mean([s.loudness for s in items]))
-    mean = lambda a: float(np.mean([getattr(s, a) for s in items]))
-    return Stats(frames=sum(s.frames for s in items), loudness=loud, bands_db=bands,
-                 shape_db=np.mean([s.shape_db for s in items], axis=0), peak_db=mean("peak_db"), plr=mean("plr"),
-                 width_db=mean("width_db"), low_side_db=mean("low_side_db"), active=1.0)
+def _mean_stats(items: list[Stats], weights: list[float] | None = None) -> Stats:
+    w = np.ones(len(items)) if weights is None else np.asarray(weights, dtype=float)
+    avg = lambda xs: np.average(np.asarray(xs, dtype=float), axis=0, weights=w)
+    mean = lambda a: float(avg([getattr(s, a) for s in items]))
+    return Stats(frames=sum(s.frames for s in items), loudness=mean("loudness"),
+                 bands_db=avg([s.bands_db for s in items]), shape_db=avg([s.shape_db for s in items]),
+                 peak_db=mean("peak_db"), plr=mean("plr"), width_db=mean("width_db"),
+                 low_side_db=mean("low_side_db"), active=1.0)
 
 
 class ReferenceSet:
@@ -190,8 +209,10 @@ class ReferenceSet:
         self.paths = list(paths)
         self.refs: list[Reference] = []
         for p in paths:
-            self.refs.append(Reference(p, profile(p)))
-            self.log(f"  reference {os.path.basename(p)}: {self.refs[-1].full.loudness:.1f} LUFS")
+            self.refs.append(Reference(p, profile(p), seconds=_seconds(p)))
+            r = self.refs[-1]
+            note = f" ({r.seconds:.0f} s clip: half weight, not used for loudness)" if r.short else ""
+            self.log(f"  reference {os.path.basename(p)}: {r.full.loudness:.1f} LUFS{note}")
 
     def separate(self) -> bool:
         """Add the instrumental version of every reference. False if Demucs is missing."""
@@ -206,7 +227,12 @@ class ReferenceSet:
     def target(self, beat: bool, loudness_from: str = "full") -> Target:
         """The combined target. `loudness_from` is kept for old callers: everything comes from the full songs."""
         full = [r.full for r in self.refs]
-        target = _mean_stats(full)
+        weights = [0.5 if r.short else 1.0 for r in self.refs]
+        target = _mean_stats(full, weights)
+        # Loudness and dynamics only from whole tracks when there are any: a clip has fades and maybe no drop.
+        whole = [r.full for r in self.refs if not r.short] or full
+        level = _mean_stats(whole)
+        target = Stats(**{**target.__dict__, "loudness": level.loudness, "plr": level.plr, "peak_db": level.peak_db})
         spread = np.std([s.shape_db for s in full], axis=0) if len(full) > 1 else np.zeros(len(CENTRES))
         tolerance = 0.5 + spread / 2
         offset, anchor = None, []
@@ -224,7 +250,10 @@ class ReferenceSet:
                    "(room for a vocal), level set by the bands outside it")
         else:
             how = "full references"
-        return Target(stats=target, loudness=float(np.mean([s.loudness for s in full])), tolerance=tolerance,
+        clips = sum(r.short for r in self.refs)
+        count = f"{len(full)} reference(s)" + (f", {clips} short clip(s) at half weight" if clips else "")
+        return Target(stats=target, loudness=level.loudness, tolerance=tolerance,
                       one_sided=[], offset=offset, anchor=anchor,
-                      description=f"{len(full)} reference(s), {how}; loudness from the full songs")
+                      description=f"{count}, {how}; loudness and dynamics from the "
+                                  f"{'whole tracks' if len(whole) < len(full) else 'full songs'}")
 

@@ -63,3 +63,36 @@ def test_beat_target_takes_everything_from_the_full_song():
     t, cmp = _beat_case(0.0)
     assert t.loudness == -7.5 and abs(t.stats.plr - 7.0) < 1e-9 and abs(t.stats.width_db + 10.0) < 1e-9
     assert "full references" in t.description and not t.one_sided
+
+
+def test_loudest_part_leaves_out_fades_and_quiet_blocks():
+    from mixmatch.reference import BLOCK, HOP, loudest_part
+    from mixmatch.taps import Frame
+
+    def block(level):
+        return [Frame(0.0, level, level * 0.3, 0.0, level * 2, [level] * 31) for _ in range(int(BLOCK / HOP))]
+
+    # a 30 s clip: fade in, loud chorus (2 blocks), quieter verse, fade out
+    frames = block(0.02) + block(0.3) + block(0.3) + block(0.08) + block(0.08) + block(0.1) + block(0.08) + \
+        block(0.05) + block(0.03) + block(0.01)
+    picked = loudest_part(frames)
+    assert len(picked) == 2 * int(BLOCK / HOP) and all(f.m_rms == 0.3 for f in picked)
+
+
+def test_short_clips_weigh_half_and_whole_tracks_set_loudness():
+    from mixmatch.analysis import Stats
+    from mixmatch.reference import Reference
+
+    def st(loud, tilt):
+        bands = np.full(31, loud - 15.0) + tilt
+        return Stats(frames=10, loudness=loud, bands_db=bands, shape_db=bands - loud, peak_db=loud + 7, plr=7.0,
+                     width_db=-10.0, low_side_db=-25.0, active=1.0)
+
+    rs = ReferenceSet.__new__(ReferenceSet)
+    rs.log = lambda *_: None
+    rs.refs = [Reference("song.wav", full=st(-7.5, 0.0), seconds=200.0),
+               Reference("clip.wav", full=st(-10.0, 3.0), seconds=30.0)]
+    t = rs.target(beat=False)
+    assert t.loudness == -7.5                                       # loudness from the whole track only
+    assert abs((t.stats.shape_db - st(-7.5, 0.0).shape_db).mean() - 1.0) < 1e-6   # clip counts 1/3, not 1/2
+    assert "half weight" in t.description
