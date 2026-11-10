@@ -1,6 +1,6 @@
 # MARA · Reference-guided mixing for Ableton Live
 
-**MARA is a measurement-driven mixing assistant for Ableton Live.** A local Python engine combines per-channel audio measurements, reference profiles, and project metadata to plan and execute incremental changes to an open Live set. Each round is evaluated against its stated objective and passage-specific constraints; rejected parameter changes are rolled back.
+**MARA is a measurement-driven mixing assistant for Ableton Live.** It combines per-channel audio measurements, reference profiles, and project metadata to plan and execute incremental changes to an open Live set. Each round is evaluated against its stated objective and passage-specific constraints; rejected parameter changes are rolled back.
 
 **MARA directly edits effect parameters across the Live set:** audio and MIDI tracks, groups, returns, and Main. It operates existing devices and can load additional native effects or installed plugins through Live's browser. Control extends to the parameters Live exposes; the current addressing model covers top-level devices and rack macros. Accepted changes remain editable in Live. See [Device and parameter actions](#device-and-parameter-actions) for the integration boundaries.
 
@@ -290,7 +290,7 @@ flowchart LR
     Live["Ableton Live<br/>Audio processing and project state"]
     Tap["MixMatch Tap<br/>Max for Live measurement devices"]
     Remote["MixMatch remote script<br/>Live API access"]
-    Engine["Local Python engine<br/>Analysis, execution, verification"]
+    Engine["Mixing engine<br/>Analysis, execution, verification"]
     Planner["Planner<br/>Rules or configured model"]
     Listener["Optional CLAP listener<br/>Style, mood, reference similarity"]
     Refs["Reference audio files"]
