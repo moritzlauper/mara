@@ -2,34 +2,191 @@ name: Desktop packages
 on:
   workflow_dispatch:
   push:
+    branches: [main]
     tags: ['desktop-v*']
+permissions:
+  contents: read
+concurrency:
+  group: desktop-${{ github.ref }}
+  cancel-in-progress: false
 jobs:
   package:
+    name: Package ${{ matrix.platform }}
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-latest, windows-latest]
+        include:
+          - os: macos-15
+            platform: macOS-Apple-Silicon
+          - os: macos-15-intel
+            platform: macOS-Intel
+          - os: windows-2022
+            platform: Windows-x64
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7.1.0
         with:
           python-version: '3.12'
-      - uses: actions/setup-node@v4
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - uses: actions/setup-node@v7.1.0
         with:
           node-version: '22'
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
       - uses: dtolnay/rust-toolchain@stable
       - run: python -m pip install ".[dev]"
       - run: python -m pytest -q
       - run: python desktop/build_engine.py
+      - name: Check bundled engine startup
+        shell: python
+        run: |
+          from pathlib import Path
+          import subprocess
+          binaries = list(Path('desktop/src-tauri/binaries').glob('mara-engine-*'))
+          assert len(binaries) == 1, binaries
+          subprocess.run([str(binaries[0].resolve()), '--help'], check=True, timeout=90)
+      - name: Configure installer version
+        shell: python
+        run: |
+          import json
+          import os
+          import re
+          from pathlib import Path
+          config = json.loads(Path('desktop/src-tauri/tauri.conf.json').read_text())
+          if os.environ['GITHUB_REF_TYPE'] == 'tag':
+              version = os.environ['GITHUB_REF_NAME'].removeprefix('desktop-v')
+          else:
+              major, minor, patch = map(int, config['version'].split('.'))
+              version = f"{major}.{minor}.{patch + int(os.environ['GITHUB_RUN_NUMBER'])}"
+          assert re.fullmatch(r'\d+\.\d+\.\d+', version), version
+          Path('.build/tauri-release.json').write_text(json.dumps({'version': version}))
+          print(f'Installer version: {version}')
       - run: npm ci
         working-directory: desktop
-      - run: npm run build
+      - run: npm run build -- --config ../.build/tauri-release.json
         working-directory: desktop
-      - uses: actions/upload-artifact@v4
+      - name: Collect installers
+        shell: python
+        env:
+          RELEASE_PLATFORM: ${{ matrix.platform }}
+        run: |
+          import os
+          import shutil
+          from pathlib import Path
+          platform = os.environ['RELEASE_PLATFORM']
+          patterns = {'dmg/*.dmg': f'MARA-{platform}.dmg'}
+          if platform == 'Windows-x64':
+              patterns = {'nsis/*.exe': f'MARA-{platform}-Setup.exe',
+                          'msi/*.msi': f'MARA-{platform}.msi'}
+          destination = Path('.build/release-assets')
+          destination.mkdir(parents=True, exist_ok=True)
+          for pattern, name in patterns.items():
+              matches = list(Path('desktop/src-tauri/target/release/bundle').glob(pattern))
+              assert len(matches) == 1, f'Expected one installer for {pattern}: {matches}'
+              shutil.copy2(matches[0], destination / name)
+      - uses: actions/upload-artifact@v7.0.2
         with:
-          name: MARA-${{ matrix.os }}
-          path: |
-            desktop/src-tauri/target/release/bundle/dmg/*.dmg
-            desktop/src-tauri/target/release/bundle/nsis/*.exe
-            desktop/src-tauri/target/release/bundle/msi/*.msi
+          name: MARA-${{ matrix.platform }}
+          path: .build/release-assets/*
+          if-no-files-found: error
+          include-hidden-files: true
+          compression-level: 0
+          retention-days: 14
+
+  publish:
+    name: Publish GitHub release
+    needs: package
+    if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/desktop-v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    concurrency:
+      group: desktop-release-publication
+      cancel-in-progress: false
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/download-artifact@v8.0.2
+        with:
+          pattern: MARA-*
+          path: release-assets
+          merge-multiple: true
+      - name: Verify complete asset set and write checksums
+        shell: python
+        run: |
+          import hashlib
+          from pathlib import Path
+          folder = Path('release-assets')
+          expected = {'MARA-macOS-Apple-Silicon.dmg', 'MARA-macOS-Intel.dmg',
+                      'MARA-Windows-x64-Setup.exe', 'MARA-Windows-x64.msi'}
+          assert {p.name for p in folder.iterdir()} == expected
+          lines = []
+          for path in sorted(folder.iterdir()):
+              assert path.stat().st_size > 0, path
+              with path.open('rb') as stream:
+                  digest = hashlib.file_digest(stream, 'sha256').hexdigest()
+              lines.append(f'{digest}  {path.name}\n')
+          (folder / 'SHA256SUMS.txt').write_text(''.join(lines))
+      - name: Create or update release
+        shell: bash
+        run: |
+          set -euo pipefail
+          rolling=false
+          if [[ "$GITHUB_REF" == refs/heads/main ]]; then
+            current=$(gh api "repos/$GH_REPO/git/ref/heads/main" --jq '.object.sha')
+            if [[ "$current" != "$GITHUB_SHA" ]]; then
+              echo 'A newer main commit is pending; leaving the published release unchanged.' >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+            tag=latest
+            title='MARA — Latest development build'
+            rolling=true
+          else
+            tag="$GITHUB_REF_NAME"
+            title="MARA ${tag#desktop-v}"
+          fi
+          cat > release-notes.md <<EOF
+          Download the installer for your platform:
+
+          - [macOS — Apple Silicon](https://github.com/$GH_REPO/releases/download/$tag/MARA-macOS-Apple-Silicon.dmg)
+          - [macOS — Intel](https://github.com/$GH_REPO/releases/download/$tag/MARA-macOS-Intel.dmg)
+          - [Windows — x64 setup](https://github.com/$GH_REPO/releases/download/$tag/MARA-Windows-x64-Setup.exe) or [MSI](https://github.com/$GH_REPO/releases/download/$tag/MARA-Windows-x64.msi)
+          - [SHA-256 checksums](https://github.com/$GH_REPO/releases/download/$tag/SHA256SUMS.txt)
+
+          Requires Ableton Live with Max for Live. Open MARA and use **Project & goal → Set up the connection** to install the Live connection.
+
+          These installers are unsigned; macOS builds are not notarized.
+
+          Source: [$GITHUB_SHA](https://github.com/$GH_REPO/commit/$GITHUB_SHA)
+          Build: [GitHub Actions run $GITHUB_RUN_NUMBER](https://github.com/$GH_REPO/actions/runs/$GITHUB_RUN_ID)
+          EOF
+          if [[ "$rolling" == true ]]; then
+            printf '\nThis development release is refreshed automatically after successful tests and builds on main.\n' >> release-notes.md
+          fi
+          if gh release view "$tag" --json isDraft > existing-release.json 2>/dev/null; then
+            if [[ "$rolling" != true ]] && [[ "$(jq -r '.isDraft' existing-release.json)" != true ]]; then
+              echo 'A published versioned release already exists; use a new version tag.' >&2
+              exit 1
+            fi
+          else
+            gh release create "$tag" --target "$GITHUB_SHA" --draft --title "$title" --notes-file release-notes.md
+          fi
+          gh release upload "$tag" release-assets/* --clobber
+          if [[ "$rolling" == true ]]; then
+            if gh api "repos/$GH_REPO/git/ref/tags/latest" > /dev/null 2>&1; then
+              gh api --method PATCH "repos/$GH_REPO/git/refs/tags/latest" -f sha="$GITHUB_SHA" -F force=true > /dev/null
+            else
+              gh api --method POST "repos/$GH_REPO/git/refs" -f ref=refs/tags/latest -f sha="$GITHUB_SHA" > /dev/null
+            fi
+            gh release edit "$tag" --draft=false --prerelease --latest=false --title "$title" --notes-file release-notes.md
+          else
+            gh release edit "$tag" --draft=false --prerelease=false --latest --title "$title" --notes-file release-notes.md
+          fi
+          echo "Release: https://github.com/$GH_REPO/releases/tag/$tag" >> "$GITHUB_STEP_SUMMARY"
