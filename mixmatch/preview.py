@@ -145,9 +145,11 @@ def render(live, snapshot: str, start: float, length: float, log=print) -> dict:
     position, playing = current.get("song_time", loop["start"]), current.get("is_playing", False)
     activity(log, f"Recording {Path(snapshot).stem.rsplit('-', 1)[-1]} preview · {length / 4:g} bars")
     disconnected = False
+    restore_output = None
     try:
         live.transport(play=False)
-        live.request("preview_output", muted=True)
+        routing = live.request("preview_output", muted=True)
+        restore_output = routing.get("restore")
         disconnected = True
         _apply(live, target)
         # One bar of preroll lets quantized session recording start on the chosen bar.
@@ -160,7 +162,7 @@ def render(live, snapshot: str, start: float, length: float, log=print) -> dict:
         peak = float(np.max(np.abs(data))) if data.size else 0.0
         seconds = len(data) / sr
         if not np.isfinite(data).all() or peak < 1e-5 or seconds < length * 60 / current["tempo"] * 0.9:
-            raise RuntimeError("preview recording is silent or incomplete")
+            raise RuntimeError(f"preview recording is silent or incomplete ({seconds:.2f} s, peak {peak:.6f})")
         dest = audio_path(snapshot)
         sf.write(dest + ".part", data, sr, format="WAV", subtype="PCM_24")
         os.replace(dest + ".part", dest)
@@ -180,7 +182,7 @@ def render(live, snapshot: str, start: float, length: float, log=print) -> dict:
             raise RestoreFailed("Preview stopped: could not restore the mix; output stays disconnected") from e
         if disconnected:
             try:
-                live.request("preview_output", muted=False)
+                live.request("preview_output", muted=False, restore=restore_output)
             except Exception as e:
                 raise RestoreFailed("Preview stopped: could not restore the hardware output") from e
         if playing:

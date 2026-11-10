@@ -478,6 +478,26 @@ def test_silent_mode_turns_the_main_fader_down_and_back():
     assert any(h.after is not None and not h.undone for h in history)   # it still measured and improved
 
 
+def test_resumed_silent_run_keeps_original_gain_in_after_snapshot(tmp_path, monkeypatch):
+    from mixmatch import ab
+    from pathlib import Path
+
+    song, hub, env, live = demo_project()
+    env.wait(5)
+    original = song.master_track.mixer_device.volume.value
+    first = ab.save(live.get_set(), str(tmp_path), "20000101-000000", "before")
+    live.set("m", "mixer", "Volume", value=0)
+    agent = Agent(live, hub, RulePlanner(), Settings(silent=True, resume="auto", log_dir=str(tmp_path)),
+                  env=env, log=lambda *_: None)
+    monkeypatch.setattr(agent, "load_checkpoint", lambda: {"before": Path(first).name})
+    monkeypatch.setattr(agent, "_run", lambda deadline: None)
+    agent.run(main_volume=0.0)
+    before, after = ab.latest_pair(str(tmp_path))
+    assert json.loads(Path(before).read_text())["tracks"]["m"]["mixer"]["Volume"] == original
+    assert json.loads(Path(after).read_text())["tracks"]["m"]["mixer"]["Volume"] == original
+    assert song.master_track.mixer_device.volume.value == 0  # no unintended unmute
+
+
 @pytest.mark.parametrize("signal", ["tail", "never_quiet", "missing"])
 def test_silent_stop_waits_for_effect_tails_and_does_not_guess_silence(signal):
     song, hub, env, live = demo_project()

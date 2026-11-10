@@ -213,6 +213,7 @@ class Commands:
                 "group": group,
                 "muted": bool(getattr(t, "mute", False)) if kind != "master" else False,
                 "output": getattr(getattr(t, "output_routing_type", None), "display_name", None),
+                "output_channel": _routing_name(getattr(t, "output_routing_channel", None)),
                 "mixer": [dict(_param_info(i, p), name=n) for i, (n, p) in enumerate(self._mixer_params(t))],
                 "devices": [
                     {
@@ -467,19 +468,46 @@ class Commands:
     def preview_output(self, req):
         """Temporarily disconnect hardware output without muting the recorded signal."""
         master = self.song.master_track
-        if req.get("muted"):
+        if req.get("muted") is True:
             if not hasattr(self, "_preview_output"):
                 route = next((r for r in getattr(master, "available_output_routing_types", [])
-                              if r.display_name == "Sends Only"), None)
+                              if _routing_name(r) == "Sends Only"), None)
                 if route is None:
                     raise CommandError("silent preview recording is not available on this output")
-                original = (master.output_routing_type, master.output_routing_channel)
+                # Live routing objects become invalid after changing the type or
+                # reconnecting an audio device. Keep names and resolve fresh objects.
+                original = {"type": _routing_name(master.output_routing_type),
+                            "channel": _routing_name(master.output_routing_channel)}
                 master.output_routing_type = route
                 self._preview_output = original
-        elif hasattr(self, "_preview_output"):
-            master.output_routing_type, master.output_routing_channel = self._preview_output
-            del self._preview_output
-        return {"muted": hasattr(self, "_preview_output")}
+        elif req.get("muted") is False:
+            original = req.get("restore") or getattr(self, "_preview_output", None)
+            if original:
+                self._preview_output = original
+                route = next((r for r in master.available_output_routing_types
+                              if _routing_name(r) == original["type"]), None)
+                if route is None:
+                    raise CommandError("original output %s is unavailable; reconnect the audio device" % original["type"])
+                try:
+                    master.output_routing_type = route
+                    if original["channel"]:
+                        channel = next((r for r in master.available_output_routing_channels
+                                        if _routing_name(r) == original["channel"]), None)
+                        if channel is None:
+                            raise CommandError("original output channel %s is unavailable" % original["channel"])
+                        master.output_routing_channel = channel
+                except Exception:
+                    # A partially restored route must not unexpectedly become audible.
+                    silent = next((r for r in master.available_output_routing_types
+                                   if _routing_name(r) == "Sends Only"), None)
+                    if silent is not None:
+                        master.output_routing_type = silent
+                    raise
+                del self._preview_output
+        return {"muted": hasattr(self, "_preview_output"),
+                "restore": getattr(self, "_preview_output", None),
+                "type": _routing_name(master.output_routing_type),
+                "channel": _routing_name(master.output_routing_channel)}
 
     def capture_start(self, req):
         """New audio track recording the master («Resampling») or, with `source`, one track after its devices,

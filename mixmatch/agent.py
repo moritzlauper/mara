@@ -886,6 +886,13 @@ class Agent:
                 copy_preview(first, os.path.join(self.s.log_dir, self._before_file))
         else:
             ab.save(before_state, self.s.log_dir, stamp, "before")
+        # A resumed silent run may start with Main still muted by the previous
+        # interruption. A/B snapshots must share the original listening gain;
+        # playback cleanup must still preserve the user's current muted state.
+        comparison_volume = main_volume
+        if self.s.silent:
+            with open(os.path.join(self.s.log_dir, self._before_file)) as f:
+                comparison_volume = json.load(f)["tracks"]["m"]["mixer"]["Volume"]
         if self.s.silent and main_volume is None:
             main_volume = self.mute_main()
         try:
@@ -900,7 +907,7 @@ class Agent:
                 self.restore_main_when_quiet(main_volume)
         try:
             self.ex.refresh()
-            ab.save(self.snapshot_state(main_volume), self.s.log_dir, stamp, "after")
+            ab.save(self.snapshot_state(comparison_volume), self.s.log_dir, stamp, "after")
             self.log("Before/after saved: switch with «mixmatch ab before» / «mixmatch ab after» or in mixmatch ui.")
         except Exception:
             pass

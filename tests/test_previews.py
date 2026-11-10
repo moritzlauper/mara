@@ -19,8 +19,65 @@ def prepared(tmp_path):
     master.available_output_routing_types = [NS(display_name="Ext. Out"), NS(display_name="Sends Only")]
     master.output_routing_type = master.available_output_routing_types[0]
     master.output_routing_channel = NS(display_name="3/4")
+    master.available_output_routing_channels = [master.output_routing_channel]
     path = ab.save(live.get_set(), str(tmp_path), "1", "before")
     return song, live, path
+
+
+def test_preview_routing_uses_fresh_channels_and_survives_command_reload():
+    from MixMatch.commands import Commands
+
+    class Master:
+        def __init__(self):
+            self.available_output_routing_types = [NS(display_name="Ext. Out"), NS(display_name="Sends Only")]
+            self.output_routing_type = self.available_output_routing_types[0]
+            self._channel = self.available_output_routing_channels[1]
+
+        @property
+        def output_routing_type(self):
+            return self._type
+
+        @output_routing_type.setter
+        def output_routing_type(self, value):
+            assert value in self.available_output_routing_types
+            self._type = value
+            self.available_output_routing_channels = ([NS(display_name="1/2"), NS(display_name="3/4")]
+                                                      if value.display_name == "Ext. Out" else [])
+            self._channel = self.available_output_routing_channels[0] if self.available_output_routing_channels else NS(display_name="")
+
+        @property
+        def output_routing_channel(self):
+            return self._channel
+
+        @output_routing_channel.setter
+        def output_routing_channel(self, value):
+            assert any(value is current for current in self.available_output_routing_channels), "stale routing object"
+            self._channel = value
+
+    master = Master()
+    command = Commands(NS(master_track=master))
+    token = command.preview_output({"muted": True})["restore"]
+    assert token == {"type": "Ext. Out", "channel": "3/4"}
+    command = Commands(NS(master_track=master))  # remote script reloaded while recording
+    result = command.preview_output({"muted": False, "restore": token})
+    assert result["channel"] == "3/4" and not result["muted"]
+
+
+def test_missing_output_keeps_recovery_state_for_reconnect(tmp_path):
+    from MixMatch.commands import CommandError
+
+    song, live, _ = prepared(tmp_path)
+    master = song.master_track
+    original = master.available_output_routing_types
+    live.request("preview_output", muted=True)
+    master.available_output_routing_types = original[1:]
+    with pytest.raises(CommandError, match="unavailable"):
+        live.request("preview_output", muted=False)
+    assert live.request("preview_output")["restore"]["channel"] == "3/4"
+    assert master.output_routing_type.display_name == "Sends Only"
+    master.available_output_routing_types = [NS(display_name=r.display_name) for r in original]
+    master.available_output_routing_channels = [NS(display_name="3/4")]
+    assert not live.request("preview_output", muted=False)["muted"]
 
 
 @pytest.mark.parametrize("failure", [False, True])
