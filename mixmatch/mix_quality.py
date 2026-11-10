@@ -27,6 +27,10 @@ def combine(samples: list[dict]) -> dict:
     result["noise"] = {k: float(np.ptp([m["parts"].get(k, 0) for m in samples])) for k in keys}
     result["objective"] = sum(result["parts"].values())
     result["samples"] = len(samples)
+    assessment = [m.get("assessment_parts", m["parts"]) for m in samples]
+    assessment_keys = set.intersection(*(set(p) for p in assessment))
+    result["assessment_parts"] = {k: float(np.mean([p[k] for p in assessment])) for k in assessment_keys}
+    result["assessment_noise"] = {k: float(np.ptp([p[k] for p in assessment])) for k in assessment_keys}
     def average_stats(values):
         if any(v is None for v in values):
             return None
@@ -126,11 +130,116 @@ def anchor(m: dict) -> dict:
     master = m.get("master")
     cmp = m.get("cmp")
     return {"parts": dict(m.get("parts", {})),
+            "samples": m.get("samples", 1), "noise": dict(m.get("noise", {})),
+            "assessment_parts": dict(m.get("assessment_parts", m.get("parts", {}))),
+            "assessment_noise": dict(m.get("assessment_noise", m.get("noise", {}))),
+            "reference_available": m.get("cmp") is not None and m.get("reference_consistent", True),
             "master": ({k: float(getattr(master, k)) for k in ("peak_db", "plr", "low_side_db", "loudness")}
                        if master else None),
             "tonal": [float(x) for x in cmp.tonal_excess] if cmp else None,
             "tracks": {k: {"loudness": float(s.loudness), "active": float(s.active)}
                        for k, s in m.get("tracks", {}).items() if s is not None}}
+
+
+def final_assessment(m: dict, baseline: dict | None) -> dict:
+    """Report measured benefit separately from mix health and reference distance.
+
+    Baselines must be the original full-mix measurement of this exact passage,
+    scoring and reference. A final-pass or legacy baseline cannot stand in for Before.
+    These checks describe evidence, not a subjective verdict or a target to force.
+    """
+    # Planner allowances (e.g. exhausted loudness headroom) must not make the
+    # reported reference distance disappear. Assess the unmodified comparison.
+    parts, noise, master = m.get("assessment_parts", m.get("parts", {})), m.get("assessment_noise", m.get("noise", {})), m.get("master")
+    if baseline:
+        baseline = {**baseline, "parts": baseline.get("assessment_parts", baseline.get("parts", {})),
+                    "noise": baseline.get("assessment_noise", baseline.get("noise", {}))}
+    report = {"schema": 1, "basis": "Repeated measurements of the main passage",
+              "samples": m.get("samples", 0), "listening_judgment": False,
+              "benefit": "unknown", "checks": [], "improved": [], "worsened": []}
+    valid = (master is not None and m.get("samples", 0) >= 2
+             and all(k in parts and k in noise and math.isfinite(float(parts[k]))
+                     and math.isfinite(float(noise[k])) for k in METRICS)
+             and all(math.isfinite(float(getattr(master, k))) for k in
+                     ("peak_db", "loudness", "plr", "low_side_db", "active")))
+    if not valid or master.active < .5:
+        return {**report, "status": "incomplete", "summary": "Not enough reliable audio data for a final assessment.",
+                "benefit_text": "Benefit compared with Before could not be verified."}
+
+    def check(name, status, text):
+        report["checks"].append({"name": name, "status": status, "text": text})
+
+    peak = master.peak_db
+    check("Peak level", "attention" if peak > -1 else "clear",
+          f"Sample peak {peak:.1f} dBFS. " + ("Limited headroom." if peak > -1 else "Headroom retained.")
+          + " True peaks are not measured.")
+    check("Low-end stereo", "attention" if master.low_side_db > -20 else "clear",
+          f"Low-frequency side level {master.low_side_db:.1f} dB relative to mid. "
+          + ("Check bass translation in mono." if master.low_side_db > -20 else "Low-frequency side energy is limited."))
+    comparable = (baseline and baseline.get("before_mix") and baseline.get("samples", 0) >= 2
+                  and baseline.get("master")
+                  and all(k in baseline.get("parts", {}) and k in baseline.get("noise", {})
+                          and math.isfinite(float(baseline["parts"][k]))
+                          and math.isfinite(float(baseline["noise"][k])) for k in METRICS)
+                  and all(math.isfinite(float(baseline["master"].get(k, float("nan"))))
+                          for k in ("plr", "loudness")))
+    if comparable:
+        loss = baseline["master"]["plr"] - master.plr
+        dynamics_risk = loss > 3 or (loss > 1.5 and master.loudness > baseline["master"]["loudness"] + .5)
+        check("Dynamics", "attention" if dynamics_risk else "clear",
+              f"PLR {baseline['master']['plr']:.1f} → {master.plr:.1f} dB. "
+              + ("Substantial dynamics loss compared with Before." if dynamics_risk else "No substantial dynamics loss detected.")
+              + " PLR is a proxy for punch.")
+        lost = [k for k, st in baseline.get("tracks", {}).items() if st.get("active", 0) >= .5
+                and (m.get("tracks", {}).get(k) is None or m["tracks"][k].active < st["active"] * .7
+                     or m["tracks"][k].loudness - master.loudness
+                     < st["loudness"] - baseline["master"]["loudness"] - 4)]
+        check("Layers", "attention" if lost else "clear",
+              "Reduced or missing layers: " + ", ".join(lost) if lost else "No lost active layers detected against Before.")
+    else:
+        check("Dynamics", "unknown", f"PLR {master.plr:.1f} dB. No matching original baseline to assess preservation.")
+
+    collisions = len([p for p in m.get("masking", []) if p.get("severity", 0) > .15])
+    check("Instrument overlap", "context" if collisions else "unknown",
+          f"{collisions} potential collisions in simultaneous playback. Overlap alone does not prove audible masking."
+          if collisions else "No strong collisions recorded; this does not establish full masking coverage.")
+    ref_available = m.get("cmp") is not None and m.get("reference_consistent", True)
+    reference_keys = ("tonal", "width", "low_side", "loudness", "dynamics")
+    comparable_ref = comparable and baseline.get("reference_available") and ref_available
+    report["reference"] = {"status": "unknown"}
+    if comparable_ref:
+        start, end = reference_cost(baseline["parts"]), reference_cost(parts)
+        spread = sum(noise[k] + baseline["noise"][k] for k in reference_keys)
+        change = "closer" if start - end > max(.05, spread) else "farther" if end - start > max(.05, spread) else "similar"
+        report["reference"] = {"status": change, "before": start, "after": end, "spread": spread}
+        check("Reference direction", "context", f"{start:.2f} → {end:.2f} measured distance. " + {
+            "closer": "Closer beyond measured variation.", "farther": "Farther beyond measured variation.",
+            "similar": "No clear overall convergence beyond measured variation."}[change])
+    else:
+        check("Reference direction", "unknown", "No matching repeated Before/After reference comparison available.")
+
+    labels = {"tonal": "Tone balance", "width": "Stereo width", "low_side": "Low-end stereo",
+              "loudness": "Loudness", "dynamics": "Dynamics", "masking": "Potential masking", "clipping": "Peak safety"}
+    if comparable:
+        for key in METRICS:
+            if key in reference_keys and not comparable_ref:
+                continue
+            delta = baseline["parts"][key] - parts[key]
+            if abs(delta) > max(.05, noise[key] + baseline["noise"][key]):
+                report["improved" if delta > 0 else "worsened"].append(labels[key])
+        report["benefit"] = ("mixed" if report["improved"] and report["worsened"] else
+                             "improved" if report["improved"] else "regressed" if report["worsened"] else "small")
+    report["benefit_text"] = {
+        "unknown": "Benefit compared with Before could not be verified.",
+        "small": "Little measurable change beyond normal variation. An audible benefit is not established.",
+        "improved": "Measured improvements: " + ", ".join(report["improved"]) + ".",
+        "mixed": "Mixed result. Improved: " + ", ".join(report["improved"]) + ". Increased differences: " + ", ".join(report["worsened"]) + ".",
+        "regressed": "No measured improvement. Increased differences: " + ", ".join(report["worsened"]) + ".",
+    }[report["benefit"]]
+    attention = any(c["status"] == "attention" for c in report["checks"])
+    report.update(status="attention" if attention else "checked",
+                  summary="Some measured risks need attention." if attention else "No issues flagged by the available technical checks.")
+    return report
 
 
 def evaluate(before: dict, after: dict, baseline: dict, priority: str | None, min_gain: float) -> tuple[bool, str]:

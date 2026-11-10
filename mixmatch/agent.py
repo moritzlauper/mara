@@ -694,6 +694,7 @@ class Agent:
                 parts["clipping"] = max(0.0, master.peak_db + 1.0) * 4
             obj = sum(parts.values())
         return {"master": master, "ref": ref, "tracks": tracks, "masking": masks, "masking_coverage": mask_coverage,
+                "assessment_parts": objective_parts(cmp, penalty) if cmp and scoring == "full" else parts,
                 "scoring": scoring,
                 "cmp": None if scoring == "local" else cmp,   # the references do not apply outside the loud part
                 "objective": obj, "parts": parts}
@@ -1169,13 +1170,13 @@ class Agent:
             measured = self.measure_verified("full")
             self.log(f"  distance {measured['objective']:.2f}   ({_parts(measured['parts'])})")
             self.explain(measured)
-            report = {"basis": "repeated automated measurements", "samples": measured["samples"],
-                      "reference_cost": mix_quality.reference_cost(measured["parts"]),
-                      "parts": measured["parts"], "spread": measured["noise"],
+            report = {**mix_quality.final_assessment(measured, self.quality_anchors.get(self.quality_key(measured, "full"))),
+                      "passage": list(self.loop), "parts": measured["parts"], "spread": measured["noise"],
                       "revisited_channels": self._ck.get("revisited_channels", []),
                       "other_passages_checked": len(getattr(self, "_checked_passages", set())),
                       "listening_judgment": False}
             workflow.update(quality_check=report)
+            self.log("  " + report["summary"] + " " + report["benefit_text"])
             self.log("  Final measurements verified; this is an automated check, not a listening judgment.")
             self.finish_step("done")
             self.clear_checkpoint()               # the run is complete: nothing left to continue
@@ -1374,6 +1375,10 @@ class Agent:
             self.log(f"  (no fine measurement: {str(e)[:80]})")
         return m
 
+    def quality_key(self, m: dict, scoring: str) -> str:
+        return json.dumps([self.loop, scoring, self.beat,
+                           m["ref"].summary() if m.get("ref") and m.get("cmp") else None], sort_keys=True)
+
     def section(self, name: str, deadline: float, focus: str | None = None, max_rounds: int | None = None,
                 scoring: str = "full") -> None:
         workflow.check_pause()
@@ -1383,9 +1388,10 @@ class Agent:
         report_focus(self.log, channel=self._inspection_channel, region=self.loop)
         m = self.measure_verified(scoring, first=self.measure_fine(scoring, focus or "m"))
         # Same passage retains its baseline across channel passes and resumes.
-        anchor_key = json.dumps([self.loop, scoring, self.beat,
-                                 m["ref"].summary() if m.get("ref") and m.get("cmp") else None], sort_keys=True)
-        baseline = self.quality_anchors.setdefault(anchor_key, mix_quality.anchor(m))
+        anchor_key = self.quality_key(m, scoring)
+        baseline = self.quality_anchors.setdefault(anchor_key, {
+            **mix_quality.anchor(m),
+            "before_mix": getattr(self, "_ck", {}).get("phase") == "master" and focus is None and scoring == "full"})
         if getattr(self, "_ck", None):
             self.save_checkpoint()
         best, stall = m["objective"], 0

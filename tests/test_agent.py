@@ -202,7 +202,10 @@ class ChannelStub:
         ]}
 
 
-def test_complete_run_visits_every_channel_and_ends_with_a_final_check(tmp_path):
+def test_complete_run_visits_every_channel_and_ends_with_a_final_check(tmp_path, monkeypatch):
+    from mixmatch import workflow
+    updates = []
+    monkeypatch.setattr(workflow, "update", lambda **values: updates.append(values))
     song, hub, env, live = demo_project()
     env.wait(2)
     logs, stub = [], ChannelStub()
@@ -215,6 +218,10 @@ def test_complete_run_visits_every_channel_and_ends_with_a_final_check(tmp_path)
     assert any("not now" in l for l in logs)                         # stray actions are dropped in the pass
     channel_rounds = [h for h in agent.history if h.section.startswith("channel ")]
     assert channel_rounds and all(a["track"] in agent.roles for h in channel_rounds for a in h.applied)
+    report = next(u['quality_check'] for u in updates if 'quality_check' in u)
+    assert report['schema'] == 1 and report['samples'] >= 2
+    assert any(a.get('before_mix') and a['samples'] >= 2 for a in agent.quality_anchors.values())
+    assert not report['listening_judgment']
 
 
 def test_measurements_start_at_the_loop_start():

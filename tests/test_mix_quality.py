@@ -125,7 +125,8 @@ def test_resume_retains_cumulative_protections_and_old_checkpoints_start_fresh(t
     env.wait(2)
     agent = Agent(live, hub, RulePlanner(), Settings(log_dir=str(tmp_path)), env=env, log=lambda *_: None)
     agent.understand()
-    agent.quality_anchors = {"passage": anchor(measurement())}
+    agent.quality_anchors = {"passage": {**anchor(combine([measurement(tonal=2), measurement(tonal=2.1)])),
+                                          "before_mix": True}}
     agent.save_checkpoint(phase="channels", next_channel=None, regions={}, main=["loudest part", 0, 32])
     ck = json.loads((tmp_path / "checkpoint.json").read_text())
     assert ck["mix_policy"] == VERSION
@@ -242,3 +243,73 @@ def test_final_move_is_undone_when_it_damages_a_different_passage(monkeypatch):
     assert agent.history[-1].undone
     assert 'other passage' in agent.history[-1].plan['verification']
     assert song.tracks[1].mixer_device.volume.value == original
+
+
+def assessed(start, end):
+    from mixmatch.mix_quality import final_assessment
+    original = anchor(combine(start))
+    original['before_mix'] = True
+    return final_assessment(combine(end), original)
+
+
+def test_final_assessment_does_not_sell_noise_as_improvement():
+    report = assessed([measurement(tonal=2), measurement(tonal=2.2)],
+                      [measurement(tonal=1.95), measurement(tonal=2.15)])
+    assert report['benefit'] == 'small'
+    assert report['reference']['status'] == 'similar'
+    assert not report['listening_judgment']
+
+
+def test_final_assessment_separates_health_reference_and_tradeoffs():
+    report = assessed([measurement(tonal=3)] * 2, [measurement(tonal=2, masking=2.3)] * 2)
+    assert report['reference']['status'] == 'closer'
+    assert report['status'] == 'checked'
+    assert report['benefit'] == 'mixed'
+    assert report['improved'] == ['Tone balance']
+    assert report['worsened'] == ['Potential masking']
+    # A large reference difference alone does not mean the mix is technically bad.
+    report = assessed([measurement(tonal=8)] * 2, [measurement(tonal=8)] * 2)
+    assert report['status'] == 'checked'
+    assert report['benefit'] == 'small'
+
+
+def test_final_assessment_flags_damage_even_when_reference_is_closer():
+    after = measurement(tonal=0)
+    after['master'] = replace(after['master'], peak_db=.2, plr=5, low_side_db=-10)
+    after['tracks']['t1'] = None
+    report = assessed([measurement()] * 2, [after] * 2)
+    assert report['status'] == 'attention'
+    assert {c['name'] for c in report['checks'] if c['status'] == 'attention'} == {
+        'Peak level', 'Dynamics', 'Low-end stereo', 'Layers'}
+
+
+def test_final_assessment_never_uses_a_final_or_legacy_baseline_as_before():
+    from mixmatch.mix_quality import final_assessment
+    m = combine([measurement()] * 2)
+    for baseline in (None, anchor(m), {'before_mix': True, 'parts': m['parts']}):
+        report = final_assessment(m, baseline)
+        assert report['benefit'] == 'unknown'
+        assert report['reference']['status'] == 'unknown'
+
+
+@pytest.mark.parametrize('fault', ['missing', 'silent', 'nan', 'single'])
+def test_final_assessment_incomplete_data_cannot_pass(fault):
+    from mixmatch.mix_quality import final_assessment
+    m = combine([measurement()] * 2)
+    if fault == 'missing':
+        m['master'] = None
+    elif fault == 'silent':
+        m['master'] = replace(m['master'], active=.1)
+    elif fault == 'nan':
+        m['master'] = replace(m['master'], peak_db=float('nan'))
+    else:
+        m['samples'] = 1
+    assert final_assessment(m, None)['status'] == 'incomplete'
+
+
+def test_final_report_keeps_loudness_gap_even_if_planner_stops_chasing_it():
+    before, after = measurement(loudness=2), measurement(loudness=0)
+    after['assessment_parts'] = dict(before['parts'])
+    report = assessed([before] * 2, [after] * 2)
+    assert report['benefit'] == 'small'
+    assert report['reference']['status'] == 'similar'
