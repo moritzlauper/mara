@@ -188,7 +188,7 @@ Roles are stored in each project's `roles.json`. Besides the UI's role and prior
 
 ### Arrangement-aware measurement windows
 
-A complete default run scans the range defined by locators or the current loop, then normally selects its loudest 16 bars. Without suitable locators, make the loop cover the intended song range. A short loop does not produce a full-song scan.
+A complete run scans the range defined by locators or the current loop, then uses its loudest 16 bars (normally the drop) for the final Before/After comparison. Without suitable locators, make the loop cover the intended song range. A short loop does not produce a full-song scan.
 
 Tracks that are not sufficiently active in the main passage get their own measurement window. Muted tracks and tracks inside muted groups are skipped in the channel pass. Outside the main passage, MARA focuses on conflicts, peaks, and stereo bass instead of matching a sparse intro to a full reference spectrum. During channel balancing, master loudness and reference PLR are excluded from the optimization score.
 

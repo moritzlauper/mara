@@ -56,7 +56,7 @@ class Settings:
     loudness_from: str = "full"   # kept for old callers; the target always comes from the full references
     roles_file: str = "roles.json"
     log_dir: str = "runs"
-    focus: str = "sections"       # sections: work through cue points / loop | loud: only the loudest part
+    focus: str = "loud"           # Always use the loudest (drop-like) part for the master and A/B comparison
     focus_bars: int = 16          # length of the loudest part
     complete: bool = False        # after the master: one pass over every channel, then a final master check
     channel_bars: int = 8         # loop length when a channel is worked on outside the loudest part
