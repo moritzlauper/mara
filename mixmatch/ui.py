@@ -367,7 +367,7 @@ def parse_log(lines: list[str]) -> dict:
     state = {"phase": None, "section": None, "distance": None, "parts": {}, "history": [], "events": [],
              "key": None, "style": None, "mood": None, "explain": {}, "effects": [], "references": [], "to_get": [], "done": None,
              "history_phase": [], "history_run": [], "progress": None, "progress_start": None,
-             "measurement_groups": [], "activity": None, "planner": None, "mode": None}
+             "measurement_groups": [], "activity": None, "current_focus": None, "planner": None, "mode": None}
     run = 0
     traceback_event = None
     current_group = None
@@ -386,6 +386,7 @@ def parse_log(lines: list[str]) -> dict:
             traceback_event = None
             state["progress"] = state["progress_start"] = state["done"] = None
             state["mode"] = None
+            state["current_focus"] = None
         elif s.startswith("Target:"):
             match = re.search(r"(-?[\d.]+) LUFS", s)
             if match:
@@ -415,6 +416,13 @@ def parse_log(lines: list[str]) -> dict:
             if not state["activity"] or state["activity"]["text"] != update["text"]:
                 state["events"].append({"kind": "activity", "text": update["text"]})
             state["activity"] = update
+        elif s.startswith("focus "):
+            try:
+                focus = json.loads(s[len("focus "):])
+                if isinstance(focus, dict) and isinstance(focus.get("channel"), str):
+                    state["current_focus"] = focus
+            except ValueError:
+                pass
         elif s.startswith("Planner:"):
             state["planner"] = s.split(":", 1)[1].strip()
         elif s.startswith("progress {"):
@@ -429,10 +437,12 @@ def parse_log(lines: list[str]) -> dict:
             current_group = None
             state["phase"] = s.strip("━ ").strip()
             state["section"] = None
+            state["current_focus"] = None
             state["events"].append({"kind": "phase", "text": state["phase"]})
         elif s.startswith("▶"):
             current_group = None
             state["section"] = s[1:].strip()
+            state["current_focus"] = None
             state["events"].append({"kind": "section", "text": state["section"]})
         elif s.startswith("distance "):
             m = re.match(r"distance ([\d.]+)", s)

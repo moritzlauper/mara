@@ -135,3 +135,8 @@ section[data-panel=mix]>.mix-dashboard{margin-top:18px}
 .latest-changes strong{font-weight:600;color:var(--ink)}.latest-changes strong span{font-weight:400;color:var(--muted)}
 .latest-change-detail{overflow-wrap:anywhere;color:var(--text)}
 @media(max-width:700px){.latest-changes li{grid-template-columns:1fr;gap:2px}.latest-changes-heading{flex-wrap:wrap;gap:5px 12px}}
+
+.current-inspection{font:12px/1.5 var(--sans);color:var(--text);margin:12px 0 8px;overflow-wrap:anywhere}.current-inspection strong{font-weight:600}
+
+.comparison-scope{font:11px/1.5 var(--sans);color:var(--muted);margin:8px 0 12px}
+.reference-levels{font:12px/1.5 var(--sans);margin:10px 0 0}.reference-levels>div{display:flex;justify-content:space-between;gap:16px;margin:5px 0}.reference-levels dt{flex-shrink:0}.reference-levels dd{margin:0;text-align:right;color:var(--muted)}

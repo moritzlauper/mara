@@ -447,6 +447,10 @@ def test_without_a_reference_the_audit_keeps_a_deliberate_eq():
     real, calls = agent.measure, []
 
     def masking_only(scoring="full", retries=6):
+        # The UI must know what is being checked before a measurement starts.
+        import json
+        focus = json.loads(next(line[6:] for line in reversed(logs) if line.startswith("focus ")))
+        assert focus == {"channel": "Bass", "device": "EQ Eight", "start_bar": 1.0, "end_bar": 5.0}
         m = real(scoring, retries)
         calls.append(1)
         return {**m, "cmp": None, "objective": 2.35 if len(calls) % 2 else 2.22}

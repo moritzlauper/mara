@@ -56,6 +56,20 @@ def test_reverted_run_clears_section_comparisons():
     assert state["measurement_groups"] == []
 
 
+def test_current_effect_is_independent_of_last_comparison_and_activity():
+    lines = ["━━ Channel pass: 3 channels", "▶ B-Delay, bars 99–115",
+             "distance 3.0 (tonal 3.0)", "━━ Effects: what does nothing or harms",
+             'focus {"channel": "Piano", "device": "EQ Eight", "start_bar": 99, "end_bar": 115}',
+             'activity {"text": "Listening and measuring the mix"}']
+    state = parse_log(lines)
+    assert state["current_focus"]["device"] == "EQ Eight"
+    assert state["current_focus"]["channel"] == "Piano"
+    assert state["measurement_groups"][-1]["section"] == "B-Delay, bars 99–115"
+    for boundary in ["━━ Final check: master", "▶ Main, bars 99–115", "Taps: 3 channels"]:
+        assert parse_log(lines + [boundary])["current_focus"] is None
+    assert parse_log(lines + ['focus invalid', 'focus []'])["current_focus"] == state["current_focus"]
+
+
 def test_restarted_ui_can_pause_its_existing_run(tmp_path):
     import subprocess
     import sys

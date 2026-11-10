@@ -362,6 +362,8 @@ class Agent:
         idx = next((d["index"] for d in self.ex.track(key)["devices"] if d["name"] == dev_name), None)
         if idx is None:
             return
+        from .activity import focus as report_focus
+        report_focus(self.log, channel=track_name, device=dev_name, region=region)
         scoring = "full" if key == "m" else "balance"
         on = self.measure(scoring)
         rr = RoundResult()
