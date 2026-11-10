@@ -138,16 +138,20 @@ def test_a_run_started_with_sigint_ignored_still_stops_in_order(tmp_path):
     marker = tmp_path / "cleaned"
     script.write_text(
         "import time, sys\n"
-        "from mixmatch.cli import _stoppable\n"
-        "_stoppable()\n"
-        "try:\n"
-        "    print('ready', flush=True)\n"
-        "    time.sleep(30)\n"
-        "finally:\n"
-        f"    open({str(marker)!r}, 'w').write('ok')\n")
-    proc = subprocess.Popen([sys.executable, str(script)], stdout=subprocess.PIPE, text=True,
+        "import mixmatch.cli as cli\n"
+        "def run(args):\n"
+        "    try:\n"
+        "        print('ready', flush=True)\n"
+        "        time.sleep(30)\n"
+        "    finally:\n"
+        f"        open({str(marker)!r}, 'w').write('ok')\n"
+        "cli.cmd_run = run\n"
+        "cli.main(['run'])\n")
+    proc = subprocess.Popen([sys.executable, str(script)], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
                             preexec_fn=lambda: signal.signal(signal.SIGINT, signal.SIG_IGN))
     assert proc.stdout.readline().strip() == "ready"
     proc.send_signal(signal.SIGINT)
-    proc.wait(timeout=10)
+    stdout, stderr = proc.communicate(timeout=10)
     assert marker.read_text() == "ok"
+    assert proc.returncode == 130 and "Stopped:" in stdout
+    assert "Traceback" not in stdout + stderr and "KeyboardInterrupt" not in stderr

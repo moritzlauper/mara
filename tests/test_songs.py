@@ -1,0 +1,94 @@
+import json
+import threading
+import time
+import urllib.request
+from http.server import ThreadingHTTPServer
+
+import pytest
+
+from mixmatch import songs
+from mixmatch.ui import Runner, make_handler
+
+SET_A = ["1-Kick", "2-Bass", "3-Pad", "4-Lead"]
+SET_B = ["1-Drums", "2-Rhodes", "3-Strings", "4-Vox"]
+
+
+def test_old_layout_becomes_the_first_track(tmp_path):
+    (tmp_path / "references").mkdir()
+    (tmp_path / "references" / "ref.wav").write_bytes(b"x")
+    (tmp_path / "runs").mkdir()
+    (tmp_path / "roles.json").write_text(json.dumps({n: {"role": "pad"} for n in SET_A}))
+    (tmp_path / "mixmatch.json").write_text(json.dumps({"description": "Hyperpop, happy and bright"}))
+
+    assert songs.migrate(str(tmp_path)) == "Hyperpop"
+    folder = tmp_path / "songs" / "Hyperpop"
+    assert (folder / "references" / "ref.wav").exists() and (folder / "roles.json").exists()
+    assert not (tmp_path / "references").exists() and not (tmp_path / "roles.json").exists()
+    assert songs.current_dir(str(tmp_path)) == str(folder)
+    assert songs.current(str(tmp_path))["channels"] == SET_A
+    assert songs.migrate(str(tmp_path)) is None                # once only
+
+
+def test_a_new_track_starts_empty_and_another_set_is_noticed(tmp_path):
+    root = str(tmp_path)
+    old = songs.create(root, "Hyperpop", channels=SET_A)
+    (tmp_path / "songs" / old / "references" / "claws.wav").write_bytes(b"x")
+    assert songs.check_set(root, SET_A) == {"same": True, "other": None}
+    assert songs.check_set(root, SET_B) == {"same": False, "other": None}
+
+    new = songs.create(root, "Cleopatra beat", "dark, slow")
+    assert songs.current_dir(root).endswith(new) and not (tmp_path / "songs" / new / "references" / "claws.wav").exists()
+    assert json.loads((tmp_path / "songs" / new / "mixmatch.json").read_text())["description"] == "dark, slow"
+    assert songs.check_set(root, SET_B)["same"]                 # a fresh track takes the open set's channels
+    assert songs.check_set(root, SET_A) == {"same": False, "other": {"slug": old, "name": "Hyperpop"}}
+    assert songs.check_set(root, SET_B + ["5-FX"])["same"]      # a channel added while mixing: still this track
+
+
+def test_references_of_earlier_tracks_can_be_picked_again(tmp_path):
+    root = str(tmp_path)
+    old = songs.create(root, "Hyperpop")
+    (tmp_path / "songs" / old / "references" / "claws.wav").write_bytes(b"audio")
+    songs.create(root, "Next")
+    assert songs.used_references(root) == [{"slug": old, "track": "Hyperpop", "file": "claws.wav"}]
+    assert songs.reuse_reference(root, old, "claws.wav") == "claws.wav"
+    assert (tmp_path / "songs" / "Next" / "references" / "claws.wav").read_bytes() == b"audio"
+    with pytest.raises(ValueError):
+        songs.reuse_reference(root, old, "../roles.json")
+
+
+def _serve(root, live_set_fn):
+    server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(Runner(root), live_set_fn=live_set_fn))
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    url = f"http://127.0.0.1:{server.server_address[1]}"
+
+    def call(path, body=None):
+        req = urllib.request.Request(url + path, data=None if body is None else json.dumps(body).encode(),
+                                     headers={"Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(req, timeout=5) as r:
+                return json.load(r)
+        except urllib.error.HTTPError as e:
+            return json.load(e)
+    return server, call
+
+
+def test_interface_shows_the_track_and_its_taps_and_blocks_a_run_on_another_set(tmp_path):
+    root = str(tmp_path)
+    songs.create(root, "Hyperpop", channels=SET_A)
+    open_set = {"channels": SET_B, "taps": 0, "total": 4, "missing": SET_B, "playing": False}
+    server, call = _serve(root, lambda: open_set)
+    try:
+        call("/api/state")
+        time.sleep(0.3)                                         # Live is asked in the background
+        s = call("/api/state")
+        assert s["track"] == "Hyperpop" and s["set"] == {"same": False, "other": None}
+        assert s["open_set"]["taps"] == 0
+        assert "another set open" in call("/api/run", {"auto_ref": True})["error"]
+
+        assert call("/api/songs/new", {"name": "Cleopatra beat"})["track"]["name"] == "Cleopatra beat"
+        s = call("/api/state")
+        assert s["track"] == "Cleopatra beat" and s["set"]["same"] and s["reference_files"] == []
+        assert "Set taps" in call("/api/run", {"auto_ref": True})["error"]      # no taps in the set yet
+        assert [t["name"] for t in s["tracks"]] == ["Hyperpop", "Cleopatra beat"]
+    finally:
+        server.shutdown()

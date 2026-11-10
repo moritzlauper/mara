@@ -65,11 +65,18 @@ def duration_s(path: str) -> float:
 class Runner:
     """The one `mixmatch` child process the interface may start, and its log file."""
 
-    def __init__(self, workdir: str):
-        self.workdir = workdir
+    def __init__(self, root: str):
+        self.root = root
         self.proc: subprocess.Popen | None = None
         self.log_path: str | None = None
         self.lock = threading.Lock()
+
+    @property
+    def workdir(self) -> str:
+        """The current track's folder (songs/<track>/), or the root in the layout without tracks."""
+        from . import songs
+
+        return songs.current_dir(self.root)
 
     def running(self) -> bool:
         return self.proc is not None and self.proc.poll() is None
@@ -154,6 +161,27 @@ def log_chain(path: str) -> list[str]:
     return chain
 
 
+def live_set() -> dict | None:
+    """Channel names of the open Live set and which of them have a tap; None when Live does not answer."""
+    try:
+        from .live_client import LiveClient
+        from .taps import is_reference_name
+
+        live = LiveClient(timeout=4).connect()
+        try:
+            state = live.get_set()
+        finally:
+            live.close()
+    except Exception:
+        return None
+    from . import songs
+
+    need = [t for t in state["tracks"] if not (t["kind"] == "track" and is_reference_name(t["name"]))]
+    missing = [t["name"] for t in need if not any(d["name"] == "MixMatch Tap" for d in t["devices"])]
+    return {"channels": songs.channel_names(state), "taps": len(need) - len(missing), "total": len(need),
+            "missing": missing, "playing": bool(state.get("is_playing"))}
+
+
 def run_process_alive() -> bool:
     """A `mixmatch run` started anywhere (this interface, another window, the command line) is still going."""
     try:
@@ -169,6 +197,7 @@ def parse_log(lines: list[str]) -> dict:
              "key": None, "style": None, "mood": None, "explain": {}, "effects": [], "references": [], "to_get": [], "done": None,
              "history_phase": [], "history_run": [], "progress": None, "progress_start": None}
     run = 0
+    traceback_event = None
 
     def point(value: float) -> None:
         state["history"].append(value)
@@ -180,7 +209,19 @@ def parse_log(lines: list[str]) -> dict:
         s = line.strip()
         if s.startswith("Taps:"):            # the first lines of every run: a resumed run starts its own log
             run += 1
+            traceback_event = None
             state["progress"] = state["progress_start"] = state["done"] = None
+        elif s == "Traceback (most recent call last):":
+            # Older logs include a traceback even for Stop. Show its outcome, not Python's header or frames.
+            state["done"] = "Stopped: an error occurred. See the log for details."
+            traceback_event = {"kind": "warning", "text": state["done"]}
+            state["events"].append(traceback_event)
+        elif traceback_event is not None:
+            if line == s and re.fullmatch(r"[\w.]+(?::.*)?", s):
+                interrupted = s.split(":", 1)[0] == "KeyboardInterrupt"
+                state["done"] = "Stopped: run interrupted." if interrupted else f"Stopped: {s}"
+                traceback_event.update(kind="neutral" if interrupted else "warning", text=state["done"])
+                traceback_event = None
         elif s.startswith("progress {"):
             try:
                 p = json.loads(s[len("progress "):])
@@ -231,10 +272,10 @@ def parse_log(lines: list[str]) -> dict:
             state["references"].append(s[1:].strip())
         elif s.startswith("Stopped:") or s.startswith("Done."):
             state["done"] = s
-        elif "Traceback" in s or s.startswith("⚠"):
+            if s.startswith("Stopped:"):
+                state["events"].append({"kind": "neutral", "text": s})
+        elif s.startswith("⚠"):
             state["events"].append({"kind": "warning", "text": s})
-            if "Traceback" in s:                 # an uncaught error ends the process
-                state["done"] = "Stopped: an error, see the log"
     state["events"] = state["events"][-150:]
     return state
 
@@ -383,9 +424,14 @@ class DownloadWatcher:
 
     PARTIAL = (".crdownload", ".part", ".download", ".tmp")
 
-    def __init__(self, workdir: str, folder: str | None = None):
-        self.workdir, self.folder = workdir, folder or os.path.expanduser("~/Downloads")
+    def __init__(self, workdir, folder: str | None = None):
+        self._workdir, self.folder = workdir, folder or os.path.expanduser("~/Downloads")
         self.started, self.sizes, self.done, self.imported = time.time(), {}, set(), []
+
+    @property
+    def workdir(self) -> str:
+        """A folder, or a function giving it (the current track's folder, which changes)."""
+        return self._workdir() if callable(self._workdir) else self._workdir
 
     def scan(self, suggestions: list[dict]) -> list[str]:
         import shutil
@@ -473,9 +519,21 @@ class _Cached:
         return self.value
 
 
-def make_handler(runner: Runner, watcher: "DownloadWatcher | None" = None):
-    workdir = runner.workdir
+def make_handler(runner: Runner, watcher: "DownloadWatcher | None" = None, live_set_fn=None):
+    from . import songs
+
     project_refs = _Cached(project_references)
+    open_set = _Cached(live_set_fn or live_set, seconds=6.0)
+
+    def track_state(active: bool) -> dict:
+        """The current track, the others, and whether the open Live set is this track and has its taps."""
+        info = open_set.value if active else open_set.get()   # no extra load on Live while a run goes on
+        song = songs.current(runner.root)
+        check = songs.check_set(runner.root, info["channels"]) if info and open_set.reachable and not active \
+            else {"same": True, "other": None}
+        return {"track": song["name"] if song else None, "tracks": songs.listing(runner.root),
+                "used_references": songs.used_references(runner.root),
+                "set": check, "open_set": info if open_set.reachable else None}
     ab_state = {"which": None}
 
     class Handler(BaseHTTPRequestHandler):
@@ -522,20 +580,21 @@ def make_handler(runner: Runner, watcher: "DownloadWatcher | None" = None):
                 state["active"] = runner.running() or bool(prog and not state.get("done")
                                                            and time.time() - prog.get("t", 0) < 300
                                                            and run_process_alive())
-                return self._send(200, {**state, "running": runner.running(), "log": [l.rstrip() for l in lines[-200:]],
-                                        "reference_files": references(workdir), "to_get": buy_list(workdir),
+                return self._send(200, {**state, **track_state(state["active"]),
+                                        "running": runner.running(), "log": [l.rstrip() for l in lines[-200:]],
+                                        "reference_files": references(runner.workdir), "to_get": buy_list(runner.workdir),
                                         "project_references": project_refs.get(), "live": project_refs.reachable,
                                         "ab": ab_state["which"],
                                         "auto_imported": watcher.imported[-10:] if watcher else [],
-                                        "checkpoint": checkpoint(workdir),
+                                        "checkpoint": checkpoint(runner.workdir),
                                         "ab_ready": __import__("mixmatch.ab", fromlist=["latest_before"]).latest_before(
-                                            os.path.join(workdir, "runs")) is not None})
+                                            os.path.join(runner.workdir, "runs")) is not None})
             if self.path == "/api/project":
                 from . import project
 
-                return self._send(200, project.load(os.path.join(workdir, project.PATH)))
+                return self._send(200, project.load(os.path.join(runner.workdir, project.PATH)))
             if self.path == "/api/roles":
-                path = os.path.join(workdir, "roles.json")
+                path = os.path.join(runner.workdir, "roles.json")
                 return self._send(200, json.load(open(path)) if os.path.exists(path) else {})
             self._send(404, {"error": "not found"})
 
@@ -546,7 +605,7 @@ def make_handler(runner: Runner, watcher: "DownloadWatcher | None" = None):
 
                 if not self.path.startswith("/api/references/"):
                     return self._send(404, {"error": "not found"})
-                path = safe_reference(workdir, unquote(self.path[len("/api/references/"):]))
+                path = safe_reference(runner.workdir, unquote(self.path[len("/api/references/"):]))
                 size = int(self.headers.get("Content-Length") or 0)
                 if size <= 0 or size > 1_000_000_000:
                     raise ValueError("empty or too large")
@@ -562,7 +621,7 @@ def make_handler(runner: Runner, watcher: "DownloadWatcher | None" = None):
                 os.replace(path + ".part", path)
                 if path.lower().endswith(CONVERT):
                     path = to_wav(path)
-                nice = preview_name(workdir, path)
+                nice = preview_name(runner.workdir, path)
                 if nice:   # an Apple preview: named after the track instead of Apple's file name
                     target = os.path.join(os.path.dirname(path), nice + os.path.splitext(path)[1])
                     os.replace(path, target)
@@ -583,6 +642,12 @@ def make_handler(runner: Runner, watcher: "DownloadWatcher | None" = None):
             try:
                 body = self._body()
                 if self.path == "/api/run":
+                    ts = track_state(False)
+                    if not ts["set"]["same"]:
+                        raise RuntimeError(f"Live has another set open than «{ts['track']}»: start a new track "
+                                           "for it or switch to its track first")
+                    if ts["open_set"] and ts["open_set"]["taps"] == 0:
+                        raise RuntimeError("no MixMatch Tap in this set yet: «Set taps» first")
                     args = ["run"]
                     if body.get("refs"):
                         args += ["--ref", "references/"]
@@ -611,11 +676,27 @@ def make_handler(runner: Runner, watcher: "DownloadWatcher | None" = None):
 
                     live = LiveClient(timeout=10).connect()
                     try:
-                        n = ab.switch(live, body.get("which", "after"), os.path.join(workdir, "runs"))
+                        n = ab.switch(live, body.get("which", "after"), os.path.join(runner.workdir, "runs"))
                     finally:
                         live.close()
                     ab_state["which"] = body.get("which")
                     return self._send(200, {"changed": n, "which": ab_state["which"]})
+                if self.path == "/api/references/reuse":
+                    return self._send(200, {"saved": songs.reuse_reference(runner.root, body.get("slug", ""),
+                                                                           body.get("file", ""))})
+                if self.path in ("/api/songs/new", "/api/songs/switch", "/api/songs/adopt"):
+                    if runner.running():
+                        raise RuntimeError("wait until the run is finished")
+                    info = open_set.value if open_set.reachable else None
+                    if self.path == "/api/songs/new":
+                        songs.create(runner.root, body.get("name", ""), body.get("description", ""),
+                                     info["channels"] if info else None)
+                    elif self.path == "/api/songs/switch":
+                        songs.switch(runner.root, body.get("slug", ""))
+                    elif info:   # «it is this track»: the open set's channels belong to the current track now
+                        songs.remember_channels(runner.root, info["channels"])
+                    ab_state["which"] = None
+                    return self._send(200, {"track": songs.current(runner.root)})
                 if self.path == "/api/taps":
                     return self._send(200, {"log": runner.start(["taps"])})
                 if self.path == "/api/taps/remove":
@@ -624,26 +705,26 @@ def make_handler(runner: Runner, watcher: "DownloadWatcher | None" = None):
                     runner.stop()
                     return self._send(200, {"ok": True})
                 if self.path == "/api/references/use":
-                    return self._send(200, {"saved": download_reference(workdir, body.get("url", ""),
+                    return self._send(200, {"saved": download_reference(runner.workdir, body.get("url", ""),
                                                                         body.get("name", ""))})
                 if self.path == "/api/references/import":
-                    added = import_downloads(workdir)
+                    added = import_downloads(runner.workdir)
                     return self._send(200, {"added": added})
                 if self.path == "/api/references/remove":
-                    path = safe_reference(workdir, body.get("name", ""))
+                    path = safe_reference(runner.workdir, body.get("name", ""))
                     if not os.path.exists(path):
                         raise ValueError("no such reference")
                     return self._send(200, {"trash": trash(path)})
                 if self.path == "/api/project":
                     from . import project
 
-                    path = os.path.join(workdir, project.PATH)
+                    path = os.path.join(runner.workdir, project.PATH)
                     data = project.load(path)
                     data["description"] = str(body.get("description", "")).strip()
                     project.save(data, path)
                     return self._send(200, data)
                 if self.path == "/api/roles":
-                    with open(os.path.join(workdir, "roles.json"), "w") as f:
+                    with open(os.path.join(runner.workdir, "roles.json"), "w") as f:
                         json.dump(body, f, indent=2, ensure_ascii=False)
                     return self._send(200, {"ok": True})
                 self._send(404, {"error": "not found"})
@@ -666,9 +747,14 @@ def _already_running(url: str) -> bool:
 def serve(workdir: str = ".", port: int = PORT, open_browser: bool = True) -> None:
     import errno
 
+    from . import songs
+
     runner = Runner(os.path.abspath(workdir))
+    moved = songs.migrate(runner.root)
+    if moved:
+        print(f"References, roles and runs moved to songs/: they belong to the track «{moved}» now.")
     url = f"http://127.0.0.1:{port}"
-    watcher = DownloadWatcher(runner.workdir)
+    watcher = DownloadWatcher(lambda: runner.workdir)
     try:
         server = ThreadingHTTPServer(("127.0.0.1", port), make_handler(runner, watcher))
     except OSError as e:
@@ -820,6 +906,21 @@ h3.sub{font:400 12px var(--pixel);text-transform:uppercase;letter-spacing:.06em;
 .part{margin:0 0 10px}.part-head{display:grid;grid-template-columns:minmax(150px,auto) 1fr;gap:10px;align-items:center;font-weight:600;font-size:13.5px}
 .part-head i{display:block;height:9px;background:var(--title)}.part-why{font-size:12.5px;color:var(--muted);margin:3px 0 0}
 ul.part-why{padding-left:18px}ul.part-why li{margin:2px 0}
+.trackbar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:0 0 10px}
+.trackbar .label{font:400 12px var(--pixel);text-transform:uppercase;letter-spacing:.06em}
+.trackbar select{flex:1;min-width:140px;font:600 15px var(--sans)}
+.newform{background:var(--face);border:2px solid;border-color:var(--hi) var(--lo) var(--lo) var(--hi);padding:10px;margin:0 0 12px}
+.newform label{display:block;margin:0 0 8px;font-size:13px}.newform input,.newform textarea{width:100%;box-sizing:border-box;margin-top:3px}
+.banner{border:2px solid var(--warn);background:var(--field);padding:10px;margin:0 0 12px;font-size:13.5px}
+.banner .row{margin-top:8px;flex-wrap:wrap;gap:8px}
+ol.steps{list-style:none;padding:0;margin:0 0 12px;counter-reset:step}
+ol.steps li{display:grid;grid-template-columns:22px 1fr;gap:8px;padding:6px 0;border-bottom:1px dotted var(--lo);font-size:13.5px}
+ol.steps li i{font-style:normal;font-weight:700;text-align:center}
+ol.steps li.ok i{color:var(--good)}ol.steps li.bad i{color:var(--bad)}ol.steps li.warn i{color:var(--warn)}ol.steps li.info i{color:var(--muted)}
+ol.steps .sub{color:var(--muted);font-size:12.5px;display:block;margin-top:2px}
+ol.steps button{margin:4px 8px 0 0}
+#used ul{padding-left:0;list-style:none;margin:6px 0}#used li{display:flex;justify-content:space-between;gap:8px;padding:3px 0;font-size:13px}
+#used h4{font:400 12px var(--pixel);text-transform:uppercase;letter-spacing:.05em;margin:10px 0 2px}
 .overlap{font-size:13px;margin:2px 0 0}.overlap b{font-family:var(--pixel);font-weight:400;color:var(--accent2)}
 </style>
 </head>
@@ -829,6 +930,17 @@ ul.part-why{padding-left:18px}ul.part-why li{margin:2px 0}
 <main>
 <section>
   <h2>Run</h2>
+  <div class="trackbar"><span class="label">Track</span><select id="track_pick" title="Each track has its own references, roles and runs"></select>
+    <button id="new_track" class="ghost small">New track</button></div>
+  <div id="newform" class="newform" hidden>
+    <label>Name of the new track<input id="nt_name" placeholder="e.g. Cleopatra beat" maxlength="60"></label>
+    <label>Describe it (optional)<textarea id="nt_desc" rows="2" placeholder="genre, mood, what it should feel like"></textarea></label>
+    <p class="hint">Starts empty: its own references, roles and runs. The set that is open in Live now belongs to it.
+      References of earlier tracks can be picked again under References → Used before.</p>
+    <div class="row"><button id="nt_create">Create track</button><button id="nt_cancel" class="ghost">Cancel</button></div>
+  </div>
+  <div id="mismatch" class="banner" hidden></div>
+  <ol id="steps" class="steps"></ol>
   <p class="hint" id="run_wait">Asking MARA what it is doing …</p>
   <div id="run_idle" hidden>
     <button id="cont" class="primary" hidden>Continue</button>
@@ -850,7 +962,7 @@ ul.part-why{padding-left:18px}ul.part-why li{margin:2px 0}
   </details>
   <div class="compare"><span>Compare the last run</span>
     <div class="seg"><button id="ab_before">Before</button><button id="ab_after">After</button></div></div>
-  <div class="setup">Taps in Live: <button id="taps" class="link">set</button> · <button id="untaps" class="link" title="Takes every MixMatch tap out of the Live set">remove</button></div>
+  <div class="setup">Taps in Live: <button id="taps" class="link">set</button> · <button id="untaps" class="link" title="Takes every MixMatch tap out of the Live set">remove</button> <span id="taps_state"></span></div>
   <p class="muted" id="msg"></p>
 </section>
 <section>
@@ -880,6 +992,8 @@ ul.part-why{padding-left:18px}ul.part-why li{margin:2px 0}
 <section>
   <h2>References</h2>
   <div id="refs_used"></div>
+  <div class="row"><button id="used_btn" class="ghost small">Used before</button><span class="muted" id="used_count"></span></div>
+  <div id="used" hidden></div>
   <div id="drop" class="drop">Drop audio files here to add them to references/</div><h2 style="margin-top:12px">To get</h2><div id="to_get" class="muted">–</div>
 </section>
 <section>
@@ -1030,8 +1144,10 @@ function progress(s) {
 }
 async function tick() {
   let s; try { s = await (await fetch("/api/state")).json(); } catch { return; }
-  $("status").textContent = s.active ? "running" : (s.done ? "finished" : "ready"); $("status").className = "pill" + (s.active ? " on" : "");
-  $("phase").textContent = s.phase || ""; $("start").disabled = s.active;
+  $("status").textContent = s.active ? "running" : (s.done ? (s.done.startsWith("Stopped:") ? "stopped" : "finished") : "ready"); $("status").className = "pill" + (s.active ? " on" : "");
+  $("phase").textContent = s.phase || "";
+  tracks(s); usedRefs(s); const { ready } = steps(s);
+  $("start").disabled = s.active || !ready; $("cont").disabled = s.active || !(s.set || {same: true}).same;
   $("run_wait").hidden = true; $("run_idle").hidden = s.active; $("run_busy").hidden = !s.active;
   const ck = s.checkpoint; $("cont").hidden = !ck;
   if (ck) $("cont").textContent = `Continue at ${ck.next_channel || ck.phase}` + (ck.percent != null ? ` · ${ck.percent}%` : "");
@@ -1093,7 +1209,85 @@ async function tick() {
   const log = $("log"), atEnd = log.scrollTop + log.clientHeight >= log.scrollHeight - 5;
   log.textContent = s.log.join("\n"); if (atEnd) log.scrollTop = log.scrollHeight;
 }
-let lastRefs = "", lastGet = "", lastImported = -1;
+let lastRefs = "", lastGet = "", lastImported = -1, lastTracks = "", lastUsed = "";
+const STEP_ICON = {ok: "✓", bad: "✗", warn: "!", info: "○"};
+function step(kind, text, sub, buttons) {
+  return `<li class="${kind}"><i>${STEP_ICON[kind]}</i><span>${text}${sub ? `<span class="sub">${sub}</span>` : ""}${buttons || ""}</span></li>`;
+}
+function tracks(s) {
+  // the track picker, the form for a new one, and the warning when Live has another set open
+  const key = JSON.stringify(s.tracks) + s.track;
+  if (key !== lastTracks) { lastTracks = key;
+    $("track_pick").innerHTML = s.tracks.length ? s.tracks.map(t => `<option value="${esc(t.slug)}" ${t.current ? "selected" : ""}>${esc(t.name)}</option>`).join("")
+      : `<option>this folder (no tracks yet)</option>`;
+  }
+  $("track_pick").disabled = s.active || s.tracks.length < 2; $("new_track").disabled = s.active;
+  const m = s.set || {same: true};
+  $("mismatch").hidden = s.active || m.same;
+  if (!m.same) {
+    const key2 = JSON.stringify(m) + s.track;
+    if ($("mismatch").dataset.key !== key2) { $("mismatch").dataset.key = key2;
+      $("mismatch").innerHTML = `<b>Live has a different set open than «${esc(s.track)}».</b> Its channels do not match this track.` +
+        (m.other ? ` They match «${esc(m.other.name)}».` : " Is it a new track?") +
+        `<div class="row">${m.other ? `<button data-switch="${esc(m.other.slug)}">Switch to «${esc(m.other.name)}»</button>` : ""}` +
+        `<button data-act="newtrack" class="${m.other ? "ghost" : ""}">New track for this set</button>` +
+        `<button data-act="adopt" class="ghost">It is «${esc(s.track)}» (channels renamed)</button></div>`;
+    }
+  }
+}
+function steps(s) {
+  if (s.active) { $("steps").innerHTML = ""; $("taps_state").textContent = ""; return { ready: false }; }
+  const out = [], o = s.open_set, refs = s.reference_files.length + s.project_references.length;
+  out.push(s.live ? step("ok", "Live is connected")
+    : step("bad", "Live is not reachable", "Open the set in Live; «MixMatch» must be the control surface (Settings → Link, Tempo & MIDI)."));
+  if (!o) out.push(step("info", "Taps: unknown until Live answers"));
+  else if (o.taps === o.total) out.push(step("ok", `Taps are set in this set: all ${o.total} channels`));
+  else if (o.taps === 0) out.push(step("bad", "No taps in this set yet", "MARA measures every channel through a MixMatch Tap.",
+    `<br><button data-act="taps">Set taps</button>`));
+  else out.push(step("warn", `Taps on ${o.taps} of ${o.total} channels`, "Without a tap: " + o.missing.slice(0, 8).map(esc).join(", ") + (o.missing.length > 8 ? ` and ${o.missing.length - 8} more` : ""),
+    `<br><button data-act="taps">Set the missing taps</button>`));
+  const used = s.used_references.length;
+  if (refs) out.push(step("ok", `${refs} reference track${refs > 1 ? "s" : ""} for this track`, "Listed under References."));
+  else if ($("auto_ref").checked) out.push(step("info", "No references for this track yet",
+    "MARA looks for some itself after listening once. Or add your own under References" + (used ? `, or pick from ${used} used before.` : "."),
+    used ? `<br><button data-act="used" class="ghost small">Show used references</button>` : ""));
+  else out.push(step("bad", "No references for this track", "Add some under References, or tick «look for more references by itself» in the options."));
+  out.push(savedDesc.trim() ? step("ok", "Described: " + esc(savedDesc.trim().slice(0, 80)))
+    : step("info", "Not described yet (optional)", "A few words under «Describe your track» help MARA pick references and decide."));
+  $("steps").innerHTML = out.join("");
+  $("taps_state").textContent = o ? `(${o.taps} of ${o.total} channels)` : "";
+  const ready = s.live && (s.set || {same: true}).same && !(o && o.taps === 0) && (refs > 0 || $("auto_ref").checked);
+  return { ready };
+}
+function usedRefs(s) {
+  const key = JSON.stringify(s.used_references) + JSON.stringify(s.reference_files);
+  $("used_count").textContent = s.used_references.length ? `${s.used_references.length} from earlier tracks` : "none from earlier tracks";
+  $("used_btn").disabled = !s.used_references.length;
+  if (key === lastUsed) return; lastUsed = key;
+  const byTrack = {};
+  for (const r of s.used_references) (byTrack[r.track] = byTrack[r.track] || []).push(r);
+  $("used").innerHTML = Object.entries(byTrack).map(([t, rs]) => `<h4>${esc(t)}</h4><ul>` + rs.map(r =>
+    `<li><span>${esc(r.file)}</span>` + (s.reference_files.includes(r.file) ? `<span class="muted">in this track</span>`
+      : `<button class="small" data-reuse="${esc(r.file)}" data-slug="${esc(r.slug)}">Use</button>`) + "</li>").join("") + "</ul>").join("");
+}
+async function reload(path, body) { const j = await post(path, body); if (!j.error) location.reload(); }
+$("track_pick").onchange = e => reload("/api/songs/switch", {slug: e.target.value});
+$("new_track").onclick = () => { $("newform").hidden = !$("newform").hidden; if (!$("newform").hidden) $("nt_name").focus(); pack(); };
+$("nt_cancel").onclick = () => { $("newform").hidden = true; pack(); };
+$("nt_create").onclick = () => reload("/api/songs/new", {name: $("nt_name").value, description: $("nt_desc").value});
+$("used_btn").onclick = () => { $("used").hidden = !$("used").hidden; $("used_btn").textContent = $("used").hidden ? "Used before" : "Hide used"; pack(); };
+document.addEventListener("click", async e => {
+  const b = e.target.closest("button"); if (!b) return;
+  if (b.dataset.switch) return reload("/api/songs/switch", {slug: b.dataset.switch});
+  if (b.dataset.reuse) { b.disabled = true; const j = await post("/api/references/reuse", {slug: b.dataset.slug, file: b.dataset.reuse});
+    if (!j.error) { $("msg").textContent = "Added to this track: " + j.saved; lastRefs = ""; lastUsed = ""; tick(); } return; }
+  const act = b.dataset.act;
+  if (act === "taps") { b.disabled = true; b.textContent = "Setting taps …"; post("/api/taps"); }
+  else if (act === "newtrack") { $("newform").hidden = false; $("nt_name").focus(); pack(); }
+  else if (act === "adopt") reload("/api/songs/adopt");
+  else if (act === "used") { $("used").hidden = false; $("used_btn").textContent = "Hide used";
+    document.querySelector("#used").scrollIntoView({behavior: "smooth", block: "center"}); pack(); }
+});
 const drop = $("drop");
 ["dragenter", "dragover"].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.add("over"); }));
 ["dragleave", "drop"].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.remove("over"); }));

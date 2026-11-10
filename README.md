@@ -192,6 +192,15 @@ in `env.local`, which MixMatch reads by itself).
 mixmatch ui        # opens http://127.0.0.1:8765
 ```
 
+Each track has its own folder `songs/<track>/` with its references, roles,
+description and runs. «New track» starts an empty one for the set that is open
+in Live; MARA notices when Live has another set open and offers to switch or
+start a new track. Before a run, a checklist shows whether Live is connected,
+whether every channel has a tap, the references and the description.
+References of earlier tracks can be picked again under References → Used
+before. On the first start, files from the old layout (`references/`, `runs/`,
+`roles.json`, `mixmatch.json`) move into the first track.
+
 Start, stop and resume runs, follow what MixMatch does and why (distance to
 the target and where it comes from, every round kept or undone), see key,
 chords and style of the song, the references used and the ones to get (with

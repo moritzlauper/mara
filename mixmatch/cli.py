@@ -237,7 +237,10 @@ def cmd_demo(args):
 
 def load_env(path: str = "env.local") -> None:
     """KEY=value lines (quotes allowed) from env.local or .env, without overriding the environment."""
-    for name in (path, ".env"):
+    names = [path, ".env"]
+    if os.path.basename(os.path.dirname(os.getcwd())) == "songs":   # inside a track's folder: the project's file
+        names.append(os.path.join("..", "..", path))
+    for name in names:
         if not os.path.exists(name):
             continue
         for line in open(name):
@@ -259,6 +262,17 @@ def _stoppable() -> None:
 
     signal.signal(signal.SIGINT, signal.default_int_handler)
     signal.signal(signal.SIGTERM, interrupt)
+
+
+def _enter_track() -> None:
+    """With tracks (songs/songs.json), commands work in the current track's folder: its references/, roles.json,
+    mixmatch.json and runs/."""
+    from . import songs
+
+    song = songs.current(".")
+    if song:
+        os.chdir(songs.current_dir("."))
+        print(f"Track: {song['name']}", flush=True)
 
 
 def main(argv=None):
@@ -329,6 +343,8 @@ def main(argv=None):
     args = p.parse_args(argv)
     if hasattr(args, "ref_files"):
         args.ref = args.ref + args.ref_files
+    if args.cmd != "ui":
+        _enter_track()
     try:
         args.fn(args)
     except KeyboardInterrupt:   # «Stop» or Ctrl-C: the run has put the Main fader, loop and taps back on its way out

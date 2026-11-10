@@ -30,6 +30,33 @@ def test_parse_log():
     assert [e["kind"] for e in s["events"]][:4] == ["phase", "section", "round", "action"]
 
 
+def test_interrupted_logs_show_a_stop_instead_of_a_traceback():
+    old = ('Traceback (most recent call last):\n'
+           '  File "agent.py", line 41, in wait\n'
+           '    time.sleep(seconds)\n'
+           '    ~~~~~~~~~~^^^^^^^^^\n'
+           'KeyboardInterrupt\n')
+    for log in (old, "Stopped: run interrupted.\n"):
+        state = parse_log(log.splitlines(keepends=True))
+        assert state["done"] == "Stopped: run interrupted."
+        assert state["events"] == [{"kind": "neutral", "text": "Stopped: run interrupted."}]
+
+
+def test_tracebacks_show_the_actual_error_and_stop_stale_progress():
+    log = ('  progress {"done": 1, "total": 10, "t": 100}\n'
+           'Traceback (most recent call last):\n'
+           '  File "taps.py", line 44, in window\n'
+           '    return [f for f in self.frames]\n')
+    partial = parse_log(log.splitlines(keepends=True))
+    assert partial["done"] and "Traceback" not in partial["events"][-1]["text"]
+    log += "RuntimeError: deque mutated during iteration\n"
+    state = parse_log(log.splitlines(keepends=True))
+    assert state["done"] == "Stopped: RuntimeError: deque mutated during iteration"
+    assert state["events"] == [{"kind": "warning", "text": state["done"]}]
+    resumed = parse_log((log + 'Taps: 3 channels\nprogress {"done": 2, "total": 10, "t": 200}\n').splitlines(True))
+    assert resumed["done"] is None and resumed["progress"]["done"] == 2
+
+
 def test_buy_list(tmp_path, monkeypatch):
     import mixmatch.style as style
     monkeypatch.setattr(style, "BASE", str(tmp_path / "cache"))          # no previews looked up before
