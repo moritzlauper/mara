@@ -248,6 +248,7 @@ def _cmd_run(args):
                                            suggest=not args.no_suggest,
                                            library=args.library or None,
                                            jamendo=args.jamendo, audit=getattr(args, "audit", False) and not args.no_audit,
+                                           finish_early=getattr(args, "finish", False),
                                            silent=args.silent),
                   references=refset)
     main_volume = None
@@ -389,6 +390,8 @@ def main(argv=None):
                                     help="optional instrument-role review before mixing; continues automatically")
     sub.choices["run"].add_argument("--silent", action="store_true",
                                     help="Main fader down while running (MixMatch measures before it), back at the end")
+    sub.choices["run"].add_argument("--finish", action="store_true",
+                                    help="skip remaining validation and record the current accepted mix")
     sub.choices["run"].add_argument("--audit", action="store_true",
                                     help="also A/B-test eligible existing effects (can add substantial time)")
     # Compatibility for earlier scripts; auditing is now opt-in.

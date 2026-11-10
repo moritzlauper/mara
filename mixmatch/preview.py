@@ -126,7 +126,26 @@ def _apply(live, target: dict) -> None:
             raise RuntimeError("could not restore all preview parameters")
 
 
-def render(live, snapshot: str, start: float, length: float, log=print) -> dict:
+def _sleep_taps(live) -> None:
+    """Disable measurement-only Max devices before recording a preview.
+
+    A large set can contain dozens of taps, each running its spectrum analysis.
+    They are not part of the audible mix and can make a real-time resampling
+    capture drop out.
+    """
+    changes = []
+    for track in live.get_set().get("tracks", []):
+        for device in track.get("devices", []):
+            if device.get("name") != "MixMatch Tap":
+                continue
+            if any(p.get("name") == "Device On" and p.get("value", 0) >= .5 for p in device.get("params", [])):
+                changes.append({"track": track["key"], "device": device["index"], "param": "Device On", "value": 0.0})
+    if changes:
+        live.batch(changes)
+
+
+def render(live, snapshot: str, start: float, length: float, log=print, *, silent: bool = True,
+           keep_taps_off: bool = False) -> dict:
     """Temporarily recall the snapshot, record it silently, then restore the set.
 
     Keep Main's original gain in the recording. Silence the hardware route,
@@ -150,11 +169,13 @@ def render(live, snapshot: str, start: float, length: float, log=print) -> dict:
     workflow.update(preview_recording=True)
     try:
         live.transport(play=False)
-        already_disconnected = live.request("preview_output").get("muted", False)
-        routing = live.request("preview_output", muted=True)
-        restore_output = routing.get("restore")
-        disconnected = not already_disconnected
+        if silent:
+            already_disconnected = live.request("preview_output").get("muted", False)
+            routing = live.request("preview_output", muted=True)
+            restore_output = routing.get("restore")
+            disconnected = not already_disconnected
         _apply(live, target)
+        _sleep_taps(live)
         aligned = current.get("capabilities", {}).get("aligned_capture", False)
         if aligned:
             live.transport(loop_start=start, loop_length=length, loop=True, time=start, play=False)
@@ -184,6 +205,8 @@ def render(live, snapshot: str, start: float, length: float, log=print) -> dict:
         try:
             live.transport(play=False)
             _apply(live, saved)
+            if keep_taps_off:
+                _sleep_taps(live)
             live.transport(loop_start=loop["start"], loop_length=loop["length"], loop=loop["on"], time=position)
         except Exception as e:
             # Keep hardware disconnected if restoring the mix failed.
@@ -228,7 +251,16 @@ def repair(log_dir="runs", log=print):
         live.connect()
         for which, snapshot in zip(("before", "after"), pair):
             if not available(log_dir)[which]:
-                render(live, snapshot, (meta["start_bar"]-1)*4, meta["bars"]*4, log)
+                try:
+                    render(live, snapshot, (meta["start_bar"]-1)*4, meta["bars"]*4, log, keep_taps_off=True)
+                except RuntimeError as e:
+                    if "silent or incomplete" not in str(e):
+                        raise
+                    # Some Live routing drivers also silence Resampling when the
+                    # hardware output is disconnected. Preserve a usable A/B
+                    # recording by retrying once with the output audible.
+                    log("  silent capture unavailable; retrying this preview with Live output audible")
+                    render(live, snapshot, (meta["start_bar"]-1)*4, meta["bars"]*4, log, silent=False, keep_taps_off=True)
         if not matching(log_dir)["ready"]:
             raise RuntimeError("These previews cannot be loudness matched together.")
         workflow.update(status="finished", phase="result", output_restored=True, previews_ready=True, error=None)

@@ -199,7 +199,7 @@ function render(s){const w=s.workflow || {},status=w.status || 'idle',live=s.ope
  const cleaned=connected && (live.taps===0 || cleanedProject===s.project_id);
  $('cleanup').hidden=!w.mix_complete;
  $('remove-mara').disabled=removingMara || active || !!s.engine?.active || !connected || cleaned;
- $('remove-mara').textContent=removingMara?'Removing MARA devices…':cleaned?'MARA devices removed':'Remove MARA devices';
+ $('remove-mara').textContent=removingMara?'Removing MARA taps…':cleaned?'MARA taps removed':'Remove all MARA taps';
  $('cleanup-status').textContent=cleaned?'Your mix processing and saved previews are kept. Set taps again before another run.':!connected?'Open this result’s project in Live to remove its MARA measurement devices.':'Removes measurement devices from Live. Keeps your mix processing and saved previews.';
  markup('measurement-list',(s.measurement_groups || []).map(g=>{const values=g.values || [],start=values[0],last=values.at(-1);return `<article class="measurement"><h3>${esc(PHASES[g.phase] || g.phase)} · ${esc(g.section)}</h3><p class="muted">${esc(g.scoring)} · this passage only</p><div class="metric">Start ${start?.toFixed(2) ?? '—'} → Last ${values.length>1?last.toFixed(2):'—'}</div><p class="muted">${esc(g.verification || 'No verified change recorded for this measurement.')}</p></article>`;}).join('') || '<p class="muted">No comparable measurements recorded yet.</p>');
  const resultLabels={loudness:'Loudness',dynamics:'Dynamics',width:'Stereo width',low_side:'Low-end stereo',clipping:'Peak level',tonal:'Tone balance',masking:'Masking'};

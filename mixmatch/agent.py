@@ -79,6 +79,7 @@ class Settings:
     verification_passes: int = 2  # repeat the same passage before accepting a change
     revisit_channels: int = 1     # repair only the strongest unresolved source before the final master check
     audit_bars: int = 4           # A/B window per effect
+    finish_early: bool = False    # record the current accepted state without another validation pass
 
 
 @dataclass
@@ -936,7 +937,14 @@ class Agent:
         # A resumed silent run may start with Main still muted by the previous
         # interruption. A/B snapshots must share the original listening gain;
         # playback cleanup must still preserve the user's current muted state.
-        comparison_volume = main_volume
+        # A/B snapshots must always retain the listening gain that was present
+        # before MARA started, even when a previous interrupted run left Main
+        # temporarily muted.
+        comparison_volume = None
+        try:
+            comparison_volume = json.load(open(os.path.join(self.s.log_dir, self._before_file)))["tracks"]["m"]["mixer"]["Volume"]
+        except (OSError, KeyError, TypeError, ValueError):
+            comparison_volume = main_volume
         if self.s.silent:
             with open(os.path.join(self.s.log_dir, self._before_file)) as f:
                 comparison_volume = json.load(f)["tracks"]["m"]["mixer"]["Volume"]
@@ -984,7 +992,8 @@ class Agent:
         if path.endswith("-after.json"):
             workflow.update(status="finalizing", phase="preview", mix_complete=getattr(self, "_mix_complete", False))
         try:
-            preview.render(self.live, path, start, length, self.log)
+            preview.render(self.live, path, start, length, self.log,
+                           keep_taps_off=path.endswith("-after.json"))
             self.log(f"Audio preview ready: {os.path.basename(path)}")
             return True
         except preview.RestoreFailed:
@@ -1139,6 +1148,11 @@ class Agent:
         self._preview_region = (main[0][1], min(main[0][2], 64.0))
         if not self.record_preview(os.path.join(self.s.log_dir, self._before_file), *self._preview_region):
             raise RuntimeError("The original preview is missing. A playable recording is required before mixing.")
+        if self.s.finish_early:
+            self.log("Skipping remaining validation · recording the current accepted mix.")
+            self.clear_checkpoint()
+            self._mix_complete = True
+            return
         if self.s.review_seconds and phase == "master":
             from . import analysis_review
             self.live.transport(play=False)

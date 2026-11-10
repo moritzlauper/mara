@@ -524,7 +524,7 @@ class Commands:
         source = self._track(req["source"]) if req.get("source") else None
         song.create_audio_track(-1)
         track = list(song.tracks)[-1]
-        track.name = "MixMatch Capture"
+        track.name = "MARA Capture"
         inputs = list(getattr(track, "available_input_routing_types", []))
         want = source.name.lower() if source is not None else "resampling"
         routing = next((r for r in inputs if r.display_name.lower() == want), None)
@@ -569,7 +569,7 @@ class Commands:
         answers {"pending": true}; the caller asks again a moment later."""
         tracks = list(self.song.tracks)
         index = int(req["track"])
-        if 0 <= index < len(tracks) and tracks[index].name == "MixMatch Capture":
+        if 0 <= index < len(tracks) and tracks[index].name in {"MixMatch Capture", "MARA Capture"}:
             track = tracks[index]
             slot = list(track.clip_slots)[0]
             if getattr(slot, "is_recording", False) or getattr(slot, "is_triggered", False):

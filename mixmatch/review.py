@@ -71,7 +71,7 @@ def changes(folder: str) -> dict:
         old, new = before["tracks"].get(key), after["tracks"].get(key)
         if not old or not new or old["name"] != new["name"]:
             continue
-        if old["name"] == "MixMatch Capture":
+        if old["name"] in {"MixMatch Capture", "MARA Capture"}:
             continue
         devices = [("Mixer", old["mixer"], new["mixer"])]
         devices += [(device, old["devices"].get(device), new["devices"].get(device))
@@ -124,7 +124,7 @@ def restore_plan(folder: str, current: dict) -> dict:
         for track in snapshot["tracks"].values():
             track["devices"] = {key: value for key, value in track["devices"].items() if not key.startswith("MixMatch Tap#")}
     for key, original in before["tracks"].items():
-        if original["name"] == "MixMatch Capture":
+        if original["name"] in {"MixMatch Capture", "MARA Capture"}:
             continue
         live_track = next((t for t in current["tracks"] if t["key"] == key and t["name"] == original["name"]), None)
         if live_track is None:
