@@ -107,7 +107,7 @@ section[data-panel=mix]>.progress{margin-top:16px}#progress-label{margin-bottom:
 #mix-stage-purpose{margin:0 0 5px;font-size:12px}
 #mix-description{min-height:20px;margin:0 0 12px;font-size:12px}
 section[data-panel=mix]>.mix-dashboard{margin-top:18px}
-#mix-phases{list-style:none;display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:0;padding:0;margin:16px 0}
+#mix-phases{list-style:none;display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:0;padding:0;margin:18px 0 22px}
 .phase-item{position:relative;min-width:0;display:grid;grid-template-rows:20px auto;align-content:start;justify-items:center;text-align:center;padding:0 5px;color:var(--muted)}
 .phase-item:not(:last-child)::after{content:"";position:absolute;top:9px;left:calc(50% + 10px);width:calc(100% - 20px);height:2px;background:var(--lo);opacity:.5}
 .phase-item.complete::after{background:var(--ink);opacity:.45}
