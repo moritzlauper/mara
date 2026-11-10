@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import numpy as np
 import soundfile as sf
 
@@ -46,7 +48,7 @@ def test_library_keeps_songs_and_skips_samples(tmp_path):
     write(tmp_path / "Album" / "song.wav", 120)
     write(tmp_path / "Album" / "loop.wav", 4)                    # too short for a song
     write(tmp_path / "Samples" / "long_pad.wav", 120)            # sample folder
-    assert [p.split("/")[-1] for p in library_files(str(tmp_path))] == ["song.wav"]
+    assert [Path(p).name for p in library_files(str(tmp_path))] == ["song.wav"]
 
 
 def test_search_links_are_encoded():

@@ -1,3 +1,4 @@
+from pathlib import Path
 from types import SimpleNamespace
 
 from mixmatch import live_identity, songs
@@ -7,7 +8,7 @@ def test_document_path_decodes_the_live_document_and_rejects_ambiguity(monkeypat
     monkeypatch.setattr(live_identity.sys, "platform", "darwin")
     result = SimpleNamespace(returncode=0, stdout="file:///Users/music/unt%20Project/new.als\n")
     monkeypatch.setattr(live_identity.subprocess, "run", lambda *a, **kw: result)
-    assert live_identity.document_path() == "/Users/music/unt Project/new.als"
+    assert live_identity.document_path() == str(Path("/Users/music/unt Project/new.als").resolve())
     result.stdout += "file:///Users/music/another.als\n"
     assert live_identity.document_path() == ""
     result.stdout = "missing value\n"
