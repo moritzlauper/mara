@@ -1,13 +1,5 @@
 # MARA · Reference-guided mixing for Ableton Live
 
-## Download & install
-
-**[Download MARA from GitHub Releases](https://github.com/moritzlauper/mara/releases)** — this is the recommended way to install MARA.
-
-Choose the release download for your operating system, install it, and open **MARA**. The desktop app starts the local engine and opens the guided workflow. Then follow [Configure the Ableton connection](#2-configure-the-ableton-connection) to connect your Live set. Ableton Live with **Max for Live** is required.
-
-Running from source is an alternative for developers; most users should use the release download.
-
 **MARA is a measurement-driven mixing assistant for Ableton Live.** It combines per-channel audio measurements, reference profiles, and project metadata to plan and execute incremental changes to an open Live set. Each round is evaluated against its stated objective and passage-specific constraints; rejected parameter changes are rolled back.
 
 **MARA directly edits effect parameters across the Live set:** audio and MIDI tracks, groups, returns, and Main. It operates existing devices and can load additional native effects or installed plugins through Live's browser. Control extends to the parameters Live exposes; the current addressing model covers top-level devices and rack macros. Accepted changes remain editable in Live. See [Device and parameter actions](#device-and-parameter-actions) for the integration boundaries.
@@ -17,6 +9,8 @@ The processing engine can use built-in rules or be extended with a model-based o
 ![MARA's Mix view with reference comparison, mix history, listening controls, and Latest changes.](docs/images/04-mix.png)
 
 *Mix view: phase progress, reference-distance and masking histories, monitoring controls, and retained parameter changes. Displayed values are fictional demo data.*
+
+## [Download MARA → GitHub Releases](https://github.com/moritzlauper/mara/releases)
 
 **MARA** names the interface and desktop application; **MixMatch** names the Python package, CLI, and Ableton control surface.
 
