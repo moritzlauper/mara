@@ -6,7 +6,7 @@
 
 The processing engine can use built-in rules or be extended with a model-based or custom planner. An optional local **CLAP audio model** analyzes waveform excerpts to estimate musical style and mood and retrieve similar reference tracks. The UI combines these capabilities with progress monitoring, an edit journal, and loudness-matched Before/After recordings.
 
-![MARA's Mix view with reference comparison, mix history, listening controls, and Latest changes.](docs/images/04-mix.png)
+![MARA's Mix view with reference comparison, mix history, listening controls, and Latest changes.](docs/images/mara-teaser.png)
 
 *Mix view: phase progress, reference-distance and masking histories, monitoring controls, and retained parameter changes. Displayed values are fictional demo data.*
 
