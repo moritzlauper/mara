@@ -70,7 +70,9 @@ class Settings:
     replace_references: bool = False # a resumed run uses the user's new choice instead of saved references
     library: str | None = "~/Music"
     jamendo: bool = False         # also try Creative Commons tracks from Jamendo
-    audit: bool = True            # complete runs: remove effects that do nothing, bypass ones that harm the mix
+    # Testing each device on and off can dominate a run on larger sets. It is
+    # useful maintenance, but the final mix validation does not depend on it.
+    audit: bool = False           # opt-in: remove effects that do nothing, bypass ones that harm the mix
     suggest: bool = True          # complete runs: write references to get and free ones (runs/…-buy.md)
     fine: bool = True             # record the master during its first measurement: narrow resonances
     fine_channels: bool = False   # also record single channels (routing a capture track to a channel once crashed Live)
@@ -1068,6 +1070,7 @@ class Agent:
                     "mix_policy": mix_quality.VERSION, "quality_anchors": self.quality_anchors,
                     "references": [os.path.abspath(p) for p in self.refset.paths] if self.refset else [],
                     "complete": self.s.complete,
+                    "audit": self.s.audit,
                     "beat": changes.get("beat", self.beat),
                     "silent_vocals": sorted(getattr(self, "silent_vocals", set())),
                     "role_reviews": sorted(getattr(self, "role_reviews", set())),
@@ -1334,6 +1337,10 @@ class Agent:
                 self.target = self.refset.target(True, self.s.loudness_from)
                 self.log(f"Target: {self.target.description}, {self.target.loudness:.1f} LUFS")
         self._done, self._total = float(ck.get("done", 0.0)), float(ck.get("total", 0.0))
+        # Remove stale audit work when a resumed run deliberately skips it.
+        was_auditing = ck.get("audit", ck.get("phase") == "effects")
+        if was_auditing and not self.s.audit:
+            self._total = max(self._done, self._total - self.W_AUDIT_GUESS)
         where = ck.get("next_channel") or ck["phase"]
         self.log(f"↻ Continuing the run from {ck.get('stamp', '?')} at {where} (no preparation needed)")
         self.progress(0.0, where)

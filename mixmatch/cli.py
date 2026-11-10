@@ -247,7 +247,7 @@ def _cmd_run(args):
                                            replace_references=args.replace_references or bool(args.ref),
                                            suggest=not args.no_suggest,
                                            library=args.library or None,
-                                           jamendo=args.jamendo, audit=not args.no_audit,
+                                           jamendo=args.jamendo, audit=getattr(args, "audit", False) and not args.no_audit,
                                            silent=args.silent),
                   references=refset)
     main_volume = None
@@ -389,8 +389,11 @@ def main(argv=None):
                                     help="optional instrument-role review before mixing; continues automatically")
     sub.choices["run"].add_argument("--silent", action="store_true",
                                     help="Main fader down while running (MixMatch measures before it), back at the end")
+    sub.choices["run"].add_argument("--audit", action="store_true",
+                                    help="also A/B-test eligible existing effects (can add substantial time)")
+    # Compatibility for earlier scripts; auditing is now opt-in.
     sub.choices["run"].add_argument("--no-audit", action="store_true",
-                                    help="keep every effect (no check for effects that do nothing or harm)")
+                                    help="deprecated: effect auditing is off unless --audit is supplied")
     sub.choices["run"].add_argument("--jamendo", action="store_true",
                                     help="with --auto-ref also try Creative Commons tracks from Jamendo (JAMENDO_CLIENT_ID)")
     sub.choices["run"].add_argument("--quick", action="store_true",

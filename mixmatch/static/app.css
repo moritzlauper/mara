@@ -133,7 +133,7 @@ section[data-panel=mix]>.mix-dashboard{margin-top:18px}
 .latest-changes li{display:grid;grid-template-columns:minmax(180px,.9fr) minmax(0,1.2fr);gap:16px;padding:8px 0;font:12px/1.5 var(--sans)}
 .latest-changes li+li{border-top:1px solid color-mix(in srgb,var(--line) 35%,transparent)}
 .latest-changes strong{font-weight:600;color:var(--ink)}.latest-changes strong span{font-weight:400;color:var(--muted)}
-.latest-change-detail{overflow-wrap:anywhere;color:var(--text)}
+.latest-change-detail{overflow-wrap:anywhere;color:var(--text)}.latest-change-time{display:block;margin-top:2px;color:var(--muted);font:11px/1.4 var(--mono)}
 @media(max-width:700px){.latest-changes li{grid-template-columns:1fr;gap:2px}.latest-changes-heading{flex-wrap:wrap;gap:5px 12px}}
 
 .current-inspection{font:12px/1.5 var(--sans);color:var(--text);margin:12px 0 8px;overflow-wrap:anywhere}.current-inspection strong{font-weight:600}

@@ -264,9 +264,9 @@ An additional high-resolution recording analysis searches for narrow resonant pe
 
 ### Existing-device audit
 
-Complete runs include an effect audit. Neutral EQ Eight and Utility settings can be bypassed. Other suitable effects are measured on and off. A potentially harmful effect should remain bypassed only when repeated measurements show a benefit for peaks, stereo bass, or masking while the protection checks still pass.
+Effect auditing is optional (`--audit`, or **Audit existing effects** in the classic interface) because testing every device on and off can dominate the run time on large sets. Neutral EQ Eight and Utility settings can be bypassed. Other suitable effects are measured on and off. A potentially harmful effect should remain bypassed only when repeated measurements show a benefit for peaks, stereo bass, or masking while the protection checks still pass.
 
-Automated effects, meters, and recognized time-varying or creative effects such as reverb, delay, chorus, and certain modulators are excluded. The master limiter/clipper chain is handled separately. The audit bypasses existing devices so their previous state remains recoverable. Use `--no-audit` in the CLI to skip this phase.
+Automated effects, meters, and recognized time-varying or creative effects such as reverb, delay, chorus, and certain modulators are excluded. The master limiter/clipper chain is handled separately. The audit bypasses existing devices so their previous state remains recoverable. Use `--audit` in the CLI when you want this additional phase.
 
 ### Finding references
 
@@ -483,6 +483,7 @@ mixmatch taps --remove                           # Remove taps from the set
 mixmatch refs ~/refs/song1.wav ~/refs/song2.mp3   # Prepare reference analysis
 mixmatch run --ref ~/refs/ --no-suggest          # Complete run with your references
 mixmatch run --ref ~/refs/ --quick --no-suggest  # Shorter run without channel passes
+mixmatch run --ref ~/refs/ --audit                # Also A/B-test eligible existing effects (slower)
 mixmatch run --continue --ref ~/refs/ --no-suggest
 mixmatch run --ref ~/refs/ --mode beat --assist --no-suggest
 mixmatch run --ref ~/refs/ --focus sections --minutes 15 --no-suggest

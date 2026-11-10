@@ -1179,8 +1179,8 @@ def make_handler(runner: Runner, watcher: "DownloadWatcher | None" = None, live_
                         args += ["--quick"]
                     if body.get("silent"):
                         args += ["--silent"]
-                    if body.get("no_audit"):
-                        args += ["--no-audit"]
+                    if body.get("audit"):
+                        args += ["--audit"]
                     if body.get("continue"):
                         args += ["--continue"]
                     elif body.get("resume"):
@@ -1593,7 +1593,7 @@ ol.steps button{margin:4px 8px 0 0}
     <label title="Can be changed during the run. Measurements continue before the Main fader."><input type="checkbox" id="silent" checked> silent: mute Live output while it works</label>
     <p class="hint" id="output_hint">Switch off to hear Live while MARA works.</p>
     <label><input type="checkbox" id="quick"> master only (quick, about 15 min)</label>
-    <label><input type="checkbox" id="no_audit"> keep every effect (no check for useless ones)</label>
+    <label><input type="checkbox" id="audit"> audit existing effects (adds significant time)</label>
   </details>
   <div class="compare"><span>Compare the last run</span>
     <div class="seg"><button id="ab_before">Before</button><button id="ab_after">After</button></div></div>
@@ -1679,7 +1679,7 @@ setInterval(() => { if (theme === "auto") applyTheme(theme); }, 60000);
 document.addEventListener("visibilitychange", () => { if (!document.hidden) applyTheme(theme); });
 $("theme").onclick = () => { theme = THEMES[(THEMES.indexOf(theme) + 1) % THEMES.length]; applyTheme(theme);
   try { localStorage.setItem("mm_theme", theme); } catch {} };
-const OPTS = ["silent", "quick", "no_audit"];
+const OPTS = ["silent", "quick", "audit"];
 let runActive = false, outputPending = false;
 try { const saved = JSON.parse(localStorage.getItem("mm_opts") || "{}");   // remembered per browser, a convenience
   for (const k of OPTS) if (k in saved) $(k).checked = saved[k]; } catch {}
@@ -1700,14 +1700,14 @@ $("silent").addEventListener("change", async () => {
   } finally { outputPending = false; $("silent").disabled = false; }
 });
 $("start").onclick = () => post("/api/run", {reference_mode: $("reference_mode").value, quick: $("quick").checked,
-  no_audit: $("no_audit").checked, silent: $("silent").checked});
+  audit: $("audit").checked, silent: $("silent").checked});
 $("stop").onclick = async () => {
   $("stop").disabled = true; $("stop").textContent = "Pausing …";
   const result = await post("/api/stop");
   if (result.error) { $("stop").disabled = false; $("stop").textContent = "Pause"; }
 };
 $("cont").onclick = () => post("/api/run", {continue: true, reference_mode: "selected", silent: $("silent").checked,
-  no_audit: $("no_audit").checked});
+  audit: $("audit").checked});
 $("reference_mode").onchange = () => { referenceModeChosen = true; tick(); };
 $("choose_refs").onclick = () => $("references_panel").scrollIntoView({behavior: "smooth", block: "start"});
 $("pick_files").onclick = () => $("reference_upload").click();
