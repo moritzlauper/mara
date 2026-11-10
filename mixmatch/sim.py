@@ -95,11 +95,37 @@ def limiter():
     ])
 
 
+class Routing:
+    def __init__(self, name, target=None):
+        self.display_name, self.target = name, target
+
+
+def compressor():
+    toggles = ["Device On", "Makeup", "Auto Release On/Off", "S/C On", "S/C Listen", "S/C EQ On"]
+    params = [Param(n, 0, 1, int(n == "Device On"), lambda v: "On" if v >= 0.5 else "Off", True,
+                    ["Off", "On"]) for n in toggles]
+    params += [Param("Threshold", -60, 0, -20, _db_fmt), Param("Ratio", 1, 20, 2, lambda v: f"{v:.2f} : 1"),
+               Param("Attack", 0.01, 100, 2, lambda v: f"{v:.2f} ms"),
+               Param("Release", 1, 3000, 100, lambda v: f"{v:.1f} ms"),
+               Param("Output", -24, 24, 0, _db_fmt), Param("S/C Gain", -24, 24, 0, _db_fmt),
+               Param("S/C Mix", 0, 1, 1, lambda v: f"{v*100:.1f} %"),
+               Param("Dry/Wet", 0, 1, 1, lambda v: f"{v*100:.1f} %"),
+               Param("Model", 0, 2, 0, lambda v: ["Peak", "RMS", "Expand"][round(v)], True,
+                     ["Peak", "RMS", "Expand"])]
+    d = Device("Compressor", "Compressor2", params)
+    d.available_input_routing_types = [Routing("No Input")]
+    d.available_input_routing_channels = [Routing("Pre FX"), Routing("Post FX"), Routing("Post Mixer")]
+    d.input_routing_type = d.available_input_routing_types[0]
+    d.input_routing_channel = d.available_input_routing_channels[0]
+    return d
+
+
 def tap():
     return Device("MixMatch Tap", "MxDeviceAudioEffect", [Param("Device On", 0, 1, 1, str, True, ["Off", "On"])])
 
 
-FACTORIES = {"eq eight": eq_eight, "utility": utility, "limiter": limiter, "mixmatch tap.amxd": tap}
+FACTORIES = {"eq eight": eq_eight, "utility": utility, "limiter": limiter, "compressor": compressor,
+             "mixmatch tap.amxd": tap}
 
 
 class Mixer:
@@ -170,13 +196,16 @@ class Browser:
         self.song = song
         self.audio_effects = Item("Audio Effects", [Item("EQ & Filters", [Item("EQ Eight")]),
                                                     Item("Utilities", [Item("Utility")]),
-                                                    Item("Dynamics", [Item("Limiter")])])
+                                                    Item("Dynamics", [Item("Limiter"), Item("Compressor")])])
         self.user_library = Item("User Library", [Item("MixMatch", [Item("MixMatch Tap.amxd")])])
         self.plugins = Item("Plug-Ins", [])   # none installed in the simulator
 
     def load_item(self, item):
         # Like Live: always appended to the chain of the selected track.
-        self.song.view.selected_track.devices.append(FACTORIES[item.name.lower()]())
+        d = FACTORIES[item.name.lower()]()
+        if d.class_name == "Compressor2":
+            d.available_input_routing_types += [Routing(t.name, t) for t in self.song.tracks]
+        self.song.view.selected_track.devices.append(d)
 
 
 # ── sound model ────────────────────────────────────────────────────────────
@@ -207,12 +236,12 @@ def _on(device) -> bool:
     return p is None or p.value >= 0.5
 
 
-def track_output(t: Track, fader: bool = True) -> tuple[np.ndarray, float, float, float]:
+def track_output(t: Track, fader: bool = True, _visiting=()) -> tuple[np.ndarray, float, float, float]:
     """Band levels (dB), plr, width, low side after the devices and, with `fader`, the mixer.
 
     Like in Live, a tap as the last device measures before the fader: fader=False.
     """
-    spec = t.spectrum + (_vol_db(t.mixer_device.volume.value) if fader else 0.0)
+    spec = t.spectrum + getattr(t, "signal_db", 0.0)
     width, low_side, plr = t.width_db, t.low_side_db, t.plr
     for d in t.devices:
         if not _on(d):
@@ -225,6 +254,16 @@ def track_output(t: Track, fader: bool = True) -> tuple[np.ndarray, float, float
             width += 20 * math.log10(max(w, 1e-3))
             if d.p("Bass Mono").value >= 0.5:
                 low_side = -60.0
+        elif d.class_name == "Compressor2" and d.p("S/C On").value >= 0.5:
+            source = getattr(d.input_routing_type, "target", None)
+            if source is not None and id(source) not in (*_visiting, id(t)):
+                detector = track_output(source, fader=False, _visiting=(*_visiting, id(t)))[0]
+                level = 10 * math.log10(max(float((10 ** (detector / 10)).sum()), 1e-18))
+                reduction = max(0, level - d.p("Threshold").value) * (1 - 1 / d.p("Ratio").value)
+                wet = d.p("Dry/Wet").value
+                spec = spec + 20 * math.log10(1 - wet + wet * 10 ** (-reduction / 20))
+    if fader:
+        spec = spec + _vol_db(t.mixer_device.volume.value)
     return spec, plr, width, low_side
 
 
@@ -290,9 +329,10 @@ class SimEnv:
                 if song.loop and song.current_song_time >= song.loop_start + song.loop_length:
                     song.current_song_time -= song.loop_length
             for i, tr in enumerate(self.song.tracks):
-                f = self._frame(*track_output(tr, fader=False))
+                f = self._frame(*track_output(tr, fader=False)) if song.is_playing else Frame(self.t, 0, 0, 0, 0, [0] * len(F))
                 self.hub.taps[i + 1].frames.append(f)
-            self.hub.taps[999].frames.append(self._frame(*master_output(self.song, self.refs)))
+            self.hub.taps[999].frames.append(self._frame(*master_output(self.song, self.refs)) if song.is_playing
+                                           else Frame(self.t, 0, 0, 0, 0, [0] * len(F)))
 
 
 class SimLive:
@@ -362,6 +402,7 @@ def demo_project():
     master = Track("Main", np.zeros(len(F)))
     song = Song(tracks, master, [reference])
     song.cue_points = [Cue("Drop", 0.0), Cue("End", 32.0)]
+    song.continue_playing()
     hub = TapHub()
     env = SimEnv(song, hub, refs={"REF Song"})
     return song, hub, env, SimLive(song)

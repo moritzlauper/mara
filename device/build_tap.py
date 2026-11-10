@@ -111,7 +111,7 @@ def build():
     measured((plugin, 1), "peak", 4, 580)
 
     # The device view in Live: narrow, just a name. Live's own meters beside it show the level.
-    label("MixMatch", 1100, 30, 84, size=12.0, bold=True)
+    label("MARA", 1100, 30, 84, size=12.0, bold=True)
     label("measuring", 1100, 54, 84)
 
     bank = box("fffb~ %d %g %g %g" % (BAND_COUNT, BASE_HZ, RATIO, Q), 140, 180, 1, BAND_COUNT, w=900)

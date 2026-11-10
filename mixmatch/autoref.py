@@ -108,6 +108,9 @@ def jamendo_file(track: dict, log=print) -> str | None:
 
 def capture(live, start: float, length: float, tempo: float, log=print) -> str | None:
     """Records `length` beats of Live's master from `start`; returns the WAV path (in the project's Samples)."""
+    from .activity import report as activity
+
+    activity(log, f"Recording {length / 4:.0f} bars for the reference search")
     live.transport(loop_start=start, loop_length=length, loop=True, time=start, play=True)
     cap = live.request("capture_start", beats=length)
     deadline = time.time() + length * 60 / tempo + 15
@@ -171,18 +174,21 @@ def buy_list(recording: str, listener: Listener, harmony: dict | None = None, no
     """Claude's suggestions: tracks to get (Bandcamp often has «name your price») and free, legal ones (NCS,
     Creative Commons, free downloads), plus real Jamendo tracks in the style when JAMENDO_CLIENT_ID is set."""
     from .style import describe, styles, suggest
+    from .activity import report as activity
 
     try:
+        activity(log, "Analysing style, tempo and harmony")
         desc = describe(recording, listener)
         if harmony:  # Live's MIDI beats the audio estimate
             desc["harmony"] = {k: harmony[k] for k in ("key", "mode", "chords", "source")}
-        result = suggest(desc, note=note)
+        result = suggest(desc, note=note, log=log)
     except Exception as e:
         log(f"  no suggestions from Claude ({str(e)[:100]})")
         return {"style": "", "buy": [], "free": []}
     free = list(result.get("free_suggestions", []))
     client_id = jamendo_client_id()
     if client_id:
+        activity(log, "Checking free reference tracks and preview links")
         project = listener.file(recording)
         tags = jamendo_tags(note, [s for s, _ in styles(listener, project, 3)])
         scored = []
@@ -211,9 +217,11 @@ def buy_list(recording: str, listener: Listener, harmony: dict | None = None, no
 
 
 def find(live, start: float, length: float, tempo: float, library: str | None = "~/Music", count: int = 3,
-         references: str = "references", jamendo: bool = False, suggest: bool = True,
+         references: str | list[str] = "references", jamendo: bool = False, suggest: bool = True,
          harmony: dict | None = None, note: str = "", log=print) -> tuple[list[dict], dict]:
     """The `count` references that sound closest to the project, as {path, source, artist, title, …}."""
+    from .activity import report as activity
+
     log("\n━━ Finding references")
     recording = capture(live, start, length, tempo, log)
     if not recording:
@@ -224,8 +232,11 @@ def find(live, start: float, length: float, tempo: float, library: str | None = 
     log("  sounds like: " + ", ".join(f"{s} ({v:.2f})" for s, v in top))
 
     candidates = []
-    if references and os.path.isdir(references):   # what the user put there themselves always competes
-        for path in library_files(references, min_seconds=30):
+    folders = [references] if isinstance(references, str) else references
+    for folder in folders or []:   # includes the shared library, even from a song's working directory
+        if not os.path.isdir(folder):
+            continue
+        for path in library_files(folder, min_seconds=30):
             try:
                 candidates.append({"path": path, "source": "references", "score": float(listener.file(path) @ project),
                                    "artist": "", "title": os.path.splitext(os.path.basename(path))[0]})
@@ -258,6 +269,7 @@ def find(live, start: float, length: float, tempo: float, library: str | None = 
                     continue
 
     picked, seen = [], set()
+    activity(log, "Comparing candidate references with your track")
     for c in sorted(candidates, key=lambda c: -c["score"]):
         key = os.path.realpath(c["path"])
         if key not in seen and mastered(c["path"]):

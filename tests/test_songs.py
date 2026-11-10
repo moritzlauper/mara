@@ -22,8 +22,9 @@ def test_old_layout_becomes_the_first_track(tmp_path):
 
     assert songs.migrate(str(tmp_path)) == "Hyperpop"
     folder = tmp_path / "songs" / "Hyperpop"
-    assert (folder / "references" / "ref.wav").exists() and (folder / "roles.json").exists()
-    assert not (tmp_path / "references").exists() and not (tmp_path / "roles.json").exists()
+    assert (tmp_path / "references" / "ref.wav").exists() and (folder / "roles.json").exists()
+    assert not list((folder / "references").iterdir()) and not (tmp_path / "roles.json").exists()
+    assert songs.reference_folders(str(folder)) == [str(folder / "references"), str(tmp_path / "references")]
     assert songs.current_dir(str(tmp_path)) == str(folder)
     assert songs.current(str(tmp_path))["channels"] == SET_A
     assert songs.migrate(str(tmp_path)) is None                # once only
@@ -54,6 +55,42 @@ def test_references_of_earlier_tracks_can_be_picked_again(tmp_path):
     assert (tmp_path / "songs" / "Next" / "references" / "claws.wav").read_bytes() == b"audio"
     with pytest.raises(ValueError):
         songs.reuse_reference(root, old, "../roles.json")
+
+
+def test_live_name_updates_the_label_without_moving_song_data(tmp_path):
+    root = str(tmp_path)
+    slug = songs.create(root, "First track", channels=SET_A)
+    folder = songs.current_dir(root)
+    reference = tmp_path / "songs" / slug / "references" / "ref.wav"
+    reference.write_bytes(b"audio")
+    songs.remember_live_name(root, "Cleopatra", SET_A)
+    assert songs.current(root)["name"] == "Cleopatra"
+    assert songs.current_dir(root) == folder and reference.read_bytes() == b"audio"
+    songs.remember_live_name(root, "Another project", SET_B)
+    songs.remember_live_name(root, "", SET_A)  # unsaved sets / older remote scripts
+    assert songs.current(root)["name"] == "Cleopatra"
+    songs.remember_live_name(root, "Cleopatra v2", SET_A)
+    assert songs.listing(root)[0]["name"] == "Cleopatra v2"
+
+
+def test_interface_uses_the_live_name_on_the_first_completed_refresh(tmp_path):
+    root = str(tmp_path)
+    songs.create(root, "First track", channels=SET_A)
+    ready = threading.Event()
+
+    def live_set():
+        ready.set()
+        return {"name": "Cleopatra", "channels": SET_A, "taps": 4, "total": 4, "missing": [], "playing": False}
+
+    server, call = _serve(root, live_set)
+    try:
+        call("/api/state")
+        assert ready.wait(2)
+        state = call("/api/state")
+        assert state["track"] == "Cleopatra"
+        assert state["tracks"][0]["name"] == "Cleopatra"
+    finally:
+        server.shutdown()
 
 
 def _serve(root, live_set_fn):

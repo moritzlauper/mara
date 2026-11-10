@@ -195,29 +195,44 @@ def cmd_check(args):
 
 
 def cmd_run(args):
+    from .activity import report as activity
+
+    activity(print, "Connecting to Ableton Live")
     live, hub = _connect()
     planner = make_planner("rules" if args.rules else args.planner)
     print(f"Planner: {getattr(planner, 'model', None) or 'rules (no Claude Code, no ANTHROPIC_API_KEY, or --rules)'}")
     refset = _refset(args)
+    auto_ref = args.auto_ref or (not args.ref and not args.no_auto_ref)
     loop = live.get_set()["loop"]
-    if set_taps_on(live, True):
-        print("Taps switched on for the run.")
-    live.transport(time=loop["start"], play=True)   # start inside the song, not wherever playback last stopped
-    try:
-        time.sleep(args.wait)
-        Agent(live, hub, planner, Settings(minutes=args.minutes, assist=args.assist, roles_file=args.roles,
+    agent = Agent(live, hub, planner, Settings(minutes=args.minutes, assist=args.assist, roles_file=args.roles,
                                            mode=args.mode, loudness_from=args.loudness_from,
                                            focus=args.focus, focus_bars=args.focus_bars, complete=not args.quick,
                                            resume="auto" if args.cont else args.resume,
-                                           auto_ref=args.auto_ref or (not args.ref and not args.no_auto_ref),
+                                           auto_ref=auto_ref,
+                                           review_references=args.review_references or auto_ref,
+                                           replace_references=args.replace_references or bool(args.ref),
+                                           suggest=not args.no_suggest,
                                            library=args.library or None,
                                            jamendo=args.jamendo, audit=not args.no_audit,
                                            silent=args.silent),
-              references=refset).run()
+                  references=refset)
+    main_volume = None
+    try:
+        if args.silent:
+            agent.ex.refresh()
+            main_volume = agent.mute_main()
+        if set_taps_on(live, True):
+            print("Taps switched on for the run.")
+        live.transport(time=loop["start"], play=True)
+        activity(print, "Waiting for the audio measurements to arrive")
+        time.sleep(args.wait)
+        agent.run(main_volume=main_volume)
     finally:
         # The loop brace back where the user had it (MixMatch moved it from part to part), playhead at its start.
         live.transport(play=False, loop_start=loop["start"], loop_length=loop["length"], loop=loop["on"],
                        time=loop["start"])
+        if main_volume is not None and not getattr(agent, "_output_cleanup_done", False):
+            agent.restore_main_when_quiet(main_volume)
         print(f"Loop back to bars {loop['start'] / 4 + 1:.0f}–{(loop['start'] + loop['length']) / 4 + 1:.0f}.")
         set_taps_on(live, False)
         print("Taps switched off until the next run (no processing load).")
@@ -307,6 +322,12 @@ def main(argv=None):
                                     help="find references by listening to the project (default when no --ref is given)")
     sub.choices["run"].add_argument("--no-auto-ref", action="store_true",
                                     help="do not look for references: only --ref and the project's reference tracks")
+    sub.choices["run"].add_argument("--no-suggest", action="store_true",
+                                    help="skip reference suggestions when you already chose your references")
+    sub.choices["run"].add_argument("--review-references", action="store_true",
+                                    help="prepare the song and find references, then wait for your choice before mixing")
+    sub.choices["run"].add_argument("--replace-references", action="store_true",
+                                    help="continue with the references chosen now instead of the checkpoint's references")
     sub.choices["run"].add_argument("--library", default="~/Music",
                                     help="folder searched for references with --auto-ref (empty to skip)")
     sub.choices["run"].add_argument("--silent", action="store_true",
@@ -321,7 +342,8 @@ def main(argv=None):
                                     help="loud: find the loudest part of the song once and work only there, "
                                          "like the references are measured at their loudest part")
     sub.choices["run"].add_argument("--focus-bars", type=int, default=16, help="length of the loudest part in bars")
-    sub.choices["run"].add_argument("--planner", choices=["auto", "claude-code", "api", "rules"], default="auto",
+    sub.choices["run"].add_argument("--planner", choices=["auto", "claude-code", "api", "rules"],
+                                    default=os.environ.get("MIXMATCH_PLANNER", "auto"),
                                     help="auto: local Claude Code on your subscription if installed, else the API key")
     sub.choices["run"].add_argument("--rules", action="store_true", help="rule-based planner instead of Claude")
     sub.choices["demo"].add_argument("--claude", action="store_true", help="use Claude in the simulator too")
@@ -341,6 +363,8 @@ def main(argv=None):
     sr.add_argument("--note", help="describe your track in your own words, e.g. «PS2-style DnB»")
     sr.add_argument("--no-suggest", action="store_true", help="do not ask Claude for references to buy")
     args = p.parse_args(argv)
+    if args.cmd == "run":
+        os.environ["MIXMATCH_PLANNER"] = "rules" if args.rules else args.planner
     if hasattr(args, "ref_files"):
         args.ref = args.ref + args.ref_files
     if args.cmd != "ui":

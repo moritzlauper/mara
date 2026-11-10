@@ -473,7 +473,7 @@
     "box": {
      "id": "obj-24",
      "maxclass": "comment",
-     "text": "MixMatch",
+     "text": "MARA",
      "numinlets": 1,
      "numoutlets": 0,
      "fontsize": 12.0,

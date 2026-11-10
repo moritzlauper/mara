@@ -11,9 +11,9 @@ def test_automatic_names_defer_to_devices():
     assert guess(track("8-Basic Electric Drive Bass", "Basic Electric Drive Bass"), None).role == "bass"
 
 
-def test_plain_drum_rack_is_a_drum_bus():
+def test_plain_drum_rack_does_not_imply_a_complete_kit():
     r = guess(track("4-Drum Rack", "Drum Rack", "MixMatch Tap"), None)
-    assert (r.role, r.source) == ("drums_bus", "devices")
+    assert (r.role, r.source) == ("percussion", "devices")
 
 
 def test_user_names_win_over_devices():
@@ -69,3 +69,61 @@ def test_more_instruments_by_name():
     for name, role in cases.items():
         assert from_name(name) == role, name
         assert role in ROLES
+
+
+def drum_track(played, pads=None):
+    if pads is None:
+        pads = [(36, "DS Kick"), (38, "DS Snare"), (46, "DS HHO"), (49, "DS Cymbal"), (50, "DS Clang")]
+    ds = [{"name": "DS Drum Rack", "class_name": "DrumGroupDevice", "type": 1, "enabled": True,
+           "drum_pads": [{"name": name, "note": pitch, "muted": False, "solo": False,
+                          "chains": [{"name": name, "devices": [{"name": name, "type": 1}]}]}
+                         for pitch, name in pads]}]
+    return {"key": "t0", "name": "23-DS Drum Rack", "devices": ds, "role_devices": ds, "played_notes": played}
+
+
+def test_played_pad_identifies_instrument_in_a_fully_loaded_kit():
+    for pitch, role in [(36, "kick"), (38, "snare"), (46, "hats"), (49, "cymbals"), (50, "percussion")]:
+        r = guess(drum_track({str(pitch): 30}), None)
+        assert r.role == role and r.source == "drum pads"
+        assert str(pitch) in r.note
+    assert guess(drum_track({"36": 20, "38": 12, "46": 40}), None).role == "drums_bus"
+
+
+def test_custom_pad_mapping_sample_names_and_layered_kicks():
+    # Mapping, not MIDI pitch conventions: a cymbal on C1 is still a cymbal.
+    assert guess(drum_track({"36": 8}, [(36, "Crash Cymbal")]), None).role == "cymbals"
+    t = drum_track({"36": 8}, [(36, "C1")])
+    t["role_devices"][0]["drum_pads"][0]["chains"][0]["devices"] = [
+        {"name": "Simpler", "type": 1, "sample_name": "808_Kick_Tight.wav"}]
+    assert guess(t, None).role == "kick"
+    assert guess(drum_track({"36": 8, "37": 8}, [(36, "Kick sub"), (37, "Kick click")]), None).role == "kick"
+
+
+def test_unplayed_muted_soloed_and_disabled_pads_do_not_choose_role():
+    assert guess(drum_track(None), None).role == "percussion"  # no note data: do not guess full loaded kit
+    assert guess(drum_track({}), None).role == "percussion"   # no notes actually played
+    t = drum_track({"36": 10, "49": 10})
+    t["role_devices"][0]["drum_pads"][0]["muted"] = True
+    assert guess(t, None).role == "cymbals"
+    t = drum_track({"36": 10, "49": 10})
+    t["role_devices"][0]["drum_pads"][3]["solo"] = True
+    assert guess(t, None).role == "cymbals"
+    t = drum_track({"36": 10, "49": 10})
+    t["role_devices"][0]["drum_pads"][0]["chains"][0]["devices"][0]["enabled"] = False
+    assert guess(t, None).role == "cymbals"
+
+
+def test_nested_rack_and_drum_notes_do_not_use_melodic_pitch_guess():
+    t = drum_track({"49": 16})
+    t["role_devices"] = [{"name": "Instrument Rack", "class_name": "InstrumentGroupDevice", "type": 1,
+                          "chains": [{"name": "Drums", "devices": t["role_devices"]}]}]
+    assert guess(t, None).role == "cymbals"
+    # Arbitrary low MIDI pitch could mean any pad, so it is never interpreted as a melodic bass.
+    assert guess(drum_track(None), None, [["t0", 30, i, .2, 100] for i in range(20)]).role == "percussion"
+
+
+def test_drum_buss_effect_is_not_instrument_evidence_and_groups_stay_groups():
+    t = track("22-Serum", "Serum", "Drum Buss", "EQ Eight")
+    notes = [["t0", 33, i, .3, 100] for i in range(20)]
+    assert guess(t, None, notes).role == "bass"
+    assert guess({**drum_track({"36": 10}), "is_group": True}, None).role in ("bus", "drums_bus")

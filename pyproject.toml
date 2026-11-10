@@ -7,7 +7,7 @@ name = "mixmatch"
 version = "0.1.0"
 description = "Mixing agent for Ableton Live: listens inside the project, compares with references, adjusts step by step."
 requires-python = ">=3.10"
-dependencies = ["numpy", "scipy", "soundfile", "python-osc", "anthropic>=0.80"]
+dependencies = ["numpy", "scipy", "soundfile", "pyloudnorm>=0.1.1,<0.2", "python-osc", "anthropic>=0.80"]
 
 [project.optional-dependencies]
 stems = ["demucs"]          # removes vocals from references for beat mode

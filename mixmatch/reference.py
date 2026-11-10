@@ -209,6 +209,9 @@ class ReferenceSet:
         self.paths = list(paths)
         self.refs: list[Reference] = []
         for p in paths:
+            from .activity import report as activity
+
+            activity(self.log, f"Analysing reference: {os.path.basename(p)}")
             self.refs.append(Reference(p, profile(p), seconds=_seconds(p)))
             r = self.refs[-1]
             note = f" ({r.seconds:.0f} s clip: half weight, not used for loudness)" if r.short else ""

@@ -3,11 +3,12 @@
 `ClaudePlanner` sends the measurements, the channel roles and the history of
 earlier rounds to Claude and gets back a few small actions with reasons.
 `RulePlanner` works without an API key: master tonal balance, loudness, bass in
-mono and kick/bass masking, by fixed rules. Both return the same structure.
+mono and time-aligned masking, by fixed rules. Both return the same structure.
 """
 from __future__ import annotations
 
 import json
+import math
 import os
 import shutil
 import subprocess
@@ -15,10 +16,9 @@ import tempfile
 
 import numpy as np
 
-from .roles import LOW_END_ROLES
-
 from .analysis import TONAL_BANDS, band_label
 from .bands import CENTRES
+from .display import parse_display
 
 MODEL = os.environ.get("MIXMATCH_MODEL", "claude-haiku-5-5")
 # Models that accept the server-side refusal fallback; Haiku 5.5 has none and rejects the parameter.
@@ -28,14 +28,28 @@ ACTION_SCHEMA = {
     "type": "object",
     "properties": {
         "assessment": {"type": "string"},
+        "mix_intent": {
+            "type": "object",
+            "properties": {
+                "priority": {"type": "string", "enum": ["masking", "tonal", "dynamics", "width", "loudness", "low_side", "clipping", "none"]},
+                "evidence": {"type": "string"},
+                "preserve": {"type": "string"},
+                "reference_relevance": {"type": "string"},
+            },
+            "required": ["priority", "evidence", "preserve", "reference_relevance"],
+            "additionalProperties": False,
+        },
         "done": {"type": "boolean"},
         "actions": {
             "type": "array",
             "items": {
                 "type": "object",
                 "properties": {
-                    "type": {"type": "string", "enum": ["volume", "pan", "eq", "width", "limiter", "clipper", "send", "param", "load_device"]},
+                    "type": {"type": "string", "enum": ["volume", "pan", "eq", "width", "limiter", "clipper", "send", "param", "load_device", "duck"]},
                     "track": {"type": ["string", "null"]},
+                    "source_track": {"type": ["string", "null"]},
+                    "reduction_db": {"type": ["number", "null"]},
+                    "release_ms": {"type": ["number", "null"]},
                     "delta_db": {"type": ["number", "null"]},
                     "value": {"type": ["number", "null"]},
                     "freq_hz": {"type": ["number", "null"]},
@@ -51,40 +65,47 @@ ACTION_SCHEMA = {
                     "name": {"type": ["string", "null"]},
                     "reason": {"type": "string"},
                 },
-                "required": ["type", "track", "delta_db", "value", "freq_hz", "gain_db", "q", "shape", "width_pct",
+                "required": ["type", "track", "source_track", "reduction_db", "release_ms", "delta_db", "value", "freq_hz", "gain_db", "q", "shape", "width_pct",
                              "bass_mono", "device_index", "param", "target", "name", "reason"],
                 "additionalProperties": False,
             },
         },
     },
-    "required": ["assessment", "done", "actions"],
+    "required": ["assessment", "mix_intent", "done", "actions"],
     "additionalProperties": False,
 }
 
 SYSTEM = """You are the decision-making part of MixMatch, a mixing agent running inside an Ableton Live project.
-You cannot hear. Software measures every channel, the master and the reference tracks while the song plays and gives you numbers. You decide the next small steps; the software applies them, measures again and undoes any round that made the overall distance to the target worse.
+You cannot hear. Software measures every channel, the master and the reference tracks while the song plays and gives you numbers. You diagnose what this mix needs, propose small steps, and the software checks the intended benefit with fresh measurements. Reference distance is a guide, not a perceptual quality score.
 
-Goal: the master should match the reference tracks in loudness, tonal balance, dynamics and stereo image, and the mix should be well balanced: every channel audible according to its role and priority, no channels masking each other (kick and bass especially), low end mono, nothing clipping.
+Goal: improve this track on its own musical terms, using the references as an important direction for tonal balance, impact, loudness and space. Preserve its arrangement, timbres, groove, useful dynamics and foreground/background hierarchy. Decide which reference differences are relevant problems and which belong to this track. A lower reference distance alone does not prove a better mix.
 
 How to work:
+- First read mix_diagnosis: examine the whole spectrum and its strongest source channels, their roles, the arrangement, user description, and existing processing. Explain the main need, likely cause, evidence and uncertainty before choosing an intervention. Broad spectral level is not proof of harshness or masking.
+- Fill mix_intent: choose one measurable priority for this round, cite concrete evidence, say what character must be preserved, and explain why the reference applies (or why a difference should remain). Pick none and no actions when evidence is insufficient or the mix already works. Do not claim to hear what numbers cannot establish.
+- References are orientation, never a curve to copy. Different instrumentation, register, sparse arrangements and deliberate warmth/brightness can explain deviations. Treat roughly 1.5 dB tonal, 2 dB width and 1.5 dB PLR differences as small unless independent evidence or user intent makes them relevant. More treble in the reference does not automatically justify a shelf: check whether a source lacks presence or competing mids obscure it. Never EQ a single instrument to resemble the full reference spectrum.
+- Verification requires the chosen priority to improve. A modest reference-distance increase may be accepted for less masking, safer peaks or cleaner low end, provided spectrum, layers and punch remain protected. No-op changes are undone. Reference-only moves must also improve the overall measurement. Do not promise arbitrary timbral improvements can be verified by these meters.
 - Fix big problems before details, roughly in this order: gain staging and balance, low-end separation (kick/bass), masking, tonal balance of individual channels, width, compression, master loudness last.
+- Masking entries are potential collisions verified in simultaneous 100 ms frames, not proof that a musical layer is wrong. Protect the listed foreground and make space on the background. Do not mute layers or erase intentional unison/doubling. The bands list shows distinct regions; overlap_fraction is the share of the window with both channels active.
+- For repeated intermittent collisions (intermittent=true), especially kick/bass, prefer a gentle duck on the background triggered by the foreground if sidechain_ducking=true. It lowers the background only during trigger activity and release. Start with reduction_db=2 and release_ms=120. Do not stack ducking on an existing sidechain compressor, change existing routing, or use a disabled compressor. Positive observed_ducking_db means the background already gets quieter during foreground activity: check remaining severity before doing more.
+- For sustained collisions, use a small bell cut on the lower-priority background at a listed frequency (usually -1 to -1.5 dB). Keep cumulative masking cuts near -4 dB at most. Panning may help the stereo mix but is not evidence that mono masking is solved. Never claim to have configured dynamic EQ: duck is bounded broadband compression, EQ is static.
 - Prefer cutting over boosting. Prefer fixing a channel over EQ on the master. Use the master EQ only for small overall tonal moves the channels cannot explain.
 - Small steps: volume at most ±2 dB, EQ at most ±3 dB per round, limiter at most +2 dB. Give 1 to 4 actions per round.
 - The limiter gain is capped at +5 dB (see "limiter"). After that, a clipper may add up to +4 dB (see "clipper"). Loudness beyond both is not a goal: never raise faders just to make the master louder.
 - If the vocal channels are silent in this part, the vocal range 200 Hz–5 kHz only counts where the mix is louder than the target. Do not fill it with instruments.
-- Look at the history: do not repeat a move that was undone; build on moves that helped. A move that made no measurable difference is undone too: only changes that help the mix stay, so when nothing clearly helps, stop (done) instead of trying small variations.
+- Look at the history and verification reasons: do not repeat a move that was undone; build on moves that helped. A move that made no measurable difference is undone too. When nothing clearly helps, stop (done), even if reference differences remain.
 - Beat mode (see "mode"): the mix is an instrumental and the target is the full reference songs; in 200 Hz–5 kHz the beat may sit up to 4 dB under them (room for a vocal, already in the tonal numbers). It must sound complete on its own: tame harshness, keep presence and air, never boost instruments into the vocal range to imitate a vocal.
 - Cumulative EQ: before deepening a cut, look at what the band already does (device parameters). More than about -4 dB on one band of a synth or pad is rarely right; try another source instead.
 - A device that is switched off (Device On 0) was switched off on purpose: do not use it, and do not add another device of the same kind on that track.
 - Master EQ: all its bands together may cut at most 3 dB at any frequency (the executor refuses more). A broad excess on the master comes from channels: cut the channels that cause it, not the master.
-- Several references: the target is their average and "largest_tonal_differences_db" already ignores differences within their spread, so only chase what is listed there.
+- Several references: their average and spread describe a direction, not an obligation. "largest_tonal_differences_db" ignores differences within their spread; still explain why any remaining difference needs a change in this arrangement.
 - Respect the user's notes in the roles and never touch locked parameters.
 - Parameters marked "(automated)" follow automation in the arrangement (filter sweeps, build-ups): they are part of the arrangement, not the mix. Never change them; work around them.
 - "resonances" (on a channel) and "master_resonances" are narrow peaks found in a high-resolution recording, notes of the song's key already left out. A strong one (6 dB or more) on a pad, synth or bus is usually ringing: cut it narrowly at that exact frequency (q 6–12, -2 to -4 dB, shape bell). Leave weaker ones alone.
 - "user_description" is how the user hears the track; it wins over the audio model and over your own guesses about the style.
 - If the context has a "task" (channel pass), follow it: actions only on that one track, and none if it sits well.
 - If the context has a "final_check", follow it: that is the last look at the master after every channel was done.
-- Set "done" to true only when the remaining differences are small and nothing useful is left to try.
+- Set "done" to true when no further useful, evidenced intervention remains. Meaningful differences from the reference may remain; explain which ones you preserve and why.
 - Reasons: one short sentence each, concrete (which channel, which frequency, why).
 
 Actions (unused fields null):
@@ -97,6 +118,7 @@ Actions (unused fields null):
 - clipper: delta_db (drive into a clipper placed right before the master limiter, at most +1.5 dB per round and +4 dB in total; see "clipper" for whether one is installed). Use it once the limiter is at its maximum while the master is still quieter and more dynamic (higher PLR) than the target: it shaves the transient peaks so the master gets louder without the limiter working harder.
 - param: track, device_index, param (exact name), target (in the units Live displays, e.g. dB, ms, ratio)
 - load_device: track, name (e.g. "Compressor", "Glue Compressor", or an installed plugin from "installed_plugins" such as "Pro-C 2" or "Pro-DS"; prefer a suitable installed plugin over Live's own device; a plugin that turns out to show no parameters is removed again, so do not retry it); configure it with param actions in later rounds
+- duck: track (background), source_track (foreground from a measured intermittent masking pair), reduction_db (0.5–3 dB maximum attenuation), release_ms (50–250). Creates a dedicated native Compressor with Post FX external sidechain, RMS detection, no makeup, and a dry/wet bound. It is removed if the round fails. Requires sidechain_ducking=true. Existing disabled or sidechain compressors are left alone.
 Track keys: "t0", "t1", … normal tracks, "r0" … returns, "m" master."""
 
 
@@ -106,8 +128,70 @@ def device_summary(track: dict) -> list[dict]:
     for d in track.get("devices", []):
         params = [f"{p['name']}={p['display']}" + (" (automated)" if p.get("automated") else "")
                   for p in d["params"] if not p["name"].startswith("Device On")][:40]
-        out.append({"index": d["index"], "name": d["name"], "params": params})
+        item = {"index": d["index"], "name": d["name"], "params": params,
+                "enabled": next((p["value"] >= 0.5 for p in d["params"] if p["name"] == "Device On"), True)}
+        if d.get("class_name") == "Eq8":
+            values = {p["name"]: p for p in d["params"]}
+            item["eq_bands"] = []
+            for n in range(1, 9):
+                if values.get(f"{n} Filter On A", {}).get("value", 0) < 0.5:
+                    continue
+                get = lambda name, default: parse_display(values.get(f"{n} {name} A", {}).get("display", default))
+                item["eq_bands"].append({"on": True, "freq": get("Frequency", "1000"),
+                                         "gain": get("Gain", "0"),
+                                         "q": get("Q", values.get(f"{n} Resonance A", {}).get("display", "0.71")),
+                                         "kind": values.get(f"{n} Filter Type A", {}).get("display", "Bell")})
+        out.append(item)
     return out
+
+
+def masking_action(context: dict) -> dict | None:
+    """A conservative fallback for any measured pair, including the focused channel.
+
+    No stereo pan shortcut: the tap's mono spectra cannot verify that improvement.
+    Existing EQ response, disabled devices and rejected moves all limit the recipe.
+    """
+    from .actions import eq_curve
+
+    if context.get("final_check"):
+        return None
+    channels = {c["track"]: c for c in context.get("channels", [])}
+    for m in context.get("masking", []):
+        key, source = m.get("background"), m.get("foreground")
+        if not key or not source or m["severity"] < 0.08:
+            continue
+        if context.get("focus_track") not in (None, key):
+            continue
+        channel = channels.get(key, {})
+        if channel.get("kind") in ("group", "return"):
+            continue
+        devices = channel.get("devices", [])
+        blocked_duck = any(d["name"].startswith("MARA Duck") or
+                           ("compressor" in d["name"].lower() and
+                            (not d.get("enabled", True) or any(p.startswith("S/C On=On") for p in d["params"])))
+                           for d in devices)
+        rejected = [a for h in context.get("history", []) if h.get("undone")
+                    for a in h.get("actions", []) if a.get("track") == key]
+        rejected += [a for h in context.get("history", []) for a in h.get("skipped", []) if a.get("track") == key]
+        if (context.get("sidechain_ducking") and m.get("intermittent") and not blocked_duck
+                and (m.get("observed_ducking_db") or 0) < 3
+                and not any(a.get("type") == "duck" and a.get("source_track") == source for a in rejected)):
+            return {"type": "duck", "track": key, "source_track": source, "reduction_db": 2.0,
+                    "release_ms": 120.0, "reason": f"make room for {source} only during its repeated collisions"}
+        freq = m["freq_hz"]
+        if any(a.get("type") == "eq" and a.get("freq_hz") and abs(math.log2(a["freq_hz"] / freq)) < 0.4
+               for a in rejected):
+            continue
+        if any(d["name"] == "EQ Eight" and not d.get("enabled", True) for d in devices):
+            continue
+        bands = [b for d in devices if d.get("enabled", True) for b in d.get("eq_bands", [])]
+        current = float(eq_curve(bands, [freq])[0])
+        cut = max(-1.5, -4.0 - current)
+        if cut > -0.5:
+            continue
+        return {"type": "eq", "track": key, "freq_hz": freq, "gain_db": round(cut, 2), "q": 1.4,
+                "shape": "bell", "reason": f"make room for {source} at {freq} Hz during measured collisions"}
+    return None
 
 
 class ClaudePlanner:
@@ -138,12 +222,12 @@ class ClaudePlanner:
 
 
 class RulePlanner:
-    """Deterministic fallback: master tonal balance, loudness, mono bass, kick/bass masking."""
+    """Deterministic fallback: master balance, mono bass, and temporal masking corrections."""
 
     def plan(self, context: dict) -> dict:
         actions, notes = [], []
         cmp = context.get("master_vs_reference")
-        if cmp:
+        if cmp and context.get("focus_track") is None:
             diff = np.array(cmp["_tonal_excess"])
             worst = sorted(TONAL_BANDS, key=lambda i: -abs(diff[i]))[:2]
             for i in worst:
@@ -159,12 +243,9 @@ class RulePlanner:
             if abs(loud) > 0.5:
                 actions.append({"type": "limiter", "delta_db": float(np.clip(-loud, -2, 2)),
                                 "reason": f"master {loud:+.1f} LU vs reference"})
-        for m in context.get("masking", [])[:1]:
-            other = {m["role_a"], m["role_b"]} - {"kick"}
-            if len(other) == 1 and other <= LOW_END_ROLES and "kick" in (m["role_a"], m["role_b"]):
-                bass = m["track_b"] if m["role_a"] == "kick" else m["track_a"]
-                actions.append({"type": "eq", "track": bass, "freq_hz": m["freq_hz"], "gain_db": -1.5, "q": 1.4,
-                                "shape": "bell", "reason": f"bass masks the kick at {m['freq_hz']} Hz"})
+        unmask = masking_action(context)
+        if unmask:
+            actions.append(unmask)
         if not actions:
             notes.append("Nothing above the thresholds.")
         return {"assessment": " ".join(notes) or "Rule-based round.", "done": not actions, "actions": actions}

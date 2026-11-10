@@ -209,6 +209,9 @@ class Listener:
     """Embeds audio files (cached) and text with the best CLAP model available here."""
 
     def __init__(self, log=print, backend: str = "auto"):
+        from .activity import report as activity
+
+        activity(log, "Loading the audio analysis model")
         self.log = log
         self.backend = None
         if backend in ("auto", "laion"):
@@ -424,20 +427,34 @@ Name the style in a few words, then suggest 8 real, released tracks that a produ
 Then, for producers who do not want to buy, suggest 5 well-produced tracks in the same direction that can be downloaded for free and legally: NoCopyrightSounds (NCS), Creative Commons music on Free Music Archive or Jamendo, or an official free download by the artist (e.g. a free Bandcamp or SoundCloud download). Name the source. Only tracks you are sure exist there; fewer is better than invented ones."""
 
 
-def suggest(desc: dict, note: str = "", model: str = "opus") -> dict:
-    """Asks Claude (local Claude Code, subscription) for reference tracks to buy."""
+def suggest(desc: dict, note: str = "", model: str = "opus", log=print) -> dict:
+    """Reference suggestions using the selected billing route, including API-only runs."""
+    from .activity import report as activity
+
+    activity(log, "Finding reference suggestions · waiting for AI")
     payload = {k: v for k, v in desc.items() if not k.startswith("_")}
     if note:
         payload["user_description"] = note
-    env = {k: v for k, v in os.environ.items() if k not in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN")}
-    cmd = [shutil.which("claude") or "claude", "-p", json.dumps(payload, ensure_ascii=False), "--model", model,
-           "--output-format", "json", "--no-session-persistence", "--strict-mcp-config", "--tools", "",
-           "--setting-sources", "", "--exclude-dynamic-system-prompt-sections",
-           "--system-prompt", SUGGEST_SYSTEM, "--json-schema", json.dumps(SUGGEST_SCHEMA)]
-    out = json.loads(subprocess.run(cmd, capture_output=True, text=True, env=env, timeout=600).stdout)
-    if out.get("is_error"):
-        raise RuntimeError(str(out.get("result"))[:300])
-    result = out.get("structured_output") or json.loads(out["result"])
+    if os.environ.get("MIXMATCH_PLANNER") == "api":
+        import anthropic
+        from .planner import MODEL
+
+        response = anthropic.Anthropic(max_retries=6).messages.create(
+            model=MODEL, max_tokens=6000, system=SUGGEST_SYSTEM,
+            output_config={"format": {"type": "json_schema", "schema": SUGGEST_SCHEMA}},
+            messages=[{"role": "user", "content": json.dumps(payload, ensure_ascii=False)}])
+        result = json.loads(next(b.text for b in response.content if b.type == "text"))
+    else:
+        env = {k: v for k, v in os.environ.items() if k not in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN")}
+        cmd = [shutil.which("claude") or "claude", "-p", json.dumps(payload, ensure_ascii=False), "--model", model,
+               "--output-format", "json", "--no-session-persistence", "--strict-mcp-config", "--tools", "",
+               "--setting-sources", "", "--exclude-dynamic-system-prompt-sections",
+               "--system-prompt", SUGGEST_SYSTEM, "--json-schema", json.dumps(SUGGEST_SCHEMA)]
+        out = json.loads(subprocess.run(cmd, capture_output=True, text=True, env=env, timeout=600).stdout)
+        if out.get("is_error"):
+            raise RuntimeError(str(out.get("result"))[:300])
+        result = out.get("structured_output") or json.loads(out["result"])
+    activity(log, "Checking reference links and audio previews")
     for s in result["suggestions"]:
         s["links"] = {**search_links(s["artist"], s["title"]), **apple_preview(s["artist"], s["title"])}
     for s in result.get("free_suggestions", []):

@@ -166,20 +166,115 @@ def compare(mix: Stats, ref: Stats, loudness: float | None = None, tolerance: np
     )
 
 
-def masking(a: Stats, b: Stats, lo: float = 30, hi: float = 8000) -> list[tuple[int, float]]:
-    """Bands where both tracks are strong (within 6 dB of their own peak band) and close in level.
+@dataclass
+class MaskingFrames:
+    times: np.ndarray
+    bands_db: np.ndarray
+    level_db: np.ndarray
+    active: np.ndarray
 
-    Returns (band, severity 0…1) sorted by severity. Kick and bass fighting at 60 Hz is the classic case.
+
+def masking_frames(frames: list[Frame], gain_db: float = 0.0) -> MaskingFrames:
+    """Prepare each channel once, retaining silence and time instead of averaging it away.
+
+    Taps measure before faders. Use the same band calibration as stats(), then apply
+    the channel/group gains. Quiet tails (>24 dB below the channel's peak RMS) do not
+    establish a collision. This remains a 10 Hz heuristic, not a perceptual meter.
     """
-    out = []
-    a_top, b_top = float(a.bands_db.max()), float(b.bands_db.max())
-    for i in bands_between(lo, hi):
-        ai, bi = float(a.bands_db[i]), float(b.bands_db[i])
-        if ai > a_top - 6 and bi > b_top - 6:
-            closeness = max(0.0, 1 - abs(ai - bi) / 6)
-            if closeness > 0:
-                out.append((i, closeness))
-    return sorted(out, key=lambda x: -x[1])
+    valid = {f.t: f for f in frames if len(f.bands) == BAND_COUNT
+             and np.isfinite([f.t, f.m_rms, *f.bands]).all() and f.m_rms >= 0
+             and min(f.bands) >= 0}
+    ordered = [valid[t] for t in sorted(valid)]
+    if not ordered or not math.isfinite(gain_db):
+        return MaskingFrames(np.empty(0), np.empty((0, BAND_COUNT)), np.empty(0), np.empty(0, dtype=bool))
+    rms = np.array([f.m_rms for f in ordered])
+    powers = np.array([f.bands for f in ordered]) ** 2
+    powers *= (rms ** 2 / np.maximum(powers.sum(axis=1), 1e-30))[:, None]
+    levels = db(rms) + gain_db
+    active = levels > max(-70.0, float(levels.max()) - 24.0)
+    return MaskingFrames(np.array([f.t for f in ordered]), 10 * np.log10(np.maximum(powers, 1e-18)) + gain_db,
+                         levels, active)
+
+
+def masking_alignment(foreground: MaskingFrames, background: MaskingFrames) -> tuple[np.ndarray, np.ndarray, float]:
+    """Shared observation coverage, also used to reject improvements caused by lost taps."""
+    if min(len(foreground.times), len(background.times)) < 8:
+        return np.empty(0, dtype=int), np.empty(0, dtype=int), 0.0
+    # Mutual nearest neighbours avoid reusing a frame from a slower/gappy tap.
+    def nearest(a, b):
+        right = np.searchsorted(b, a).clip(0, len(b) - 1)
+        left = (right - 1).clip(0)
+        return np.where(abs(b[left] - a) <= abs(b[right] - a), left, right)
+
+    fi = np.arange(len(foreground.times))
+    bi = nearest(foreground.times, background.times)
+    reverse = nearest(background.times, foreground.times)
+    matched = (reverse[bi] == fi) & (abs(foreground.times - background.times[bi]) <= 0.060001)
+    fi, bi = fi[matched], bi[matched]
+    # A common dropout must not look like complete coverage merely because both
+    # channels lost the same frames. The taps nominally send ten frames/second.
+    duration = max(foreground.times[-1], background.times[-1]) - min(foreground.times[0], background.times[0])
+    expected = max(len(foreground.times), len(background.times), duration * 10 + 1)
+    coverage = min(1.0, len(fi) / expected)
+    return fi, bi, coverage
+
+
+def masking(foreground: MaskingFrames, background: MaskingFrames, alignment=None) -> dict | None:
+    """Time-aligned, directional masking: how much the background covers the foreground.
+
+    Match nearest frames one-to-one within 60 ms; never interpolate through packet
+    gaps. Require 60% coverage and at least three collisions, so one stray frame is
+    not an EQ instruction. Severity is exposure during foreground activity, making
+    a short kick as important as a sustained vocal. A louder masker is worse, not
+    magically harmless as in the old ±6 dB level-similarity test.
+    """
+    fi, bi, coverage = masking_alignment(foreground, background) if alignment is None else alignment
+    if len(fi) < 8 or coverage < 0.6:
+        return None
+    fa, ba = foreground.active[fi], background.active[bi]
+    joint = fa & ba
+    if joint.sum() < 3:
+        return None
+    a, b = foreground.bands_db[fi], background.bands_db[bi]
+    # Gradual relevance avoids a hard threshold where a tiny EQ cut makes a band disappear.
+    aw = np.clip((a - a.max(axis=1)[:, None] + 9) / 9, 0, 1)
+    bw = np.clip((b - b.max(axis=1)[:, None] + 9) / 9, 0, 1)
+    pressure = np.clip((b - a + 12) / 18, 0, 1)
+    evidence = pressure * np.sqrt(aw * bw)
+    evidence[~joint] = 0
+    evidence[(a < -70) | (b < -70)] = 0
+    outside = sorted(set(range(BAND_COUNT)) - set(bands_between(30, 8000)))
+    evidence[:, outside] = 0
+    evidence[:, (evidence > 0.05).sum(axis=0) < 3] = 0
+    scores = evidence.sum(axis=0) / max(1, int(fa.sum()))
+    ranked = sorted(range(BAND_COUNT), key=lambda i: -scores[i])
+    if scores[ranked[0]] < 0.05:
+        return None
+    # Show up to three separated regions, but score every moment and every pair.
+    regions = []
+    for i in ranked:
+        if scores[i] >= 0.05 and all(abs(i - j) > 1 for j in regions):
+            regions.append(i)
+        if len(regions) == 3:
+            break
+    ducking = None
+    if fa.sum() >= 3 and (~fa).sum() >= 3:
+        ducking = round(float(np.median(background.level_db[bi][~fa])
+                              - np.median(background.level_db[bi][fa])), 1)
+    # Only contiguous samples establish repeated attacks, not missing packets.
+    attacks = int(np.sum(fa[1:] & ~fa[:-1] & (np.diff(foreground.times[fi]) < 0.16)))
+    return {
+        "freq_hz": round(CENTRES[ranked[0]]),
+        "bands": [{"freq_hz": round(CENTRES[i]), "severity": round(float(scores[i]), 3)} for i in regions],
+        "severity": float(evidence.max(axis=1)[fa].mean()),
+        "overlap_fraction": round(float(joint.mean()), 3),
+        "foreground_active_fraction": round(float(fa.mean()), 3),
+        "collision_frames": int((evidence.max(axis=1) > 0.05).sum()),
+        "coverage": round(coverage, 3),
+        "intermittent": bool(fa.mean() < 0.8 and attacks >= 2),
+        "observed_ducking_db": ducking,
+        "foreground_level_dbfs": round(float(np.percentile(foreground.level_db[fi][fa], 90)), 2),
+    }
 
 
 def objective_parts(cmp: Comparison | None, maskings: float = 0.0, target_lufs_tolerance: float = 0.5) -> dict:

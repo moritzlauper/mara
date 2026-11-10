@@ -12,6 +12,7 @@ from __future__ import annotations
 import glob
 import json
 import os
+import secrets
 import time
 
 
@@ -83,10 +84,14 @@ def latest_before(log_dir: str) -> str | None:
     return files[-1] if files else None
 
 
-def switch(live, which: str, log_dir: str = "runs") -> int:
+def switch(live, which: str, log_dir: str = "runs", *, pair: tuple[str, str] | None = None) -> int:
     """Sets the open Live set to the «before» or «after» state of the newest run; returns the number of changes.
     «before» also works when a run stopped without its «after» snapshot (Live crashed, run stopped)."""
-    if which == "before":
+    if which not in ("before", "after"):
+        raise ValueError("choose before or after")
+    if pair is not None:
+        path = pair[0 if which == "before" else 1]
+    elif which == "before":
         path = latest_before(log_dir)  # the newest run, even if it has no «after» yet
     else:
         pair = latest_pair(log_dir)
@@ -97,5 +102,35 @@ def switch(live, which: str, log_dir: str = "runs") -> int:
         target = json.load(f)
     changes = changes_to(target, live.get_set(), bypass_new=(which == "before"))
     for i in range(0, len(changes), 200):
-        live.batch(changes[i:i + 200])
+        result = live.batch(changes[i:i + 200])
+        if result.get("errors"):
+            raise RuntimeError("some comparison parameters could not be restored")
     return len(changes)
+
+
+class BlindComparison:
+    """The selection stays on the server until explicitly revealed. Repeats are intentional."""
+
+    def __init__(self):
+        self.reset()
+
+    def reset(self):
+        self._which = None
+        self._log_dir = None
+
+    @staticmethod
+    def ready(log_dir: str) -> bool:
+        pair = latest_pair(log_dir)
+        return pair is not None and pair[0] == latest_before(log_dir)
+
+    def choose(self, live, log_dir: str) -> None:
+        self.reset()
+        pair = latest_pair(log_dir)
+        if pair is None or pair[0] != latest_before(log_dir):
+            raise RuntimeError("blind comparison needs both snapshots of the latest run")
+        which = secrets.choice(("before", "after"))
+        switch(live, which, log_dir, pair=pair)
+        self._which, self._log_dir = which, os.path.realpath(log_dir)
+
+    def reveal(self, log_dir: str) -> str | None:
+        return self._which if self._log_dir == os.path.realpath(log_dir) else None

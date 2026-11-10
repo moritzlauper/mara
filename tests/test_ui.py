@@ -30,6 +30,31 @@ def test_parse_log():
     assert [e["kind"] for e in s["events"]][:4] == ["phase", "section", "round", "action"]
 
 
+def test_ui_mode_follows_the_resumed_run_and_whole_song_silence():
+    lines = ["Taps: 34 channels", "Mode: song with vocals", "Taps: 34 channels"]
+    assert parse_log(lines)["mode"] is None
+    lines.append("Mode: beat (no audible vocals; muted channels do not count)")
+    assert parse_log(lines)["mode"] == "beat"
+    lines += ["Taps: 34 channels", "Mode: song (audible vocals)",
+              "The vocal channels are silent in the whole song: treating it as a beat (no vocals)."]
+    assert parse_log(lines)["mode"] == "beat"
+
+
+def test_activity_reports_waiting_and_updates_scan_without_duplicate_events():
+    from mixmatch.activity import report
+
+    lines = []
+    report(lines.append, "Listening to the whole song", started=100, current=1, total=120)
+    report(lines.append, "Listening to the whole song", started=100, current=10, total=120)
+    state = parse_log(lines)
+    assert state["activity"]["current"] == 10 and state["activity"]["started"] == 100
+    assert len(state["events"]) == 1
+    report(lines.append, "Planning the next changes · waiting for AI", started=140)
+    state = parse_log(lines)
+    assert state["activity"]["started"] == 140 and state["activity"]["total"] is None
+    assert len(state["events"]) == 2
+
+
 def test_interrupted_logs_show_a_stop_instead_of_a_traceback():
     old = ('Traceback (most recent call last):\n'
            '  File "agent.py", line 41, in wait\n'
@@ -227,7 +252,63 @@ def test_checkpoint_for_the_continue_button(tmp_path):
     (tmp_path / "runs").mkdir()
     (tmp_path / "runs" / "checkpoint.json").write_text(_json.dumps(
         {"phase": "channels", "next_channel": "1-Group", "done": 12.0, "total": 48.0, "stamp": "x"}))
-    assert checkpoint(str(tmp_path)) == {"phase": "channels", "next_channel": "1-Group", "stamp": "x", "percent": 25}
+    assert checkpoint(str(tmp_path)) == {"phase": "channels", "next_channel": "1-Group", "stamp": "x", "percent": 25,
+                                         "complete": True}
+
+
+def test_reference_choice_is_required_and_search_only_prepares(tmp_path, monkeypatch):
+    import mixmatch.ui as ui
+    from mixmatch import songs
+
+    monkeypatch.setattr(ui, "project_references", lambda: [])
+    songs.create(str(tmp_path), "Song")
+    workdir = tmp_path / "songs" / "Song"
+    shared = tmp_path / "references"
+    shared.mkdir()
+    (shared / "chosen.wav").write_bytes(b"test audio")
+    runner, starts = Runner(str(tmp_path)), []
+    monkeypatch.setattr(runner, "start", lambda args: starts.append(args) or "test.log")
+    server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(runner, live_set_fn=lambda: None))
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+
+    def call(path, body=None):
+        req = urllib.request.Request(f"http://127.0.0.1:{server.server_address[1]}" + path,
+                                     data=json.dumps(body).encode() if body is not None else None,
+                                     headers={"Content-Type": "application/json"})
+        try:
+            return json.load(urllib.request.urlopen(req))
+        except urllib.error.HTTPError as e:
+            return json.load(e)
+
+    try:
+        assert "Choose at least one" in call("/api/run", {"reference_mode": "selected", "continue": True})["error"]
+        assert starts == []
+        call("/api/run", {"reference_mode": "discover"})
+        assert "--review-references" in starts[-1] and "--auto-ref" in starts[-1]
+        s = call("/api/state")
+        assert s["reference_files"] == [] and len(s["reference_candidates"]) == 1
+        candidate = s["reference_candidates"][0]
+        assert candidate["name"] == "chosen.wav" and candidate["source"] == "shared references"
+        assert "path" not in candidate
+        assert "error" in call("/api/references/choose", {"id": str(shared / "chosen.wav")})
+        assert call("/api/references/choose", {"id": candidate["id"]}) == {"saved": "chosen.wav"}
+        assert (shared / "chosen.wav").exists()
+        assert (workdir / "references" / "chosen.wav").read_bytes() == b"test audio"
+        (workdir / "runs" / "checkpoint.json").write_text(json.dumps({"phase": "references", "complete": False}))
+        call("/api/run", {"reference_mode": "selected", "continue": True})
+        args = starts[-1]
+        assert all(f in args for f in ("--no-auto-ref", "--no-suggest", "--replace-references", "--continue", "--quick"))
+        assert "--auto-ref" not in args and "--review-references" not in args
+    finally:
+        server.shutdown()
+
+
+def test_reverting_clears_the_comparison_from_the_discarded_mix():
+    s = parse_log(LOG + ["Stopped: reverted to the state before the run. Choose your reference tracks before mixing again."])
+    assert not s["history"] and not s["parts"] and not s["explain"] and not s["effects"]
+    assert s["progress"] is None and s["distance"] is None
+    ready = parse_log(["Ready: choose your reference tracks, then mix with them. The song scan is saved."])
+    assert ready["done"].startswith("Ready:")
 
 
 def test_an_m4a_reference_becomes_a_wav(tmp_path):

@@ -4,8 +4,8 @@
    references, roles of all channels.
 2. For each section (between cue points, or the current loop): loop it, measure
    a few bars, let the planner decide 1–4 small steps, apply them, wait for the
-   sound to settle, measure again. A round that makes the distance to the
-   target worse is undone and remembered, so it is not tried again.
+   sound to settle, measure again. Verify the intended benefit and protect
+   mix character; a small reference setback can serve a healthier mix.
 3. Stop when the targets are met, nothing helps any more, the time is up or
    the user stops it. Every round is logged to runs/<time>.jsonl.
 """
@@ -22,13 +22,15 @@ import numpy as np
 
 from . import roles as roles_mod
 from .actions import CLIPPER_MAX_GAIN_DB, CLIPPERS, LIMITER_MAX_GAIN_DB, LIMITERS, Executor, RoundResult, neutral_device
-from .analysis import TONAL_BANDS, Comparison, compare, masking, objective, objective_parts, stats
+from .analysis import TONAL_BANDS, Comparison, compare, masking, masking_alignment, masking_frames, objective, objective_parts, stats
 from .bands import CENTRES
 from .taps import is_reference_name
 from .display import parse_display
 from .planner import device_summary
+from .activity import report as activity
+from . import mix_quality
 
-VOCAL_ROLES = {"lead_vocal", "backing_vocal", "vocal_fx"}
+VOCAL_ROLES = {"lead_vocal", "backing_vocal", "vocal_fx", "vocal_chop", "choir"}
 
 
 class RealEnv:
@@ -50,7 +52,7 @@ class Settings:
     stall_rounds: int = 4         # stop a section after this many rounds without improvement
     min_gain: float = 0.05        # a round must improve the objective by at least this much
     assist: bool = False          # ask before applying
-    mode: str = "auto"            # beat (no vocals) | song | auto (beat if no vocal channel is found)
+    mode: str = "auto"            # beat | song | auto (beat if no vocal channel can be heard)
     loudness_from: str = "full"   # kept for old callers; the target always comes from the full references
     roles_file: str = "roles.json"
     log_dir: str = "runs"
@@ -63,6 +65,8 @@ class Settings:
     resume: str | None = None     # track name: skip the master phase and start the channel pass there
     silent: bool = False          # Main fader down while running (the taps measure before it), put back at the end
     auto_ref: bool = False        # find references by listening to the project (library and Jamendo)
+    review_references: bool = False  # prepare and find suggestions, then wait for the user's choice
+    replace_references: bool = False # a resumed run uses the user's new choice instead of saved references
     library: str | None = "~/Music"
     jamendo: bool = False         # also try Creative Commons tracks from Jamendo
     audit: bool = True            # complete runs: remove effects that do nothing, bypass ones that harm the mix
@@ -115,7 +119,11 @@ class Agent:
         self.log, self.ask = log, ask
         self.ex = Executor(live, log)
         self.history: list[Round] = []
+        self.quality_anchors: dict[str, dict] = {}
         self.roles: dict[str, roles_mod.Role] = {}
+        self.role_reviews: set[str] = set()
+        self.pending_channels: list[str] | None = None
+        self.silent_vocals: set[str] = set()
         self.tap_of: dict[str, object] = {}       # track key → tap
         self.references: list = []          # reference taps inside the project
         self.refset = references            # ReferenceSet from audio files (preferred)
@@ -196,6 +204,9 @@ class Agent:
     def understand(self) -> None:
         self.ex.refresh()
         self.match_taps()
+        ducking = bool(self.ex.set_state.get("capabilities", {}).get("sidechain_ducking"))
+        self.log("Masking: simultaneous tap frames, all pairs scored; "
+                 + ("bounded sidechain ducking available." if ducking else "EQ correction (update remote script for ducking)."))
         in_project = self.project_references()
         if in_project:
             from .reference import ReferenceSet
@@ -203,6 +214,15 @@ class Agent:
             paths = list(dict.fromkeys((self.refset.paths if self.refset else []) + in_project))
             self.refset = ReferenceSet(paths, log=self.log)
         since = self.env.now() - 60
+        try:
+            role_context = self.live.request("role_context")["tracks"]
+        except Exception:
+            role_context = {}  # older script: names, MIDI and sound still work
+        try:
+            with open(self.s.roles_file) as f:
+                previous_roles = json.load(f)
+        except (OSError, ValueError):
+            previous_roles = {}
         notes: dict[str, list] = {}
         try:
             for n in self.live.request("midi_notes", start=0, end=1e9)["notes"]:
@@ -212,21 +232,45 @@ class Agent:
         for t in self.ex.set_state["tracks"]:
             if t["key"] == "m" or t["key"] not in self.tap_of:
                 continue
-            self.roles[t["key"]] = roles_mod.guess(t, stats(self.tap_of[t["key"]].window(since, self.env.now())),
+            detail = role_context.get(t["key"], {})
+            informed = {**t, "role_devices": detail.get("devices", t["devices"]),
+                        "played_notes": detail.get("played_notes")}
+            self.roles[t["key"]] = roles_mod.guess(informed, stats(self.tap_of[t["key"]].window(since, self.env.now())),
                                                    notes.get(t["key"]))
         first = not os.path.exists(self.s.roles_file)
         roles_mod.apply_overrides(self.roles, self.s.roles_file)
+        self.role_reviews = {r.key for r in self.roles.values() if previous_roles.get(r.name, {}).get("role")
+                             not in (None, r.role)}
         roles_mod.save_template(self.roles, self.s.roles_file)
         if first:
             self.log(f"Wrote {self.s.roles_file}: correct the roles there (or in mixmatch ui), they are read at the next start.")
         for r in self.roles.values():
-            self.log(f"  {r.name:<24} {r.role:<14} priority {r.priority}  ({r.source})")
-        has_vocals = any(r.role in VOCAL_ROLES for r in self.roles.values())
+            self.log(f"  {r.name:<24} {r.role:<14} priority {r.priority}  ({r.source})"
+                     + (f" · {r.note}" if r.source == "drum pads" else ""))
+        has_vocals = bool(self.audible_vocals())
         self.beat = self.s.mode == "beat" or (self.s.mode == "auto" and not has_vocals)
-        self.log(f"Mode: {'beat (no vocals)' if self.beat else 'song with vocals'}")
+        mode_reason = ("selected explicitly" if self.s.mode != "auto" else
+                       "no audible vocals; muted channels do not count" if self.beat else "audible vocals")
+        self.log(f"Mode: {'beat' if self.beat else 'song'} ({mode_reason})")
         if self.refset:
             self.target = self.refset.target(self.beat, self.s.loudness_from)
             self.log(f"Target: {self.target.description}, {self.target.loudness:.1f} LUFS")
+
+    def track_muted(self, key: str) -> bool:
+        """A muted parent also removes the channel from the audible mix."""
+        tracks = self.ex.set_state.get("tracks", [])
+        by_name = {t["name"]: t for t in tracks if t.get("is_group")}
+        t = next((t for t in tracks if t["key"] == key), None)
+        seen = set()
+        while t is not None and t["key"] not in seen:
+            if t.get("muted"):
+                return True
+            seen.add(t["key"])
+            t = by_name.get(t.get("group"))
+        return False
+
+    def audible_vocals(self) -> list[str]:
+        return [k for k, r in self.roles.items() if r.role in VOCAL_ROLES and not self.track_muted(k)]
 
     def sections(self) -> list[tuple[str, float, float]]:
         cues = self.ex.set_state.get("cue_points") or []
@@ -252,6 +296,8 @@ class Agent:
         self.log("\n━━ Effects: what does nothing or harms")
         self.ex.refresh()
         for t in self.ex.set_state["tracks"]:
+            if self.track_muted(t["key"]):
+                continue
             for d in sorted(t["devices"], key=lambda d: -d["index"]):
                 if neutral_device(d) and not any(p.get("automated") for p in d["params"]):
                     count = len(t["devices"])
@@ -263,7 +309,7 @@ class Agent:
         candidates = []
         for t in self.ex.set_state["tracks"]:
             key = t["key"]
-            if key != "m" and key not in self.tap_of:
+            if self.track_muted(key) or (key != "m" and key not in self.tap_of):
                 continue
             for d in t["devices"]:
                 name, cls = d["name"].lower(), d.get("class_name", "").lower()
@@ -316,18 +362,21 @@ class Agent:
         band = float(np.max(np.abs((b.bands_db - a.bands_db)[audible] - (b.loudness - a.loudness)))) if audible.any() else 0.0
         level, plr, width = b.loudness - a.loudness, b.plr - a.plr, b.width_db - a.width_db
         nothing = abs(level) < 0.3 and band < 0.5 and abs(plr) < 0.3 and abs(width) < 0.5
-        # «Better without» needs a reference: the balance between channels alone (masking) says nothing about how
-        # an EQ shapes a sound, and a deliberate curve would be thrown away on noise. It must also hold twice.
+        # A deliberate effect is not harmful just because bypassing matches the reference.
+        # Require a measurable mix-health benefit, without sacrificing its character, twice.
         margin = max(self.s.min_gain, 0.2)
+        health = next((k for k in ("clipping", "low_side", "masking")
+                       if on["parts"].get(k, 0) - off["parts"].get(k, 0) > margin), None)
         harmful = (not nothing and on.get("cmp") is not None
+                   and health is not None
                    and any(t in cls or t in dev_name.lower() for t in self.MIXING_TOOLS)
-                   and off["objective"] < on["objective"] - margin)
+                   and mix_quality.evaluate(on, off, mix_quality.anchor(on), health, margin)[0])
         if harmful:
             self.ex.undo(rr)
             again = self.measure(scoring)
             self.ex._set(rr := RoundResult(), key, idx, "Device On", value=0)
             off2 = self.measure(scoring)
-            harmful = off2["objective"] < again["objective"] - margin
+            harmful = mix_quality.evaluate(again, off2, mix_quality.anchor(on), health, margin)[0]
             if not harmful:
                 self.log(f"  {dev_name} on {track_name}: better without it only once "
                          f"({on['objective']:.2f} → {off['objective']:.2f}, then {again['objective']:.2f} → "
@@ -401,10 +450,12 @@ class Agent:
         """Listens to the loudest part and picks references from the library and Jamendo (see autoref)."""
         from . import autoref
         from .reference import ReferenceSet
+        from .songs import reference_folders
 
         _, start, length = part
         tempo = self.ex.set_state.get("tempo") or 120
         picked, to_get = autoref.find(self.live, start, min(length, 64.0), tempo, library=self.s.library,
+                                      references=reference_folders(os.getcwd()),
                                       jamendo=self.s.jamendo, harmony=self.harmony, note=self.description,
                                       log=self.log)
         stamp = time.strftime("%Y%m%d-%H%M%S")
@@ -428,6 +479,8 @@ class Agent:
         self.live.transport(loop_start=start, loop_length=total, loop=True, time=start, play=True)
         # Live does not jump to the start at once, so the position is read back instead of assumed.
         t0, marks, last = self.env.now(), [], -1.0
+        started, next_status = time.time(), t0
+        activity(self.log, "Listening to the whole song", started=started, current=0, total=round(total / 4))
         deadline = t0 + total * 60 / tempo + 10
         while self.env.now() < deadline:
             pos = self.live.transport()["song_time"]
@@ -435,6 +488,10 @@ class Agent:
                 break
             marks.append((self.env.now(), pos))
             last = pos
+            if self.env.now() >= next_status:
+                activity(self.log, "Listening to the whole song", started=started,
+                         current=round(max(0, pos - start) / 4), total=round(total / 4))
+                next_status = self.env.now() + 5
             self.env.wait(0.25)
         if len(marks) < 2:
             return None
@@ -494,19 +551,36 @@ class Agent:
             names = [r.name for r in order]
             if start_at not in names:
                 raise ValueError(f"--resume: no channel named {start_at!r}")
-            order = order[names.index(start_at):]
+            order = ([self.roles[k] for k in self.pending_channels if k in self.roles]
+                     if self.pending_channels is not None else order[names.index(start_at):])
+            # A corrected kick may sort before the saved piano checkpoint. Revisit
+            # changed roles without discarding the work on all the other channels.
+            reviews = [r for r in self._channel_order() if r.key in getattr(self, "role_reviews", set()) and r not in order]
+            if reviews:
+                order = reviews + order
+                self.log("Rechecking corrected roles: " + ", ".join(r.name for r in reviews))
+                self.progress(total_add=len(reviews) * self.W_CHANNEL)
             self.log(f"\n━━ Channel pass, resumed at {start_at}: {len(order)} channels left")
         else:
             self.log(f"\n━━ Channel pass: {len(order)} channels")
+        self.pending_channels = [r.key for r in order]
         for r in order:
             if self.env.now() >= deadline:
                 self.log("  time is up")
                 return
             self.save_checkpoint(phase="channels", next_channel=r.name)
+            if self.track_muted(r.key):
+                self.log(f"\n▶ {r.name}: muted (or parent group muted), skipped")
+                self.role_reviews.discard(r.key)
+                self.pending_channels.remove(r.key)
+                self.progress(0.0, r.name, total_add=-self.W_CHANNEL)
+                continue
             region = self.regions.get(r.key)
             if region is None:
                 self.log(f"\n▶ {r.name}: silent in the whole song, skipped")
                 self.progress(0.0, r.name, total_add=-self.W_CHANNEL)   # takes no time: out of the estimate
+                self.role_reviews.discard(r.key)
+                self.pending_channels.remove(r.key)
                 continue
             start, length = region
             bar = start / 4 + 1
@@ -520,6 +594,8 @@ class Agent:
             self.section(f"channel {r.name}", deadline, focus=r.key, max_rounds=self.s.channel_rounds,
                          scoring="balance" if in_main or main is None else "local")
             self.finish_step(r.name)
+            self.role_reviews.discard(r.key)
+            self.pending_channels.remove(r.key)
 
     # ── 2. measure ──────────────────────────────────────────────────────────
     def measure(self, scoring: str = "full", retries: int = 6) -> dict:
@@ -527,6 +603,7 @@ class Agent:
 
         A silent master is never a result: MixMatch waits and measures again, and gives up with MasterSilent.
         """
+        activity(self.log, "Listening and measuring the mix")
         for attempt in range(retries + 1):
             self.wait_for_loop_start()
             self.env.wait(self.window_seconds())
@@ -545,7 +622,8 @@ class Agent:
             except Exception:
                 pass  # Live busy (e.g. exporting): try again after the next wait
         gains = self.fader_gains()
-        tracks = {k: post_fader(stats(tap.window(start, end)), gains.get(k, 0.0)) for k, tap in self.tap_of.items()}
+        windows = {k: tap.window(start, end) for k, tap in self.tap_of.items()}
+        tracks = {k: post_fader(stats(frames), gains.get(k, 0.0)) for k, frames in windows.items()}
         if self.target:
             target = self.target
             vocals = [k for k, r in self.roles.items() if r.role in VOCAL_ROLES]
@@ -564,8 +642,13 @@ class Agent:
             refs = [s for s in (stats(r.window(start, end)) for r in taps) if s]
             ref = refs[0] if len(refs) == 1 else _average(refs) if refs else None
             cmp = compare(master, ref) if master and ref else None
-        masks = self._maskings(tracks)
-        penalty = sum(m["severity"] * min(m["priority_a"], m["priority_b"]) / 5 for m in masks[:4])
+        masks, mask_coverage = self._maskings(tracks, windows, gains)
+        # Include missing start/end packets in coverage, not only gaps inside a tap's data.
+        for pair in mask_coverage:
+            a, b = pair.split(":")
+            mask_coverage[pair] = min(mask_coverage[pair], len(windows[a]) / max(1, (end - start) * 10),
+                                      len(windows[b]) / max(1, (end - start) * 10))
+        penalty = sum(m["severity"] * min(m["priority_a"], m["priority_b"]) / 5 for m in masks)
         scored = cmp
         if scoring == "local":
             scored = None          # judged without the references: see the fallback below
@@ -582,8 +665,10 @@ class Agent:
             parts = {"masking": penalty}
             if master is not None:
                 parts["low_side"] = max(0.0, master.low_side_db - LOW_SIDE_LIMIT_DB) * 0.5
+                parts["clipping"] = max(0.0, master.peak_db + 1.0) * 4
             obj = sum(parts.values())
-        return {"master": master, "ref": ref, "tracks": tracks, "masking": masks, "scoring": scoring,
+        return {"master": master, "ref": ref, "tracks": tracks, "masking": masks, "masking_coverage": mask_coverage,
+                "scoring": scoring,
                 "cmp": None if scoring == "local" else cmp,   # the references do not apply outside the loud part
                 "objective": obj, "parts": parts}
 
@@ -607,6 +692,8 @@ class Agent:
         groups = {t["name"]: t for t in tracks if t.get("is_group")}
 
         def volume(t):
+            if t.get("muted"):
+                return -math.inf
             v = next((parse_display(p["display"]) for p in t["mixer"] if p["name"] == "Volume"), None)
             return 0.0 if v is None else v
 
@@ -635,9 +722,10 @@ class Agent:
                 parent = by_name.get(parent.get("group"))
         return out
 
-    def _maskings(self, tracks: dict) -> list[dict]:
-        out = []
-        keys = [k for k, s in tracks.items() if s is not None and k in self.roles]
+    def _maskings(self, tracks: dict, windows: dict, gains: dict) -> tuple[list[dict], dict]:
+        out, coverage = [], {}
+        keys = [k for k in tracks if k in self.roles and math.isfinite(gains.get(k, 0.0))]
+        frames = {k: masking_frames(windows[k], gains.get(k, 0.0)) for k in keys}
         inside = self._group_members()
         for i, a in enumerate(keys):
             for b in keys[i + 1:]:
@@ -646,13 +734,19 @@ class Agent:
                 ra, rb = self.roles[a], self.roles[b]
                 if ra.role in roles_mod.BACKGROUND_ROLES or rb.role in roles_mod.BACKGROUND_ROLES:
                     continue
-                hits = masking(tracks[a], tracks[b])
-                if hits:
-                    band, sev = hits[0]
-                    out.append({"track_a": a, "track_b": b, "role_a": ra.role, "role_b": rb.role,
-                                "freq_hz": round(CENTRES[band]), "severity": round(sev, 2),
+                # Protect the more important source. Kick/vocal wins a priority tie.
+                foreground, background = (a, b) if (ra.priority, ra.role in {"kick", "lead_vocal"}) >= (
+                    rb.priority, rb.role in {"kick", "lead_vocal"}) else (b, a)
+                alignment = masking_alignment(frames[foreground], frames[background])
+                coverage[":".join(sorted((a, b)))] = alignment[2]
+                hit = masking(frames[foreground], frames[background], alignment)
+                if hit:
+                    # The sidechain uses Post FX, before faders and parent groups.
+                    hit["source_level_dbfs"] = hit.pop("foreground_level_dbfs") - gains.get(foreground, 0.0)
+                    out.append({**hit, "track_a": a, "track_b": b, "role_a": ra.role, "role_b": rb.role,
+                                "foreground": foreground, "background": background,
                                 "priority_a": ra.priority, "priority_b": rb.priority})
-        return sorted(out, key=lambda m: -m["severity"] * (m["priority_a"] + m["priority_b"]))
+        return sorted(out, key=lambda m: -m["severity"] * min(m["priority_a"], m["priority_b"])), coverage
 
     # ── 3. decide ───────────────────────────────────────────────────────────
     def context(self, section: str, m: dict, focus: str | None = None) -> dict:
@@ -663,6 +757,7 @@ class Agent:
             t = self.ex.track(key)
             channels.append({
                 "track": key, "name": r.name, "role": r.role, "priority": r.priority, "note": r.note,
+                "muted": self.track_muted(key),
                 "volume": next((p["display"] + (" (automated)" if p.get("automated") else "")
                                 for p in t["mixer"] if p["name"] == "Volume"), None),
                 "pan": next((p["display"] for p in t["mixer"] if p["name"] == "Pan"), None),
@@ -675,9 +770,10 @@ class Agent:
                 **({"resonances": self.resonances[key]} if self.resonances.get(key) else {}),
             })
         ctx = {
+            "mix_diagnosis": mix_quality.diagnosis(m, channels),
             "section": section,
             "mode": ("beat without vocals, vocals may be recorded later: the target is the full reference songs. "
-                     "Low end, air above 5 kHz, width and dynamics should match them; in 200 Hz–5 kHz the beat may sit "
+                     "Low end, air above 5 kHz, width and dynamics use them as direction, respecting this arrangement; in 200 Hz–5 kHz the beat may sit "
                      "up to 4 dB under the song (room for a vocal), which the tonal numbers already account for. "
                      "The beat must sound complete on its own: remove harshness and resonances where they stick out, "
                      "keep presence and air, and do not boost instruments into the vocal range to imitate a voice")
@@ -705,22 +801,32 @@ class Agent:
                         if self.harmony else None),
             "installed_plugins": self.ex.plugins[:80],
             "channels": channels,
-            "masking": m["masking"][:8],
+            "masking": sorted(m["masking"], key=lambda x: focus not in (x["track_a"], x["track_b"]))[:12],
+            "masking_pairs_total": len(m["masking"]),
+            "masking_note": "Potential masking from simultaneous 100 ms frames, not proof of audible masking. "
+                            "All measured pairs count in the score; the list shows the strongest, focus track first. "
+                            "observed_ducking_db is an envelope observation, not proof of sidechain routing.",
+            "sidechain_ducking": bool(self.ex.set_state.get("capabilities", {}).get("sidechain_ducking")),
+            "focus_track": focus,
             "locked": [list(map(str, l)) for l in sorted(self.ex.locks, key=str)],
             "history": [
                 {"section": h.section, "round": h.n, "objective_before": round(h.before, 2),
                  "objective_after": None if h.after is None else round(h.after, 2), "undone": h.undone,
                  "actions": [{k: v for k, v in a.items() if v is not None} for a in h.applied],
-                 "assessment": h.plan.get("assessment", "")}
+                 "skipped": h.skipped,
+                 "assessment": h.plan.get("assessment", ""),
+                 "mix_intent": h.plan.get("mix_intent"), "verification": h.plan.get("verification")}
                 for h in self.history[-10:]
             ],
         }
         if focus is None and section == "final check":
             ctx["final_check"] = (
-                "Final check of the master after the channel pass. If the master is quieter than the target and the "
-                "limiter or clipper still has room (see «limiter», «clipper»), raise them first: limiter up to its "
-                "maximum, then the clipper. After that only small master corrections (a broad master EQ move of at most "
-                "1.5 dB for an overall tilt the channels did not fix). Channels are done; do not change them here.")
+                "Final check of the master after the channel pass. First assess whether tone, punch and space "
+                "serve this track. A remaining loudness gap is acceptable when closing it would sacrifice punch "
+                "or character; limiter/clipper headroom is permission, not a target to exhaust. Only raise loudness "
+                "when the mix already sits well and the evidence supports it. Small broad master EQ moves up to "
+                "1.5 dB require an overall problem the channels did not explain. Channels are done; do not change "
+                "them here. Stop when no evidenced benefit remains, even with reference differences.")
         if focus is not None and self.ex.track(focus).get("is_group"):
             r = self.roles[focus]
             ctx["task"] = (
@@ -748,11 +854,14 @@ class Agent:
         return ctx
 
     # ── 4. the loop ─────────────────────────────────────────────────────────
-    def run(self) -> list[Round]:
+    def run(self, main_volume: float | None = None) -> list[Round]:
+        """Run with an optional original Main volume when the caller already muted playback."""
+        externally_muted = main_volume is not None
         os.makedirs(self.s.log_dir, exist_ok=True)
         self.logfile = open(os.path.join(self.s.log_dir, time.strftime("%Y%m%d-%H%M%S") + ".jsonl"), "w")
         deadline = self.env.now() + self.s.minutes * 60 if self.s.minutes else math.inf
         self.understand()
+        self.log(f"Mix policy: {mix_quality.VERSION} · reference as direction; verified mix benefit, protected punch and layers.")
         if not self.tap_of:
             self.log("\nStopped: no channel reports through a MixMatch Tap, so there is nothing to measure. "
                      "Put the taps in («Set taps» in the interface, or mixmatch taps) and start again.")
@@ -765,16 +874,20 @@ class Agent:
 
         stamp = time.strftime("%Y%m%d-%H%M%S")
         self.ex.refresh()
+        before_state = self.snapshot_state(main_volume)
         # for the before/after switch; a continued run compares with the state before the run it continues
-        ck = self.load_checkpoint() if self.s.resume and self.s.complete else None
+        ck = self.load_checkpoint() if self.s.resume else None
         first = os.path.join(self.s.log_dir, ck["before"]) if ck and ck.get("before") else None
         self._before_file = f"{stamp}-before.json"
         if first and os.path.exists(first):
             if os.path.abspath(first) != os.path.abspath(os.path.join(self.s.log_dir, self._before_file)):
                 shutil.copyfile(first, os.path.join(self.s.log_dir, self._before_file))
+                from .preview import copy_preview
+                copy_preview(first, os.path.join(self.s.log_dir, self._before_file))
         else:
-            ab.save(self.ex.set_state, self.s.log_dir, stamp, "before")
-        main_volume = self.mute_main() if self.s.silent else None
+            ab.save(before_state, self.s.log_dir, stamp, "before")
+        if self.s.silent and main_volume is None:
+            main_volume = self.mute_main()
         try:
             self._run(deadline)
         except PlannerFailed as e:
@@ -783,18 +896,49 @@ class Agent:
             self.log("\nStopped: the master stayed silent for over a minute, so nothing could be measured. "
                      "Everything kept so far stays in the set; continue with --resume once Live plays again.")
         finally:
-            if main_volume is not None:
-                self.live.batch([{"track": "m", "device": "mixer", "param": "Volume", "value": main_volume}])
-                self.log("Main fader back where it was.")
+            if main_volume is not None and not externally_muted:
+                self.restore_main_when_quiet(main_volume)
         try:
             self.ex.refresh()
-            ab.save(self.ex.set_state, self.s.log_dir, stamp, "after")
+            ab.save(self.snapshot_state(main_volume), self.s.log_dir, stamp, "after")
             self.log("Before/after saved: switch with «mixmatch ab before» / «mixmatch ab after» or in mixmatch ui.")
         except Exception:
             pass
-        self.log("\nDone. " + self.report())
+        if not getattr(self, "_awaiting_references", False) and getattr(self, "_preview_region", None):
+            self.record_preview(os.path.join(self.s.log_dir, f"{stamp}-after.json"), *self._preview_region)
+        if getattr(self, "_awaiting_references", False):
+            self.log("\nReady: choose your reference tracks, then mix with them. The song scan is saved.")
+        else:
+            self.log("\nDone. " + self.report())
         self.logfile.close()
         return self.history
+
+    def record_preview(self, path: str, start: float, length: float) -> None:
+        from . import preview
+
+        # Simulators have no real audio recorder. Old scripts may lack silent routing.
+        if not isinstance(self.env, RealEnv) or os.path.isfile(preview.metadata_path(path)):
+            return
+        try:
+            preview.render(self.live, path, start, length, self.log)
+            self.log(f"Audio preview ready: {os.path.basename(path)}")
+        except preview.RestoreFailed:
+            raise
+        except Exception as e:
+            self.log(f"Audio preview unavailable: {e}")
+
+    def snapshot_state(self, main_volume: float | None) -> dict:
+        """Temporary output muting is not a mix change in the before/after snapshots."""
+        from copy import deepcopy
+
+        state = deepcopy(self.ex.set_state)
+        if main_volume is not None:
+            for t in state["tracks"]:
+                if t["key"] == "m":
+                    for p in t["mixer"]:
+                        if p["name"] == "Volume":
+                            p["value"] = main_volume
+        return state
 
     def mute_main(self) -> float | None:
         """Silent mode: the Main fader all the way down, so nothing is heard while MixMatch works. Every tap,
@@ -802,10 +946,39 @@ class Agent:
         master = next((t for t in self.ex.set_state["tracks"] if t["key"] == "m"), None)
         vol = next((p for p in master["mixer"] if p["name"] == "Volume"), None) if master else None
         if vol is None:
-            return None
-        self.live.batch([{"track": "m", "device": "mixer", "param": "Volume", "value": 0.0}])
+            raise RuntimeError("cannot mute the Main output: volume control is unavailable")
+        result = self.live.set("m", "mixer", "Volume", value=0.0)
+        if result.get("value") != 0.0:
+            raise RuntimeError("cannot mute the Main output: volume did not reach zero")
         self.log("Silent: the Main fader is down while MixMatch works (it measures before the fader).")
         return vol["value"]
+
+    def restore_main_when_quiet(self, volume: float) -> bool:
+        """Keep effect tails inaudible after Stop; only restore once fresh master frames stay quiet."""
+        self.live.transport(play=False)
+        started = self.env.now()
+        quiet_since = None
+        activity(self.log, "Stopping · keeping output muted while effects fade out")
+        while self.env.now() - started < 8.0:
+            self.env.wait(0.1)
+            now = self.env.now()
+            frames = [f for tap in self.hub.snapshot() if tap.kind == "master"
+                      for f in tap.window(max(started, now - 0.4), now)]
+            # -70 dBFS accommodates low plugin noise without opening on an audible effect tail.
+            if len(frames) >= 3 and all(math.isfinite(f.peak) and f.peak < 10 ** (-70 / 20) for f in frames):
+                if quiet_since is None:
+                    quiet_since = now
+                if now - quiet_since >= 0.8:
+                    self.live.set("m", "mixer", "Volume", value=volume)
+                    self._output_cleanup_done = True
+                    self.log("Playback stopped and effects quiet. Main fader back where it was.")
+                    return True
+            else:
+                quiet_since = None
+        self._output_cleanup_done = True
+        self.log("⚠ Main stays muted: effects are still sounding or audio measurements stopped. "
+                 "Raise Main manually when you are ready to listen.")
+        return False
 
     CHECKPOINT = "checkpoint.json"
 
@@ -813,6 +986,13 @@ class Agent:
         """Where a complete run stands, so a stopped run continues there without the preparation:
         the loudest part, every channel's region, beat mode, key, the phase and the next channel."""
         self._ck = {**getattr(self, "_ck", {}), **changes, "before": getattr(self, "_before_file", None),
+                    "mix_policy": mix_quality.VERSION, "quality_anchors": self.quality_anchors,
+                    "references": [os.path.abspath(p) for p in self.refset.paths] if self.refset else [],
+                    "complete": self.s.complete,
+                    "beat": changes.get("beat", self.beat),
+                    "silent_vocals": sorted(getattr(self, "silent_vocals", set())),
+                    "role_reviews": sorted(getattr(self, "role_reviews", set())),
+                    "pending_channels": self.pending_channels,
                     "done": round(getattr(self, "_done", 0.0), 2), "total": round(getattr(self, "_total", 0.0), 2)}
         try:
             with open(os.path.join(self.s.log_dir, self.CHECKPOINT), "w") as f:
@@ -841,7 +1021,7 @@ class Agent:
 
     def _run(self, deadline: float) -> None:
         sections = self.sections()
-        ck = self.load_checkpoint() if self.s.resume and self.s.complete else None
+        ck = self.load_checkpoint() if self.s.resume else None
         if self.s.resume == "auto" and ck is None:
             self.log("Nothing to continue (no stopped run): starting a complete run.")
             self.s.resume = None
@@ -856,8 +1036,20 @@ class Agent:
             main, phase, start_at = self._prepare(sections, deadline), "master", None
             if self.s.resume:                     # an old run without checkpoint: skip the master, start there
                 phase, start_at = "channels", self.s.resume
-            if self.s.complete:
+            if self.s.complete or self.s.review_references:
                 self.save_checkpoint(phase=phase, next_channel=start_at)
+            if self.s.review_references:
+                self.save_checkpoint(phase="references", next_channel=None)
+                self._awaiting_references = True
+                return
+        if phase == "references":
+            if not self.s.replace_references or not self.refset:
+                self._awaiting_references = True
+                return
+            phase = "master"
+            self.save_checkpoint(phase=phase, next_channel=None)
+        self._preview_region = (main[0][1], min(main[0][2], 64.0))
+        self.record_preview(os.path.join(self.s.log_dir, self._before_file), *self._preview_region)
         if phase == "master":
             if self.s.complete:
                 self.log(f"\n━━ Master against the reference")
@@ -871,6 +1063,7 @@ class Agent:
                 if self.s.complete:
                     self.finish_step("master")
             if not self.s.complete:
+                self.clear_checkpoint()
                 return
             phase = "channels"
             self.save_checkpoint(phase=phase, next_channel=None)
@@ -911,9 +1104,11 @@ class Agent:
         self.read_harmony(sections)
         scan = self.scan(sections) if self.s.complete else None
         if scan is not None and not self.beat and self.s.mode == "auto":
-            vocals = [k for k, r in self.roles.items() if r.role in VOCAL_ROLES]
-            if vocals and all(stats([f for _, f in scan.channels.get(k, [])]) is None for k in vocals):
+            vocals = self.audible_vocals()
+            if vocals and all(len(scan.channels.get(k, [])) >= 8
+                              and stats([f for _, f in scan.channels[k]]) is None for k in vocals):
                 self.beat = True
+                self.silent_vocals = set(vocals)
                 self.log("The vocal channels are silent in the whole song: treating it as a beat (no vocals).")
                 if self.refset:
                     self.target = self.refset.target(True, self.s.loudness_from)
@@ -929,9 +1124,9 @@ class Agent:
         if scan is not None:
             focus = main[0] if self.s.focus == "loud" else None
             self.regions = {r.key: self.channel_region(r.key, scan, focus) for r in self.roles.values()}
-            self._ck = {"stamp": time.strftime("%Y-%m-%d %H:%M"), "main": list(main[0]), "beat": self.beat,
-                        "harmony": getattr(self, "harmony", None),
-                        "regions": {k: (list(v) if v else None) for k, v in self.regions.items()}}
+        self._ck = {"stamp": time.strftime("%Y-%m-%d %H:%M"), "main": list(main[0]), "beat": self.beat,
+                    "harmony": getattr(self, "harmony", None),
+                    "regions": {k: (list(v) if v else None) for k, v in self.regions.items()}}
         if self.s.complete:
             self.progress(self.W_PREP, "master" if not self.s.resume else "channels")
         return main
@@ -939,11 +1134,27 @@ class Agent:
     def _resume_from(self, ck: dict) -> None:
         """Back to where a stopped run was, without playing the song through again."""
         self._ck = dict(ck)
+        self.quality_anchors = dict(ck.get("quality_anchors", {})) if ck.get("mix_policy") == mix_quality.VERSION else {}
+        self.s.complete = ck.get("complete", self.s.complete)
+        if ck.get("references") and ck.get("phase") != "references" and not self.s.replace_references:
+            from .reference import ReferenceSet
+
+            self.refset = ReferenceSet(ck["references"], log=self.log)
+            self.target = self.refset.target(self.beat, self.s.loudness_from)
+            self.target_no_vocals = None
         self.regions = {k: (tuple(v) if v else None) for k, v in ck["regions"].items()}
+        self.role_reviews = getattr(self, "role_reviews", set()) | set(ck.get("role_reviews", []))
+        if self.s.resume == "auto":
+            self.pending_channels = ck.get("pending_channels")
         if ck.get("harmony"):
             self.harmony = ck["harmony"]
-        if ck.get("beat") and not self.beat:
+        # An old beat flag must not override an explicit song choice or newly
+        # unmuted vocals. Only carry forward evidence of whole-song silence.
+        same_silent_vocals = set(ck.get("silent_vocals", [])) == set(self.audible_vocals())
+        if self.s.mode == "auto" and ck.get("beat") and not self.beat and same_silent_vocals:
             self.beat = True
+            self.silent_vocals = set(ck.get("silent_vocals", []))
+            self.log("Mode: beat (vocal channels were silent throughout the saved song scan)")
             if self.refset:
                 self.target = self.refset.target(True, self.s.loudness_from)
                 self.log(f"Target: {self.target.description}, {self.target.loudness:.1f} LUFS")
@@ -969,8 +1180,9 @@ class Agent:
             out["tonal"] = (", ".join(tones) + " vs the reference") if tones else "close to the reference"
         names = {r.key: r.name for r in self.roles.values()}
         pairs = [f"{names.get(x['track_a'], x['track_a'])} ↔ {names.get(x['track_b'], x['track_b'])} at {x['freq_hz']} Hz"
+                 + (f" ({x['overlap_fraction']:.0%} simultaneous)" if "overlap_fraction" in x else "")
                  for x in m.get("masking", [])[:3]]
-        out["masking"] = ", ".join(pairs) if pairs else "no channels covering each other"
+        out["masking"] = ", ".join(pairs) if pairs else "no simultaneous masking measured"
         self.log("  explain " + json.dumps(out, ensure_ascii=False))
 
     # Weights of the steps of a complete run, in «channel» units, for the progress bar and the time left.
@@ -1021,6 +1233,12 @@ class Agent:
     def section(self, name: str, deadline: float, focus: str | None = None, max_rounds: int | None = None,
                 scoring: str = "full") -> None:
         m = self.measure_fine(scoring, focus or "m")
+        # Same passage retains its baseline across channel passes and resumes.
+        anchor_key = json.dumps([self.loop, scoring, self.beat,
+                                 m["ref"].summary() if m.get("ref") and m.get("cmp") else None], sort_keys=True)
+        baseline = self.quality_anchors.setdefault(anchor_key, mix_quality.anchor(m))
+        if getattr(self, "_ck", None):
+            self.save_checkpoint()
         best, stall = m["objective"], 0
         self.log(f"  distance {best:.2f}   ({_parts(m['parts'])})")
         self.explain(m)
@@ -1031,6 +1249,9 @@ class Agent:
             self.ex.refresh()
             plan = self.plan_with_retries(self.context(name, m, focus))
             self.log(f"  round {n}: {plan.get('assessment', '')}")
+            intent = plan.get("mix_intent") or {}
+            if intent:
+                self.log(f"  intent {json.dumps(intent, ensure_ascii=False)}")
             actions = plan.get("actions", [])
             if focus is not None:
                 is_return = self.ex.track(focus)["kind"] == "return"
@@ -1047,6 +1268,19 @@ class Agent:
                 return
             if self.s.silent:
                 actions = [a for a in actions if not (a.get("type") == "volume" and a.get("track") in (None, "m"))]
+            # A duck must be grounded in a measured, repeated collision; never let
+            # a planner invent a sidechain source or its detector calibration.
+            prepared = []
+            for a in actions:
+                if a.get("type") == "duck":
+                    hit = next((x for x in m["masking"] if x["background"] == a.get("track")
+                                and x["foreground"] == a.get("source_track") and x["intermittent"]), None)
+                    if hit is None or not self.ex.set_state.get("capabilities", {}).get("sidechain_ducking"):
+                        self.log("    – duck skipped: no measured repeated collision or routing support")
+                        continue
+                    a = {**a, "source_level_dbfs": hit["source_level_dbfs"]}
+                prepared.append(a)
+            actions = prepared
             for a in actions:
                 self.log(f"    · {a['type']} {a.get('track') or 'master'}: {a.get('reason', '')}")
             if self.s.assist and self.ask("    apply? [Y/n] ").strip().lower() == "n":
@@ -1061,24 +1295,34 @@ class Agent:
                 continue
             self.env.wait(self.s.settle)
             after = self.measure(scoring)
+            accepted, verification = mix_quality.evaluate(m, after, baseline, intent.get("priority"), self.s.min_gain)
+            plan["verification"] = verification
             rnd = Round(name, n, best, after["objective"], plan, rr.applied, rr.skipped)
-            if after["objective"] < best - self.s.min_gain:
+            observed_pairs = [":".join(sorted((x["track_a"], x["track_b"]))) for x in m.get("masking", [])]
+            lost_observation = any(after.get("masking_coverage", {}).get(pair, 0) < max(
+                0.6, m.get("masking_coverage", {}).get(pair, 0) * 0.8) for pair in observed_pairs)
+            if lost_observation:
+                plan["verification"] = "insufficient simultaneous tap data"
+                self.ex.undo(rr)
+                rnd.undone = True
+                self.log("    ↺ undone: insufficient simultaneous tap data to verify the masking change")
+                self.env.wait(self.s.settle)
+                stall += 1
+            elif accepted:
                 self.log(f"    ✓ {best:.2f} → {after['objective']:.2f}   ({_parts(after['parts'])})")
+                self.log(f"    verified: {verification}")
                 self.explain(after)
                 best, m, stall = after["objective"], after, 0
-            elif after["objective"] > best + self.s.min_gain:
+            else:
                 self.ex.undo(rr)
                 rnd.undone = True
-                self.log(f"    ↺ undone: {best:.2f} → {after['objective']:.2f}")
+                if verification == "no measurable improvement":
+                    self.log(f"    ↺ undone, no measurable change ({after['objective']:.2f})")
+                else:
+                    self.log(f"    ↺ undone: {verification} ({best:.2f} → {after['objective']:.2f})")
                 self.env.wait(self.s.settle)
                 m = self.measure(scoring)
-                best = min(best, m["objective"])
-                stall += 1
-            else:  # no measurable effect: undo it too, only changes that help the mix stay
-                self.ex.undo(rr)
-                rnd.undone = True
-                self.log(f"    ↺ undone, no measurable change ({after['objective']:.2f})")
-                self.env.wait(self.s.settle)
+                best = m["objective"]
                 stall += 1
             self._record(rnd)
             if getattr(self, "_budget", 0.0) > 0:     # each round moves the progress bar a little
@@ -1098,12 +1342,14 @@ class Agent:
         playing); anything else, or an outage over about ten minutes, stops the run cleanly."""
         for wait in (*self.RETRY_WAITS, None):
             try:
+                activity(self.log, "Planning the next changes · waiting for AI")
                 return self.planner.plan(context)
             except Exception as e:
                 msg = str(e)
                 if wait is None or not any(w in msg.lower() for w in self.TRANSIENT):
                     raise PlannerFailed(msg) from e
                 self.log(f"  ⚠ planner not reachable ({msg[:90]}): trying again in {wait} s")
+                activity(self.log, f"AI connection interrupted · retrying in {wait} seconds")
                 self.env.wait(wait)
 
     def _record(self, rnd: Round) -> None:

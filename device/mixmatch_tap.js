@@ -15,6 +15,12 @@ function init() {
     var path = String(api.unquotedpath);
     kind = path.indexOf("master_track") >= 0 ? "master" : (path.indexOf("return_tracks") >= 0 ? "return" : "track");
     refreshName(api);
+    // Also update instances already saved in a Live set with the old presentation label.
+    this.patcher.apply(function (obj) {
+        if (obj.maxclass === "comment" && String(obj.getattr("text")) === "MixMatch") {
+            obj.message("set", "MARA");
+        }
+    });
 }
 
 function refreshName(api) {
@@ -26,7 +32,8 @@ function refreshName(api) {
 
 // One frame from [pack]: m_rms s_rms s_low_rms peak_l peak_r band1 … band31
 function list() {
-    if (!trackId) return;
+    // autowatch can recompile a running instance without another live.thisdevice bang.
+    if (!trackId) init();
     frame++;
     if (frame % 20 === 0) refreshName();
     outlet(0, ["/mm/tap", trackId].concat(arrayfromargs(arguments)));

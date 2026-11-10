@@ -14,7 +14,7 @@ import time
 
 DIR = "songs"
 INDEX = "songs.json"
-PER_SONG = ("references", "runs", "roles.json", "mixmatch.json")
+PER_SONG = ("runs", "roles.json", "mixmatch.json")
 SAME_SET = 0.5          # share of channel names two sets have in common to count as the same track
 
 
@@ -51,6 +51,20 @@ def current(root: str) -> dict | None:
 def current_dir(root: str) -> str:
     song = current(root)
     return os.path.join(root, DIR, song["slug"]) if song else root
+
+
+def project_root(workdir: str) -> str:
+    """Find the shared project from a song's working directory."""
+    folder = os.path.abspath(workdir)
+    parent = os.path.dirname(folder)
+    root = os.path.dirname(parent)
+    return root if os.path.basename(parent) == DIR and load(root) else folder
+
+
+def reference_folders(workdir: str) -> list[str]:
+    """Chosen references for this song plus the shared reference library."""
+    return list(dict.fromkeys([os.path.join(os.path.abspath(workdir), "references"),
+                               os.path.join(project_root(workdir), "references")]))
 
 
 def listing(root: str) -> list[dict]:
@@ -108,6 +122,20 @@ def channel_names(set_state: dict) -> list[str]:
     return [t["name"] for t in set_state.get("tracks", []) if t.get("kind") != "master"]
 
 
+def remember_live_name(root: str, name: str, channels: list[str]) -> None:
+    """Use the matching Live set's name without moving its references or running jobs."""
+    name = name.strip()
+    idx = load(root)
+    if not name or not channels or not idx or idx.get("current") not in idx["songs"]:
+        return
+    song = idx["songs"][idx["current"]]
+    if song.get("channels") and similarity(song["channels"], channels) < SAME_SET:
+        return
+    if song.get("name") != name:
+        song["name"] = name
+        _save(root, idx)
+
+
 def similarity(a, b) -> float:
     a, b = set(a or ()), set(b or ())
     return len(a & b) / len(a | b) if a and b else 0.0
@@ -133,14 +161,13 @@ def check_set(root: str, channels: list[str] | None) -> dict:
 
 
 def migrate(root: str) -> str | None:
-    """The old layout (references/, runs/, roles.json, mixmatch.json next to each other) becomes the first
-    track in songs/. Returns its name, None when there was nothing to move."""
+    """Move song data into the first track; references/ stays as the shared library."""
     from . import project
 
     if load(root) is not None:
         return None
     present = [p for p in PER_SONG if os.path.exists(os.path.join(root, p))]
-    if not present:
+    if not present and not os.path.isdir(os.path.join(root, "references")):
         return None
     desc = project.description(os.path.join(root, project.PATH)) if "mixmatch.json" in present else ""
     name = (re.split(r"[,;.]", desc)[0].strip()[:40] if desc else "") or "First track"

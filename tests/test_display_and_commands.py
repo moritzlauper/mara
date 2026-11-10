@@ -1,8 +1,114 @@
 import math
+import pytest
 
 from MixMatch.commands import parse_display as live_parse
 from mixmatch.display import parse_display
 from mixmatch.sim import demo_project
+
+
+def test_set_reports_ableton_document_name_and_supports_older_live():
+    song, _, _, live = demo_project()
+    assert live.get_set()["name"] == ""
+    assert live.get_set()["file_path"] == ""
+    song.name = "Cleopatra"
+    song.file_path = "/Music/Cleopatra Project/Cleopatra.als"
+    state = live.get_set()
+    assert state["name"] == "Cleopatra"
+    assert state["file_path"] == song.file_path
+
+
+def test_role_context_reads_pad_mapping_samples_and_only_played_unmuted_notes():
+    from types import SimpleNamespace as NS
+    from mixmatch.roles import guess
+    song, _, _, live = demo_project()
+    t = song.tracks[0]
+    sample = NS(name="Simpler", class_name="OriginalSimpler", type=1, parameters=[],
+                sample=NS(file_path="/Samples/Crash_Cymbal.wav"))
+    chain = NS(name="C1", mute=False, solo=False, devices=[sample])
+    pad = NS(name="C1", note=36, mute=False, solo=False, chains=[chain])
+    rack = NS(name="DS Drum Rack", class_name="DrumGroupDevice", type=1, parameters=[],
+              can_have_drum_pads=True, drum_pads=[pad])
+    t.name, t.devices, t.has_midi_input = "23-DS Drum Rack", [rack], True
+    def clip(notes, muted=False):
+        return NS(is_midi_clip=True, muted=muted, start_marker=0, end_marker=16,
+                  get_notes_extended=lambda *args: [NS(pitch=p, mute=m, velocity=v) for p, m, v in notes])
+    t.arrangement_clips = [clip([(36, False, 100), (38, True, 100), (49, False, 0)]),
+                          clip([(38, False, 100)], muted=True)]
+    t.clip_slots = []
+    result = live.request("role_context")["tracks"]["t0"]
+    assert result["played_notes"] == {"36": 1}
+    assert result["devices"][0]["drum_pads"][0]["note"] == 36
+    role = guess({"key": "t0", "name": t.name, "devices": result["devices"],
+                  "played_notes": result["played_notes"]}, None)
+    assert role.role == "cymbals"  # pitch 36 must not imply a kick
+    assert len(t.devices) == 1 and not t.mute and not chain.mute
+
+
+def test_run_uses_configured_api_billing(monkeypatch):
+    import mixmatch.cli as cli
+    import os
+
+    monkeypatch.setenv("MIXMATCH_PLANNER", "api")
+    monkeypatch.setattr(cli, "_stoppable", lambda: None)
+    seen = []
+    monkeypatch.setattr(cli, "cmd_run", lambda args: seen.append((args.planner, os.environ["MIXMATCH_PLANNER"])))
+    cli.main(["run", "--continue"])
+    assert seen == [("api", "api")]
+
+
+@pytest.mark.parametrize("interrupted", [False, True])
+def test_silent_run_mutes_before_playback_and_stops_before_restoring(monkeypatch, tmp_path, interrupted):
+    import json
+    import mixmatch.cli as cli
+    from mixmatch.agent import Agent
+
+    song, hub, env, live = demo_project()
+    env.wait(5)
+    volume = song.master_track.mixer_device.volume
+    original = volume.value
+    events = []
+    transport, set_param = live.transport, live.set
+
+    def watch_transport(**kw):
+        if kw.get("play"):
+            assert volume.value == 0, "playback started before muting"
+            events.append("play")
+        return transport(**kw)
+
+    def watch_set(track, device, param, **kw):
+        if track == "m" and param == "Volume" and kw.get("value", 0) > 0:
+            assert not song.is_playing, "output restored while playback was running"
+            events.append("restore")
+        return set_param(track, device, param, **kw)
+
+    def wait(seconds):
+        assert volume.value == 0
+        if interrupted:
+            raise KeyboardInterrupt
+        env.wait(seconds)
+
+    def run(agent, deadline):
+        assert volume.value == 0
+        agent.play_loop(0, 16)
+
+    monkeypatch.setattr(live, "transport", watch_transport)
+    monkeypatch.setattr(live, "set", watch_set)
+    monkeypatch.setattr(cli, "_connect", lambda: (live, hub))
+    monkeypatch.setattr(cli, "Agent", lambda *a, **kw: Agent(*a, **kw, env=env))
+    monkeypatch.setattr(cli, "_stoppable", lambda: None)
+    monkeypatch.setattr(cli.time, "sleep", wait)
+    monkeypatch.setattr(Agent, "_run", run)
+    if interrupted:
+        with pytest.raises(SystemExit) as exc:
+            cli.main(["run", "--silent", "--rules", "--no-auto-ref", "--wait", "1"])
+        assert exc.value.code == 130
+    else:
+        cli.main(["run", "--silent", "--rules", "--no-auto-ref", "--wait", "1"])
+        assert events.count("play") == 2
+        before = next((tmp_path / "runs").glob("*-before.json"))
+        assert json.loads(before.read_text())["tracks"]["m"]["mixer"]["Volume"] == original
+    assert events[0] == "play" and events[-1] == "restore"
+    assert volume.value == original and not song.is_playing
 
 
 def test_both_parsers_agree():

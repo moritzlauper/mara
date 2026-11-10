@@ -1,6 +1,7 @@
 from mixmatch import ab
 from mixmatch.actions import Executor
 from mixmatch.sim import demo_project
+import pytest
 
 
 def test_before_and_after_switch_parameters_and_bypass_new_devices(tmp_path):
@@ -35,3 +36,41 @@ def test_devices_are_matched_by_name_not_position():
     changes = ab.changes_to(snap, moved, bypass_new=True)
     assert {"track": "t0", "device": 1, "param": "1 Gain A", "value": -3.0} in changes
     assert {"track": "t0", "device": 0, "param": "Device On", "value": 0.0} in changes
+
+
+def test_blind_choice_is_independent_can_repeat_and_requires_matching_snapshots(tmp_path, monkeypatch):
+    song, hub, env, live = demo_project()
+    ab.save(live.get_set(), str(tmp_path), "1", "before")
+    trial = ab.BlindComparison()
+    assert not trial.ready(str(tmp_path))
+    with pytest.raises(RuntimeError):
+        trial.choose(live, str(tmp_path))
+    live.set("t0", "mixer", "Volume", target=-2)
+    after = song.tracks[0].mixer_device.volume.value
+    ab.save(live.get_set(), str(tmp_path), "1", "after")
+    choices = iter(["after", "after", "before"])
+    monkeypatch.setattr(ab.secrets, "choice", lambda options: next(choices))
+    for expected in ["after", "after", "before"]:
+        assert trial.choose(live, str(tmp_path)) is None
+        assert trial.reveal(str(tmp_path)) == expected
+        assert trial.reveal(str(tmp_path / "another-song")) is None
+        assert (song.tracks[0].mixer_device.volume.value == after) == (expected == "after")
+    # A new incomplete run must not mix its "before" with the previous run's "after".
+    ab.save(live.get_set(), str(tmp_path), "2", "before")
+    assert not trial.ready(str(tmp_path))
+    with pytest.raises(RuntimeError):
+        trial.choose(live, str(tmp_path))
+    assert trial.reveal(str(tmp_path)) is None
+
+
+def test_failed_switch_does_not_reveal_a_trial(tmp_path, monkeypatch):
+    song, hub, env, live = demo_project()
+    ab.save(live.get_set(), str(tmp_path), "1", "before")
+    live.set("t0", "mixer", "Volume", target=-2)
+    ab.save(live.get_set(), str(tmp_path), "1", "after")
+    monkeypatch.setattr(ab.secrets, "choice", lambda options: "before")
+    monkeypatch.setattr(live, "batch", lambda changes: {"errors": ["unavailable parameter"]})
+    trial = ab.BlindComparison()
+    with pytest.raises(RuntimeError):
+        trial.choose(live, str(tmp_path))
+    assert trial.reveal(str(tmp_path)) is None

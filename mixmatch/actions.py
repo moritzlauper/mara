@@ -9,6 +9,7 @@ Actions (what the planner may ask for):
   {"type": "limiter", "delta_db": 1.0}                              # master loudness
   {"type": "param",   "track": "t3", "device_index": 2, "param": "Threshold", "target": -18}
   {"type": "load_device", "track": "t3", "name": "Compressor"}
+  {"type": "duck", "track": "t3", "source_track": "t0", "reduction_db": 2, "release_ms": 120}
 
 Every step is clamped (no jumps of 6 dB), every changed parameter's old raw
 value is remembered so the whole round can be undone, and parameters the user
@@ -144,6 +145,7 @@ class RoundResult:
     changes: list[Change] = field(default_factory=list)
     applied: list[dict] = field(default_factory=list)
     skipped: list[dict] = field(default_factory=list)
+    created_devices: list[tuple[str, str]] = field(default_factory=list)
 
 
 def _clamp(x: float, limit: float) -> float:
@@ -317,9 +319,19 @@ class Executor:
         changes = [{"track": c.track, "device": c.device, "param": c.param, "value": c.old_value}
                    for c in reversed(rr.changes)]
         if changes:
-            self.live.batch(changes)
+            result = self.live.batch(changes)
+            if result.get("errors"):
+                raise RuntimeError(f"could not restore parameters: {result['errors']}")
             for c in reversed(rr.changes):  # a parameter changed twice ends at its first old value
                 self.last_set[(c.track, c.device, c.param)] = c.old_value
+            self.refresh()
+        for key, name in reversed(rr.created_devices):
+            matches = [d for d in self.track(key)["devices"] if d["name"] == name]
+            if len(matches) != 1:
+                raise RuntimeError(f"cannot safely remove new ducker {name!r} on {key}")
+            idx, count = matches[0]["index"], len(self.track(key)["devices"])
+            self.live.delete_device(key, idx)
+            self._deleted(key, idx, count)
             self.refresh()
 
     # ── actions ─────────────────────────────────────────────────────────────
@@ -500,7 +512,34 @@ class Executor:
         self._set(rr, key, dev, param, target=target)
 
     def _do_param(self, rr, a):
+        dev = self.track(a["track"])["devices"][int(a["device_index"])]
+        if dev["name"].startswith("MARA Duck") and not (a["param"] == "Device On" and float(a["target"]) == 0):
+            raise PermissionError("MARA ducking is bounded; generic parameter changes cannot deepen or reconfigure it")
         self._set(rr, a["track"], int(a["device_index"]), a["param"], target=float(a["target"]))
 
     def _do_load_device(self, rr, a):
         self._ensure_device(a["track"], a["name"], a["name"])
+
+    def _do_duck(self, rr, a):
+        from .taps import is_reference_name
+
+        key, source = a["track"], a["source_track"]
+        if not self.set_state.get("capabilities", {}).get("sidechain_ducking"):
+            raise RuntimeError("update the MixMatch remote script to enable sidechain routing")
+        if any(is_reference_name(self.track(k)["name"]) for k in (key, source)):
+            raise ValueError("reference tracks cannot participate in ducking")
+        # This action only creates a dedicated device. It never modifies or routes
+        # a user's existing compressor; the remote command is atomic on failure.
+        count = len(self.track(key)["devices"])
+        result = self.live.request("create_ducker", track=key, source_track=source,
+                                   source_level_dbfs=float(a["source_level_dbfs"]),
+                                   reduction_db=float(a.get("reduction_db") or 2.0),
+                                   release_ms=float(a.get("release_ms") or 120.0))
+        idx = result["index"]
+        self._inserted(key, idx, count)
+        rr.created_devices.append((key, result["name"]))
+        # Bypass first when undoing, then remove the added device. Other parameters
+        # in the round are restored before removal changes the device indices.
+        rr.changes.append(Change(key, idx, "Device On", 0.0, {"value": 1.0, "display": "On"}))
+        self.last_set[(key, idx, "Device On")] = 1.0
+        self.refresh()

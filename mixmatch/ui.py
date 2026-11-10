@@ -12,6 +12,7 @@ import glob
 import json
 import os
 import re
+import secrets
 import signal
 import subprocess
 import sys
@@ -19,6 +20,7 @@ import threading
 import time
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import parse_qs, urlsplit
 
 PORT = 8765
 AUDIO = (".wav", ".aif", ".aiff", ".flac", ".mp3")
@@ -141,7 +143,58 @@ def checkpoint(workdir: str) -> dict | None:
     except (OSError, ValueError):
         return None
     return {"phase": ck.get("phase"), "next_channel": ck.get("next_channel"), "stamp": ck.get("stamp"),
-            "percent": round(100 * ck["done"] / ck["total"]) if ck.get("total") else None}
+            "percent": round(100 * ck["done"] / ck["total"]) if ck.get("total") else None,
+            "complete": ck.get("complete", True)}
+
+
+def reference_candidates(workdir: str) -> list[dict]:
+    """Available audio found by the last search, offered for an explicit choice."""
+    import hashlib
+    from .songs import project_root
+
+    paths = sorted(glob.glob(os.path.join(workdir, "runs", "*-references.json")))
+    try:
+        found = json.load(open(paths[-1])) if paths else []
+    except (OSError, ValueError):
+        found = []
+    shared = os.path.join(project_root(workdir), "references")
+    if os.path.realpath(shared) != os.path.realpath(os.path.join(workdir, "references")):
+        for folder, dirs, names in os.walk(shared):
+            dirs[:] = sorted(d for d in dirs if not d.startswith("."))
+            found += [{"path": os.path.join(folder, name), "source": "shared references"}
+                      for name in sorted(names) if not name.startswith(".") and name.lower().endswith(AUDIO)]
+    try:
+        ck = json.load(open(os.path.join(workdir, "runs", "checkpoint.json")))
+        found += [{"path": p, "source": "previous run"} for p in ck.get("references", [])]
+    except (OSError, ValueError):
+        pass
+    out, seen = [], set()
+    for item in found:
+        path = os.path.realpath(item.get("path", ""))
+        if path in seen or not path.lower().endswith(AUDIO) or not os.path.isfile(path):
+            continue
+        seen.add(path)
+        out.append({"id": hashlib.sha256(path.encode()).hexdigest()[:20], "name": os.path.basename(path),
+                    "source": item.get("source", "search"), "path": path})
+    return out
+
+
+def choose_reference(workdir: str, candidate_id: str) -> str:
+    import shutil
+
+    item = next((c for c in reference_candidates(workdir) if c["id"] == candidate_id), None)
+    if item is None:
+        raise ValueError("this reference is no longer available; choose another audio file")
+    target = safe_reference(workdir, item["name"])
+    os.makedirs(os.path.dirname(target), exist_ok=True)
+    if not os.path.exists(target):
+        shutil.copy2(item["path"], target)
+    elif not os.path.samefile(item["path"], target):
+        import filecmp
+
+        if not filecmp.cmp(item["path"], target, shallow=False):
+            raise ValueError("a different file with this name is already selected; rename it before adding this one")
+    return os.path.basename(target)
 
 
 def phase_label(phase: str | None) -> str:
@@ -178,7 +231,8 @@ def live_set() -> dict | None:
 
     need = [t for t in state["tracks"] if not (t["kind"] == "track" and is_reference_name(t["name"]))]
     missing = [t["name"] for t in need if not any(d["name"] == "MixMatch Tap" for d in t["devices"])]
-    return {"channels": songs.channel_names(state), "taps": len(need) - len(missing), "total": len(need),
+    name = state.get("name") or os.path.splitext(os.path.basename(state.get("file_path") or ""))[0]
+    return {"name": name, "channels": songs.channel_names(state), "taps": len(need) - len(missing), "total": len(need),
             "missing": missing, "playing": bool(state.get("is_playing"))}
 
 
@@ -195,7 +249,8 @@ def parse_log(lines: list[str]) -> dict:
     """Phase, current channel, distance history, decisions, song info and effects from a run's log."""
     state = {"phase": None, "section": None, "distance": None, "parts": {}, "history": [], "events": [],
              "key": None, "style": None, "mood": None, "explain": {}, "effects": [], "references": [], "to_get": [], "done": None,
-             "history_phase": [], "history_run": [], "progress": None, "progress_start": None}
+             "history_phase": [], "history_run": [], "progress": None, "progress_start": None,
+             "activity": None, "planner": None, "mode": None}
     run = 0
     traceback_event = None
 
@@ -211,6 +266,11 @@ def parse_log(lines: list[str]) -> dict:
             run += 1
             traceback_event = None
             state["progress"] = state["progress_start"] = state["done"] = None
+            state["mode"] = None
+        elif s.startswith("Mode:"):
+            state["mode"] = "beat" if s.startswith("Mode: beat") else "song"
+        elif "treating it as a beat (no vocals)" in s:
+            state["mode"] = "beat"
         elif s == "Traceback (most recent call last):":
             # Older logs include a traceback even for Stop. Show its outcome, not Python's header or frames.
             state["done"] = "Stopped: an error occurred. See the log for details."
@@ -222,6 +282,18 @@ def parse_log(lines: list[str]) -> dict:
                 state["done"] = "Stopped: run interrupted." if interrupted else f"Stopped: {s}"
                 traceback_event.update(kind="neutral" if interrupted else "warning", text=state["done"])
                 traceback_event = None
+        elif s.startswith("activity {"):
+            try:
+                update = json.loads(s[len("activity "):])
+                if not isinstance(update, dict) or not isinstance(update.get("text"), str):
+                    continue
+            except ValueError:
+                continue
+            if not state["activity"] or state["activity"]["text"] != update["text"]:
+                state["events"].append({"kind": "activity", "text": update["text"]})
+            state["activity"] = update
+        elif s.startswith("Planner:"):
+            state["planner"] = s.split(":", 1)[1].strip()
         elif s.startswith("progress {"):
             try:
                 p = json.loads(s[len("progress "):])
@@ -270,9 +342,14 @@ def parse_log(lines: list[str]) -> dict:
             state["effects"].append(s)
         elif s.startswith("✓ ") and "[" in s:
             state["references"].append(s[1:].strip())
-        elif s.startswith("Stopped:") or s.startswith("Done."):
+        elif s.startswith(("Stopped:", "Done.", "Ready:")):
             state["done"] = s
-            if s.startswith("Stopped:"):
+            if s.startswith("Stopped: reverted to the state before the run."):
+                for key in ("history", "history_phase", "history_run", "effects"):
+                    state[key] = []
+                state.update(distance=None, parts={}, explain={}, phase=None, section=None,
+                             progress=None, progress_start=None, activity=None)
+            if s.startswith(("Stopped:", "Ready:")):
                 state["events"].append({"kind": "neutral", "text": s})
         elif s.startswith("⚠"):
             state["events"].append({"kind": "warning", "text": s})
@@ -520,21 +597,27 @@ class _Cached:
 
 
 def make_handler(runner: Runner, watcher: "DownloadWatcher | None" = None, live_set_fn=None):
-    from . import songs
+    from . import ab, songs, preview
 
     project_refs = _Cached(project_references)
     open_set = _Cached(live_set_fn or live_set, seconds=6.0)
 
     def track_state(active: bool) -> dict:
         """The current track, the others, and whether the open Live set is this track and has its taps."""
-        info = open_set.value if active else open_set.get()   # no extra load on Live while a run goes on
+        # Fetch once even if the interface opens during a run, then reuse the snapshot while busy.
+        info = open_set.value if active and open_set.value else open_set.get()
+        if info and open_set.reachable:
+            songs.remember_live_name(runner.root, info.get("name", ""), info["channels"])
         song = songs.current(runner.root)
         check = songs.check_set(runner.root, info["channels"]) if info and open_set.reachable and not active \
             else {"same": True, "other": None}
         return {"track": song["name"] if song else None, "tracks": songs.listing(runner.root),
                 "used_references": songs.used_references(runner.root),
                 "set": check, "open_set": info if open_set.reachable else None}
-    ab_state = {"which": None}
+    ab_state = {"which": None, "blind": False}
+    blind = ab.BlindComparison()
+    ab_lock = threading.Lock()
+    preview_trial = {}
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *_):
@@ -553,6 +636,56 @@ def make_handler(runner: Runner, watcher: "DownloadWatcher | None" = None, live_
             return json.loads(self.rfile.read(n) or b"{}")
 
         def do_GET(self):
+            if urlsplit(self.path).path == "/api/preview-audio":
+                q = parse_qs(urlsplit(self.path).query)
+                folder = os.path.join(runner.workdir, "runs")
+                if "token" in q:
+                    trial = dict(preview_trial)
+                    if q["token"][0] != trial.get("token") or folder != trial.get("folder"):
+                        return self._send(404, {"error": "preview expired"})
+                    which, identity = trial["which"], trial["id"]
+                else:
+                    which, identity = q.get("which", [""])[0], q.get("id", [""])[0]
+                path = preview.selected_file(folder, which, identity)
+                if q.get("equal", ["0"])[0] == "1":
+                    path = preview.matched_file(folder, which, identity)
+                if path is None:
+                    return self._send(404, {"error": "preview not ready"})
+                size = os.path.getsize(path)
+                start, end, status = 0, size - 1, 200
+                if self.headers.get("Range"):
+                    m = re.fullmatch(r"bytes=(\d*)-(\d*)", self.headers["Range"])
+                    if not m or not any(m.groups()):
+                        return self._send(416, {"error": "invalid audio range"})
+                    if not m[1]:
+                        start = max(0, size - int(m[2]))
+                    else:
+                        start = int(m[1])
+                        end = min(end, int(m[2])) if m[2] else end
+                    if start > end:
+                        return self._send(416, {"error": "audio range outside file"})
+                    status = 206
+                self.send_response(status)
+                self.send_header("Content-Type", "audio/wav")
+                self.send_header("Accept-Ranges", "bytes")
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("Content-Length", str(end - start + 1))
+                if status == 206:
+                    self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
+                self.end_headers()
+                try:
+                    with open(path, "rb") as f:
+                        f.seek(start)
+                        left = end - start + 1
+                        while left:
+                            chunk = f.read(min(left, 65536))
+                            if not chunk:
+                                break
+                            self.wfile.write(chunk)
+                            left -= len(chunk)
+                except (BrokenPipeError, ConnectionResetError):
+                    pass
+                return
             if self.path == "/":
                 return self._send(200, PAGE, "text/html")
             if self.path.startswith("/fonts/"):   # bundled fonts (OFL), so the page needs no internet
@@ -583,10 +716,18 @@ def make_handler(runner: Runner, watcher: "DownloadWatcher | None" = None, live_
                 return self._send(200, {**state, **track_state(state["active"]),
                                         "running": runner.running(), "log": [l.rstrip() for l in lines[-200:]],
                                         "reference_files": references(runner.workdir), "to_get": buy_list(runner.workdir),
+                                        "reference_candidates": [{k: v for k, v in c.items() if k != "path"}
+                                                                 for c in reference_candidates(runner.workdir)],
                                         "project_references": project_refs.get(), "live": project_refs.reachable,
                                         "ab": ab_state["which"],
+                                        "previews": preview.available(os.path.join(runner.workdir, "runs")),
+                                        "loudness_match": preview.matching(os.path.join(runner.workdir, "runs")),
+                                        "ab_blind": ab_state["blind"],
+                                        "ab_blind_ready": ab.BlindComparison.ready(os.path.join(runner.workdir, "runs")),
                                         "auto_imported": watcher.imported[-10:] if watcher else [],
                                         "checkpoint": checkpoint(runner.workdir),
+                                        "roles_revision": os.stat(os.path.join(runner.workdir, "roles.json")).st_mtime_ns
+                                            if os.path.exists(os.path.join(runner.workdir, "roles.json")) else None,
                                         "ab_ready": __import__("mixmatch.ab", fromlist=["latest_before"]).latest_before(
                                             os.path.join(runner.workdir, "runs")) is not None})
             if self.path == "/api/project":
@@ -641,6 +782,21 @@ def make_handler(runner: Runner, watcher: "DownloadWatcher | None" = None, live_
         def do_POST(self):
             try:
                 body = self._body()
+                if self.path in ("/api/preview/blind", "/api/preview/reveal"):
+                    folder = os.path.join(runner.workdir, "runs")
+                    with ab_lock:
+                        if self.path.endswith("/reveal"):
+                            if (preview_trial.get("folder") != folder or not preview.selected_file(
+                                    folder, preview_trial.get("which"), preview_trial.get("id"))):
+                                raise ValueError("choose a blind preview first")
+                            return self._send(200, {"which": preview_trial["which"]})
+                        versions = preview.available(folder)
+                        if not all(versions.values()):
+                            raise ValueError("both audio previews must be ready")
+                        which = secrets.choice(("before", "after"))
+                        token = secrets.token_urlsafe(24)
+                        preview_trial.update(folder=folder, which=which, id=versions[which]["id"], token=token)
+                        return self._send(200, {"url": f"/api/preview-audio?token={token}"})
                 if self.path == "/api/run":
                     ts = track_state(False)
                     if not ts["set"]["same"]:
@@ -648,14 +804,23 @@ def make_handler(runner: Runner, watcher: "DownloadWatcher | None" = None, live_
                                            "for it or switch to its track first")
                     if ts["open_set"] and ts["open_set"]["taps"] == 0:
                         raise RuntimeError("no MixMatch Tap in this set yet: «Set taps» first")
+                    mode = body.get("reference_mode", "discover" if body.get("auto_ref") else "selected")
+                    if mode not in ("selected", "discover"):
+                        raise ValueError("choose your references or ask MARA to find suggestions")
                     args = ["run"]
-                    if body.get("refs"):
-                        args += ["--ref", "references/"]
-                    if body.get("auto_ref"):
-                        args += ["--auto-ref"]
-                    elif not body.get("refs"):
-                        args += ["--no-auto-ref"]   # only the project's reference tracks
-                    if body.get("quick"):
+                    if mode == "discover":
+                        args += ["--auto-ref", "--review-references"]
+                    else:
+                        local = references(runner.workdir)
+                        in_live = project_references()
+                        if not local and not in_live:
+                            raise ValueError("Choose at least one reference track first: add audio files under References "
+                                             "or put a reference audio clip on a REF track in Live.")
+                        if local:
+                            args += ["--ref", "references/"]
+                        args += ["--no-auto-ref", "--no-suggest", "--replace-references"]
+                    ck = checkpoint(runner.workdir) if body.get("continue") else None
+                    if body.get("quick") or (ck and not ck["complete"]):
                         args += ["--quick"]
                     if body.get("silent"):
                         args += ["--silent"]
@@ -667,23 +832,47 @@ def make_handler(runner: Runner, watcher: "DownloadWatcher | None" = None, live_
                         args += ["--resume", body["resume"]]
                     if body.get("minutes"):
                         args += ["--minutes", str(float(body["minutes"]))]
-                    return self._send(200, {"log": runner.start(args)})
-                if self.path == "/api/ab":
-                    if runner.running():
-                        raise RuntimeError("wait until the run is finished")
-                    from . import ab
+                    with ab_lock:
+                        path = runner.start(args)
+                        ab_state.update(which=None, blind=False)
+                        blind.reset()
+                    return self._send(200, {"log": path})
+                if self.path in ("/api/ab", "/api/ab/blind", "/api/ab/reveal"):
                     from .live_client import LiveClient
 
-                    live = LiveClient(timeout=10).connect()
-                    try:
-                        n = ab.switch(live, body.get("which", "after"), os.path.join(runner.workdir, "runs"))
-                    finally:
-                        live.close()
-                    ab_state["which"] = body.get("which")
-                    return self._send(200, {"changed": n, "which": ab_state["which"]})
+                    with ab_lock:
+                        if runner.running() or run_process_alive():
+                            raise RuntimeError("wait until the run is finished")
+                        folder = os.path.join(runner.workdir, "runs")
+                        if self.path == "/api/ab/reveal":
+                            which = blind.reveal(folder)
+                            if which is None:
+                                raise ValueError("make a blind selection first")
+                            ab_state.update(which=which, blind=False)
+                            return self._send(200, {"which": which})
+                        is_blind = self.path == "/api/ab/blind"
+                        live = LiveClient(timeout=10).connect()
+                        try:
+                            if is_blind:
+                                ab_state.update(which=None, blind=False)
+                                blind.choose(live, folder)
+                                ab_state.update(which=None, blind=True)
+                                # Neither selection nor parameter count leaves the server.
+                                return self._send(200, {"blind": True})
+                            which = body.get("which", "after")
+                            n = ab.switch(live, which, folder)
+                            blind.reset()
+                            ab_state.update(which=which, blind=False)
+                            return self._send(200, {"changed": n, "which": which})
+                        finally:
+                            live.close()
                 if self.path == "/api/references/reuse":
                     return self._send(200, {"saved": songs.reuse_reference(runner.root, body.get("slug", ""),
                                                                            body.get("file", ""))})
+                if self.path == "/api/references/choose":
+                    if runner.running():
+                        raise RuntimeError("pause the run before changing its references")
+                    return self._send(200, {"saved": choose_reference(runner.workdir, body.get("id", ""))})
                 if self.path in ("/api/songs/new", "/api/songs/switch", "/api/songs/adopt"):
                     if runner.running():
                         raise RuntimeError("wait until the run is finished")
@@ -695,7 +884,8 @@ def make_handler(runner: Runner, watcher: "DownloadWatcher | None" = None, live_
                         songs.switch(runner.root, body.get("slug", ""))
                     elif info:   # «it is this track»: the open set's channels belong to the current track now
                         songs.remember_channels(runner.root, info["channels"])
-                    ab_state["which"] = None
+                    ab_state.update(which=None, blind=False)
+                    blind.reset()
                     return self._send(200, {"track": songs.current(runner.root)})
                 if self.path == "/api/taps":
                     return self._send(200, {"log": runner.start(["taps"])})
@@ -752,7 +942,7 @@ def serve(workdir: str = ".", port: int = PORT, open_browser: bool = True) -> No
     runner = Runner(os.path.abspath(workdir))
     moved = songs.migrate(runner.root)
     if moved:
-        print(f"References, roles and runs moved to songs/: they belong to the track «{moved}» now.")
+        print(f"Roles and runs moved to songs/ for «{moved}». references/ remains the shared library.")
     url = f"http://127.0.0.1:{port}"
     watcher = DownloadWatcher(lambda: runner.workdir)
     try:
@@ -825,11 +1015,6 @@ svg{width:100%;height:90px}.prog{margin-left:auto;display:flex;align-items:cente
 button.small{padding:2px 8px;font-size:12px}button.danger{background:var(--bad);color:#fff;border-color:var(--bad)}
 
 /* dark: the same desktop at night */
-@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){--bg:#110f17;--panel:#1f1b28;--face:#2a2535;--hi:#4b4360;--lo:#08070b;--ink:#ece8f6;--line:#4b4360;--text:#ece8f6;--muted:#a69eb8;
-  --accent:#a98bff;--accent2:#ff7ac0;--good:#6fd38e;--bad:#ff6b85;--warn:#f0b54a;
-  --title:linear-gradient(90deg,#3a1f86,#8f2a83 70%,#c23584);
-  --field:#15121d;--strong:#08070b;--on-strong:#ece8f6;--shadow:#000;--drop:rgba(0,0,0,.45);
-  --dis-fg:#5e5672;--dis-edge:#3a3448;--log-fg:#c8f03a;--on-accent:#110f17;--scale-mid:#d8c24f;color-scheme:dark;}}
 :root[data-theme="dark"]{--bg:#110f17;--panel:#1f1b28;--face:#2a2535;--hi:#4b4360;--lo:#08070b;--ink:#ece8f6;--line:#4b4360;--text:#ece8f6;--muted:#a69eb8;
   --accent:#a98bff;--accent2:#ff7ac0;--good:#6fd38e;--bad:#ff6b85;--warn:#f0b54a;
   --title:linear-gradient(90deg,#3a1f86,#8f2a83 70%,#c23584);
@@ -845,6 +1030,10 @@ header h1:hover{color:var(--accent2);text-shadow:3px 3px 0 var(--lime)}
   border:1px solid;border-color:var(--lo) var(--hi) var(--hi) var(--lo)}
 .pill.on{background:var(--lime);color:var(--on-bright);border-color:var(--lime-edge)}
 #phase{font-family:var(--mono);font-size:12px}
+header{min-width:0}
+header #phase{min-width:0;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+header .prog{min-width:0;max-width:100%;flex-wrap:wrap;gap:6px}
+#prog_text{min-width:0;white-space:normal}
 main{gap:0 18px;padding:20px;grid-template-columns:repeat(auto-fit,minmax(min(100%,400px),1fr));align-items:start;grid-auto-rows:4px}
 section{background:var(--panel);border-radius:0;padding:0 14px 14px;
   border:2px solid;border-color:var(--hi) var(--lo) var(--lo) var(--hi);box-shadow:1px 1px 0 var(--shadow),4px 4px 0 var(--drop)}
@@ -876,11 +1065,24 @@ pre{border-radius:0;background:var(--strong);color:var(--log-fg);font:12px/1.45 
 .drop.over{background:var(--lime);color:var(--on-bright);border-color:var(--lime-edge)}
 a{color:var(--accent)}a:hover{background:var(--accent);color:var(--on-accent)}
 td{border-bottom:1px solid var(--lo)}
+#roles table{table-layout:fixed}
+#roles td:first-child{width:35%;overflow-wrap:anywhere}
+#roles td:last-child{width:64px}
+#roles select,#roles input{width:100%;min-width:0;max-width:100%}
+.activity-status{display:flex;gap:8px;align-items:baseline;margin:6px 0 10px;font-size:13px;overflow-wrap:anywhere}
+.activity-light{width:8px;height:8px;flex:none;background:var(--lime);animation:working 1.4s ease-in-out infinite}
+.activity-age{display:block;font:11px var(--mono);color:var(--muted);margin-top:3px}
+@keyframes working{50%{opacity:.3}}
+.bigprog.indeterminate b{width:30%!important;animation:waiting 1.8s ease-in-out infinite}
+.bigprog{overflow:hidden}
+@keyframes waiting{0%{transform:translateX(-100%)}100%{transform:translateX(340%)}}
+@media(prefers-reduced-motion:reduce){.activity-light,.bigprog.indeterminate b{animation:none}}
 button.primary{display:block;width:100%;font:400 19px var(--display);letter-spacing:.02em;padding:12px 16px;margin:4px 0 6px}
 button.danger{background:var(--pink);color:var(--on-bright);border-color:var(--pink-edge);font-size:14px;padding:8px 18px;margin-right:10px}
 #cont+#start.ghost{display:inline-block;width:auto;margin:0 0 6px}
 .hint{color:var(--muted);font-size:12.5px;margin:4px 0 10px}
 .now{display:flex;flex-direction:column;gap:2px;margin:2px 0 10px}.now b{font:400 18px var(--display)}
+.now span,#scope{overflow-wrap:anywhere;min-width:0}
 .bigprog{height:22px;background:var(--field);border:2px solid;border-color:var(--lo) var(--hi) var(--hi) var(--lo);margin-bottom:4px}
 .bigprog b{display:block;height:100%;width:0;background:repeating-linear-gradient(90deg,var(--accent) 0 12px,transparent 12px 15px);transition:width .4s}
 details.opts{margin:10px 0;background:var(--face);border:2px solid;border-color:var(--hi) var(--lo) var(--lo) var(--hi);padding:0 10px}
@@ -911,6 +1113,11 @@ ul.part-why{padding-left:18px}ul.part-why li{margin:2px 0}
 .trackbar select{flex:1;min-width:140px;font:600 15px var(--sans)}
 .newform{background:var(--face);border:2px solid;border-color:var(--hi) var(--lo) var(--lo) var(--hi);padding:10px;margin:0 0 12px}
 .newform label{display:block;margin:0 0 8px;font-size:13px}.newform input,.newform textarea{width:100%;box-sizing:border-box;margin-top:3px}
+.reference-choice{margin:0 0 12px;padding:10px;background:var(--face);border:1px solid var(--line)}
+.reference-choice>label{display:block;font:12px var(--pixel);margin-bottom:5px}
+.reference-choice select{width:100%;min-width:0;margin-bottom:6px}
+.candidate-list{list-style:none;padding:0;margin:8px 0}.candidate-list li{padding:6px 0;border-bottom:1px dotted var(--lo);overflow-wrap:anywhere}
+.candidate-list button{margin:4px 0}
 .banner{border:2px solid var(--warn);background:var(--field);padding:10px;margin:0 0 12px;font-size:13.5px}
 .banner .row{margin-top:8px;flex-wrap:wrap;gap:8px}
 ol.steps{list-style:none;padding:0;margin:0 0 12px;counter-reset:step}
@@ -925,11 +1132,12 @@ ol.steps button{margin:4px 8px 0 0}
 </style>
 </head>
 <body>
-<header><h1 title="Mix And Reference Assistant">MARA</h1><button id="theme" class="ghost small" title="Light, dark or like macOS">auto</button><span id="status" class="pill">idle</span><span id="live" class="pill">Live …</span><span id="phase" class="muted"></span>
+<header><h1 title="Mix And Reference Assistant">MARA</h1><button id="theme" class="ghost small" title="Auto: light from 07:00 to 19:00 local time, dark at night. Click for light or dark.">Theme: auto</button><span id="status" class="pill">idle</span><span id="live" class="pill">Live …</span><span id="phase" class="muted"></span>
 <span id="prog" class="prog" hidden><i><b id="prog_bar"></b></i><span id="prog_text" class="muted"></span></span></header>
 <main>
 <section>
   <h2>Run</h2>
+  <p class="hint" id="mix_mode" hidden></p>
   <div class="trackbar"><span class="label">Track</span><select id="track_pick" title="Each track has its own references, roles and runs"></select>
     <button id="new_track" class="ghost small">New track</button></div>
   <div id="newform" class="newform" hidden>
@@ -940,6 +1148,15 @@ ol.steps button{margin:4px 8px 0 0}
     <div class="row"><button id="nt_create">Create track</button><button id="nt_cancel" class="ghost">Cancel</button></div>
   </div>
   <div id="mismatch" class="banner" hidden></div>
+  <div id="reference_choice" class="reference-choice">
+    <label for="reference_mode">Reference tracks</label>
+    <select id="reference_mode">
+      <option value="selected">I already have reference tracks</option>
+      <option value="discover">Find reference suggestions for me</option>
+    </select>
+    <p id="reference_hint" class="hint"></p>
+    <button id="choose_refs" class="ghost small">Choose reference tracks</button>
+  </div>
   <ol id="steps" class="steps"></ol>
   <p class="hint" id="run_wait">Asking MARA what it is doing …</p>
   <div id="run_idle" hidden>
@@ -949,19 +1166,27 @@ ol.steps button{margin:4px 8px 0 0}
   </div>
   <div id="run_busy" hidden>
     <div class="now"><b id="now_phase">Working …</b><span id="now_section" class="muted"></span></div>
+    <div class="activity-status"><i class="activity-light" aria-hidden="true"></i><div>
+      <span id="activity_text" role="status">Starting …</span><span id="activity_age" class="activity-age"></span>
+    </div></div>
     <div class="bigprog"><b id="bigprog_bar"></b></div><div class="hint" id="bigprog_text"></div>
-    <button id="stop" class="danger">Stop</button>
-    <span class="hint">It can continue later from where it stopped.</span>
+    <button id="stop" class="danger">Pause</button>
+    <span class="hint">Resume later from where you paused.</span>
   </div>
   <details class="opts"><summary>Options</summary>
     <label title="The Main fader goes down while MARA works and comes back at the end. It measures before the fader, so the results are the same."><input type="checkbox" id="silent" checked> silent: Main fader down while it works</label>
-    <label><input type="checkbox" id="refs" checked> use the files in references/</label>
-    <label><input type="checkbox" id="auto_ref" checked> look for more references by itself</label>
     <label><input type="checkbox" id="quick"> master only (quick, about 15 min)</label>
     <label><input type="checkbox" id="no_audit"> keep every effect (no check for useless ones)</label>
   </details>
   <div class="compare"><span>Compare the last run</span>
     <div class="seg"><button id="ab_before">Before</button><button id="ab_after">After</button></div></div>
+  <audio id="ab_player" controls preload="metadata" style="width:100%;margin:8px 0" aria-label="Mix comparison audio player"></audio>
+  <label><input type="checkbox" id="equal_loudness" checked disabled> Equal loudness</label>
+  <span class="hint" id="equal_status">Available when both previews are ready.</span>
+  <p class="hint" id="preview_status" aria-live="polite">Preparing the Before audio preview. After becomes available when the run finishes.</p>
+  <div class="row"><button id="ab_blind" aria-keyshortcuts="B">Blind random · B</button>
+    <button id="ab_reveal" class="ghost small" disabled>Reveal</button></div>
+  <p class="hint" id="ab_hint" aria-live="polite">Close your eyes and press B, or focus the blind button and press Space. Each press is random; repeats are possible.</p>
   <div class="setup">Taps in Live: <button id="taps" class="link">set</button> · <button id="untaps" class="link" title="Takes every MixMatch tap out of the Live set">remove</button> <span id="taps_state"></span></div>
   <p class="muted" id="msg"></p>
 </section>
@@ -989,12 +1214,16 @@ ol.steps button{margin:4px 8px 0 0}
   <h2>What MARA does</h2>
   <div class="events" id="events"></div>
 </section>
-<section>
+<section id="references_panel">
   <h2>References</h2>
+  <p class="hint">These are the tracks MARA will mix against. Add the ones you want, then start the mix.</p>
   <div id="refs_used"></div>
+  <div class="row"><button id="pick_files" class="ghost">Add audio files</button>
+    <input id="reference_upload" type="file" accept=".wav,.aif,.aiff,.flac,.mp3,.m4a,.aac" multiple hidden></div>
+  <div id="found_refs"></div>
   <div class="row"><button id="used_btn" class="ghost small">Used before</button><span class="muted" id="used_count"></span></div>
   <div id="used" hidden></div>
-  <div id="drop" class="drop">Drop audio files here to add them to references/</div><h2 style="margin-top:12px">To get</h2><div id="to_get" class="muted">–</div>
+  <div id="drop" class="drop">Drop reference audio files here</div><h2 style="margin-top:12px">Suggestions to get</h2><div id="to_get" class="muted">–</div>
 </section>
 <section>
   <h2>Roles</h2><div id="roles" class="muted">–</div><div class="row"><button id="save_roles" class="ghost">Save roles</button></div>
@@ -1006,52 +1235,123 @@ ol.steps button{margin:4px 8px 0 0}
 </main>
 <script>
 const $ = id => document.getElementById(id);
-const esc = s => String(s).replace(/[&<>]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));
+const esc = s => String(s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 async function post(path, body) {
   const r = await fetch(path, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body || {})});
   const j = await r.json(); $("msg").textContent = j.error || ""; return j;
 }
 const THEMES = ["auto", "light", "dark"];
 function applyTheme(t) {
-  if (t === "auto") document.documentElement.removeAttribute("data-theme"); else document.documentElement.dataset.theme = t;
-  $("theme").textContent = t;
+  const hour = new Date().getHours();
+  document.documentElement.dataset.theme = t === "auto" ? (hour >= 7 && hour < 19 ? "light" : "dark") : t;
+  $("theme").textContent = `Theme: ${t}`;
 }
 let theme = "auto";
 try { theme = localStorage.getItem("mm_theme") || "auto"; } catch {}
+if (!THEMES.includes(theme)) theme = "auto";
 applyTheme(theme);
+setInterval(() => { if (theme === "auto") applyTheme(theme); }, 60000);
+document.addEventListener("visibilitychange", () => { if (!document.hidden) applyTheme(theme); });
 $("theme").onclick = () => { theme = THEMES[(THEMES.indexOf(theme) + 1) % THEMES.length]; applyTheme(theme);
   try { localStorage.setItem("mm_theme", theme); } catch {} };
-const OPTS = ["silent", "refs", "auto_ref", "quick", "no_audit"];
+const OPTS = ["silent", "quick", "no_audit"];
 try { const saved = JSON.parse(localStorage.getItem("mm_opts") || "{}");   // remembered per browser, a convenience
   for (const k of OPTS) if (k in saved) $(k).checked = saved[k]; } catch {}
 for (const k of OPTS) $(k).addEventListener("change", () => {
   try { localStorage.setItem("mm_opts", JSON.stringify(Object.fromEntries(OPTS.map(o => [o, $(o).checked])))); } catch {} });
-$("start").onclick = () => post("/api/run", {auto_ref: $("auto_ref").checked, refs: $("refs").checked, quick: $("quick").checked,
+$("start").onclick = () => post("/api/run", {reference_mode: $("reference_mode").value, quick: $("quick").checked,
   no_audit: $("no_audit").checked, silent: $("silent").checked});
 $("stop").onclick = () => post("/api/stop");
-$("cont").onclick = () => post("/api/run", {continue: true, refs: $("refs").checked, silent: $("silent").checked,
+$("cont").onclick = () => post("/api/run", {continue: true, reference_mode: "selected", silent: $("silent").checked,
   no_audit: $("no_audit").checked});
+$("reference_mode").onchange = () => { referenceModeChosen = true; tick(); };
+$("choose_refs").onclick = () => $("references_panel").scrollIntoView({behavior: "smooth", block: "start"});
+$("pick_files").onclick = () => $("reference_upload").click();
+$("reference_upload").onchange = async e => { await uploadReferences([...e.target.files]); e.target.value = ""; };
 $("taps").onclick = () => post("/api/taps");
 $("untaps").onclick = () => { if (confirm("Remove every MixMatch tap from the Live set? «Set taps» puts them back.")) post("/api/taps/remove"); };
-$("ab_before").onclick = async () => { const j = await post("/api/ab", {which: "before"}); if (!j.error) $("msg").textContent = `Before (${j.changed} parameters)`; };
-$("ab_after").onclick = async () => { const j = await post("/api/ab", {which: "after"}); if (!j.error) $("msg").textContent = `After (${j.changed} parameters)`; };
+let previewVersions = {}, previewSelected = null, previewHidden = false, loudnessMatch = {ready: false};
+let previewBaseUrl = "";
+const player = $("ab_player");
+player.volume = 0.5;
+function loadPreview(url, play = false, position = 0) {
+  previewBaseUrl = url;
+  player.src = url + ($("equal_loudness").checked && loudnessMatch.ready ? "&equal=1&match=" + loudnessMatch.version : "");
+  player.onloadedmetadata = () => { if (position) player.currentTime = Math.min(position, Math.max(0, player.duration - 0.1)); };
+  if (play) player.play().catch(() => { $("preview_status").textContent = "Press Play in the audio player to listen."; });
+}
+$("equal_loudness").onchange = () => {
+  if (previewBaseUrl) loadPreview(previewBaseUrl, !player.paused, player.currentTime || 0);
+  updatePreviews();
+};
+function choosePreview(which, play = true) {
+  const p = previewVersions[which]; if (!p) return;
+  const position = player.currentTime || 0;
+  previewSelected = which; previewHidden = false;
+  loadPreview(`/api/preview-audio?which=${which}&id=${encodeURIComponent(p.id)}`, play, position);
+  $("ab_hint").textContent = "Close your eyes and press B for a random version. Repeats are possible.";
+  updatePreviews();
+}
+function updatePreviews() {
+  $("equal_loudness").disabled = !loudnessMatch.ready;
+  $("equal_status").textContent = !loudnessMatch.ready ? loudnessMatch.reason || "Available when both previews are ready."
+    : $("equal_loudness").checked ? "Matched listening level · original dynamics preserved." : "Original listening levels.";
+  for (const w of ["before", "after"]) { $("ab_" + w).disabled = abBusy || !previewVersions[w];
+    $("ab_" + w).className = !previewHidden && previewSelected === w ? "on" : ""; }
+  $("ab_blind").disabled = abBusy || !previewVersions.before || !previewVersions.after;
+  $("ab_reveal").disabled = abBusy || !previewHidden;
+  const p = previewVersions[previewSelected];
+  $("preview_status").textContent = p
+    ? `${previewHidden ? "Blind preview" : previewSelected === "before" ? "Before" : "After"} · ${p.bars} bars from bar ${p.start_bar} · plays here while MARA mixes silently.` + (!previewVersions.after ? " After is not ready yet." : "")
+    : "Preparing the Before audio preview. After becomes available when the run finishes.";
+}
+$("ab_before").onclick = () => choosePreview("before");
+$("ab_after").onclick = () => choosePreview("after");
+let abBusy = false;
+$("ab_blind").onclick = async () => {
+  if (abBusy || $("ab_blind").disabled) return;
+  abBusy = true; $("ab_blind").disabled = true;
+  $("msg").textContent = "";
+  $("ab_hint").textContent = "Choosing a hidden version …";
+  for (const w of ["before", "after"]) { $("ab_" + w).className = ""; $("ab_" + w).disabled = true; }
+  try { const j = await post("/api/preview/blind");
+    if (!j.error) { previewHidden = true; loadPreview(j.url, true, player.currentTime || 0);
+      $("ab_hint").textContent = "Playing a hidden version. Press B again or Reveal when you are ready."; }
+  } finally { abBusy = false; tick(); }
+};
+$("ab_reveal").onclick = async () => { const j = await post("/api/preview/reveal");
+  if (!j.error) { previewSelected = j.which; previewHidden = false; updatePreviews();
+    $("ab_hint").textContent = "You are hearing: " + (j.which === "before" ? "Before" : "After"); } };
+document.addEventListener("keydown", e => {
+  if (e.repeat || e.ctrlKey || e.metaKey || e.altKey || e.target.closest("input, textarea, select, [contenteditable]")) return;
+  if (e.key.toLowerCase() === "b" && !$("ab_blind").disabled) { e.preventDefault(); $("ab_blind").click(); }
+});
 const ROLE_GROUPS = __ROLE_GROUPS__;
+let rolesEdited = false, rolesLoading = false, lastRolesRevision = null;
 async function loadRoles() {
+  if (rolesEdited || rolesLoading) return false;
+  rolesLoading = true;
+  try {
   const roles = await (await fetch("/api/roles")).json(); const names = Object.keys(roles);
-  if (!names.length) { $("roles").textContent = "No roles.json yet (written by the first run)."; return; }
-  $("roles").innerHTML = "<table>" + names.map(n => `<tr><td>${esc(n)}</td><td><select data-n="${esc(n)}">${Object.entries(ROLE_GROUPS).map(([g, rs]) => `<optgroup label="${esc(g)}">` + rs.map(r =>
-    `<option ${r===roles[n].role?"selected":""}>${r}</option>`).join("") + "</optgroup>").join("")}</select></td><td><input data-p="${esc(n)}" type="number" min="1" max="5" value="${roles[n].priority}" style="width:52px"></td></tr>`).join("") + "</table>";
+  if (rolesEdited) return false;
+  if (!names.length) { $("roles").textContent = "No roles.json yet (written by the first run)."; return true; }
+  $("roles").innerHTML = "<table>" + names.map(n => `<tr><td>${esc(n)}</td><td><select title="${esc(roles[n].note || '')}" data-n="${esc(n)}">${Object.entries(ROLE_GROUPS).map(([g, rs]) => `<optgroup label="${esc(g)}">` + rs.map(r =>
+    `<option ${r===roles[n].role?"selected":""}>${r}</option>`).join("") + "</optgroup>").join("")}</select></td><td><input data-p="${esc(n)}" type="number" min="1" max="5" value="${roles[n].priority}"></td></tr>`).join("") + "</table>";
   const current = () => names.map(n => document.querySelector(`[data-n="${CSS.escape(n)}"]`).value + "|" +
     document.querySelector(`[data-p="${CSS.escape(n)}"]`).value).join(",");
   let saved = current();
-  const rolesDirty = () => { $("save_roles").disabled = current() === saved; };
-  $("roles").addEventListener("input", rolesDirty); $("roles").addEventListener("change", rolesDirty); rolesDirty();
+  const rolesDirty = () => { rolesEdited = current() !== saved; $("save_roles").disabled = !rolesEdited; };
+  $("roles").oninput = rolesDirty; $("roles").onchange = rolesDirty; rolesDirty();
   $("save_roles").onclick = async () => {
-    for (const n of names) { roles[n].role = document.querySelector(`[data-n="${CSS.escape(n)}"]`).value;
-      roles[n].priority = +document.querySelector(`[data-p="${CSS.escape(n)}"]`).value; roles[n].source = "user"; }
-    await post("/api/roles", roles); saved = current(); rolesDirty();
+    for (const n of names) { const role = document.querySelector(`[data-n="${CSS.escape(n)}"]`).value;
+      const priority = +document.querySelector(`[data-p="${CSS.escape(n)}"]`).value;
+      if (role !== roles[n].role || priority !== roles[n].priority) roles[n] = {...roles[n], role, priority, source: "user"}; }
+    const result = await post("/api/roles", roles); if (result.error) return;
+    saved = current(); rolesDirty();
     $("msg").textContent = "Roles saved; the next run uses them.";
   };
+  return true;
+  } finally { rolesLoading = false; }
 }
 function chart(values, phases, runs) {
   if (values.length < 2) { $("chart").innerHTML = ""; $("chartlabels").innerHTML = ""; return; }
@@ -1076,7 +1376,7 @@ function chart(values, phases, runs) {
   }
   $("chart").innerHTML = svg; $("chartlabels").innerHTML = labels;
 }
-const PART_NAMES = {masking: "Instruments covering each other", tonal: "Tone balance", loudness: "Loudness",
+const PART_NAMES = {masking: "Potential masking between instruments", tonal: "Tone balance", loudness: "Loudness",
   dynamics: "Punch (dynamics)", width: "Stereo width", low_side: "Bass in stereo", clipping: "Clipping"};
 const PHASE_NAMES = {master: "Master", channels: "Single channels", effects: "Effects", final: "Final check", setup: "Start"};
 function verdict(d) {
@@ -1094,17 +1394,22 @@ function closeness(s) {
   // The verdict is about the references only. Instruments covering each other is a matter inside the song:
   // shown on its own line, not mixed into «how close».
   const p = s.parts || {}, ref = Object.entries(p).filter(([k]) => k !== "masking").reduce((a, [, v]) => a + v, 0);
-  const compared = "tonal" in (s.explain || {});   // the explain line has the comparison only when there was one
-  const [word, pos] = compared ? verdict(ref) : ["Not compared here", 0];
-  $("verdict").textContent = word;
-  $("distance").textContent = compared ? ref.toFixed(2) + " points" : "this part is not meant to sound like the references";
-  const ov = p.masking || 0;
-  $("overlap").innerHTML = ov >= 0.05 ? `Overlap between instruments: <b>${ov < 1 ? "small" : ov < 2.5 ? "noticeable" : "strong"}</b> <span class="score">${ov.toFixed(2)} points</span>` : "";
-  $("scale_mark").style.left = (pos * 100).toFixed(1) + "%";
-  const phase = (s.history_phase || []).slice(-1)[0];
+  const waiting = !s.active && s.checkpoint?.phase === "references";
   const local = (s.section || "").includes("outside the loudest part");
+  const compared = !waiting && "tonal" in (s.explain || {});
+  const [word, pos] = compared ? verdict(ref) : [waiting ? "Choose references" : local ? "Not compared here" : "Waiting for comparison", 0];
+  $("verdict").textContent = word;
+  $("distance").textContent = compared ? ref.toFixed(2) + " points" : local && !waiting ? "this part is not meant to sound like the references" : "";
+  const ov = p.masking || 0;
+  $("overlap").innerHTML = ov >= 0.05 ? `Potential masking during simultaneous playback: <b>${ov < 1 ? "small" : ov < 2.5 ? "noticeable" : "strong"}</b> <span class="score">${ov.toFixed(2)} points</span>` : "";
+  $("scale_mark").style.left = (pos * 100).toFixed(1) + "%";
+  $("scale_mark").parentElement.hidden = !compared;
+  document.querySelector(".scale-labels").hidden = !compared;
+  const phase = (s.history_phase || []).slice(-1)[0];
   const where = (s.section || "a channel").replace(/ \(outside the loudest part[^)]*\)/, "").replace(/_/g, " ");
-  $("scope").textContent = phase === "channels"
+  $("scope").textContent = waiting ? "Choose your reference tracks below, then mix with them. The song scan is saved."
+    : !compared && !local ? "Results appear once reference tracks are chosen and mixing begins."
+    : phase === "channels"
     ? (local ? `Now on ${where}. This part is outside the loudest part, so it is not compared with the references: only how the instruments cover each other and a mono bass count.`
              : `Now on ${where}. While MARA works on single channels, loudness and punch are left out: that part of the song need not sound like the drop.`)
     : (s.section ? `Now on the master, ${s.section}. Tone, loudness, punch and width are compared with the references.` : "");
@@ -1125,10 +1430,19 @@ function closeness(s) {
   const top = Math.max(1, ...parts.map(p => p[1])), ex = s.explain || {};
   $("parts").innerHTML = parts.length ? parts.map(([k, v]) =>
     `<div class="part"><div class="part-head"><span>${esc(PART_NAMES[k] || k)}</span><i style="width:${(v/top)*100}%"></i></div>` +
-    (ex[k] ? why(k, ex[k]) : "") + "</div>").join("") : "<span class='muted'>Nothing worth mentioning.</span>";
+    (ex[k] ? why(k, ex[k]) : "") + "</div>").join("") : `<span class='muted'>${compared || local ? "Nothing worth mentioning." : "Comparison has not started yet."}</span>`;
 }
 function progress(s) {
   const p = s.progress, p0 = s.progress_start, el = $("prog");
+  const preparing = s.active && (!p || !p.done);
+  $("bigprog_bar").parentElement.classList.toggle("indeterminate", preparing && !s.activity?.total);
+  if (preparing) {
+    el.hidden = true;
+    const a = s.activity;
+    $("bigprog_bar").style.width = a?.total ? `${Math.min(100, 100 * a.current / a.total)}%` : "30%";
+    $("bigprog_text").textContent = a?.total ? `Song scan · ${a.current} of ${a.total} bars` : "Preparing · duration depends on the current step";
+    return;
+  }
   if (!p || !p.total) { el.hidden = true; return; }
   el.hidden = false;
   const frac = Math.min(1, p.done / p.total); $("prog_bar").style.width = (frac*100).toFixed(1) + "%";
@@ -1139,41 +1453,100 @@ function progress(s) {
     const m = Math.round(rate * (p.total - p.done) / 60);
     left = m >= 60 ? ` · about ${Math.floor(m/60)} h ${m%60} min left` : ` · about ${Math.max(1, m)} min left`;
   } else if (s.active) left = " · estimating time …";
-  $("prog_text").textContent = `${Math.round(frac*100)}%${left}` + (s.active && s.section ? ` · ${s.section}` : "");
+  $("prog_text").textContent = `${Math.round(frac*100)}%${left}`;
   $("bigprog_bar").style.width = (frac*100).toFixed(1) + "%"; $("bigprog_text").textContent = `${Math.round(frac*100)}%${left}`;
 }
+let currentActivity = null, referenceModeChosen = false;
+function selectedReferences() {
+  $("reference_mode").value = "selected";
+  referenceModeChosen = true;
+  lastRefs = "";
+}
+function activityAge() {
+  const a = currentActivity;
+  if (!a) { $("activity_age").textContent = ""; return; }
+  const seconds = Math.max(0, Math.floor(Date.now()/1000 - a.started));
+  $("activity_age").textContent = `This step: ${Math.floor(seconds/60)}:${String(seconds%60).padStart(2, "0")}`;
+}
 async function tick() {
-  let s; try { s = await (await fetch("/api/state")).json(); } catch { return; }
-  $("status").textContent = s.active ? "running" : (s.done ? (s.done.startsWith("Stopped:") ? "stopped" : "finished") : "ready"); $("status").className = "pill" + (s.active ? " on" : "");
-  $("phase").textContent = s.phase || "";
+  let s; try {
+    const response = await fetch("/api/state");
+    if (!response.ok) throw new Error("state unavailable");
+    s = await response.json();
+  } catch {
+    currentActivity = null;
+    $("status").textContent = "reconnecting";
+    $("activity_text").textContent = "Connection to MARA lost · trying again …";
+    activityAge();
+    return;
+  }
+  currentActivity = s.active && s.activity && Number.isFinite(s.activity.started) ? s.activity : null;
+  $("activity_text").textContent = s.activity?.text || "Starting the run · waiting for the first update …";
+  activityAge();
+  const ck = s.checkpoint, refs = s.reference_files.length + s.project_references.length;
+  if (!referenceModeChosen) {
+    $("reference_mode").value = ck || refs ? "selected" : "discover";
+    referenceModeChosen = true;
+  }
+  const discover = $("reference_mode").value === "discover", choosing = ck?.phase === "references";
+  $("reference_mode").disabled = s.active;
+  $("reference_choice").hidden = s.active;
+  $("reference_hint").textContent = discover
+    ? "MARA listens to your song and suggests tracks. You choose the references before mixing starts."
+    : refs ? `Use the ${refs} reference track${refs > 1 ? "s" : ""} listed below. Reference search will be skipped.`
+           : "Choose at least one reference track below: add audio files or use a suggestion.";
+  $("status").textContent = s.active ? "running" : choosing ? "choose references" : (s.done ? (s.done.startsWith("Stopped:") ? "stopped" : "finished") : "ready"); $("status").className = "pill" + (s.active ? " on" : "");
+  $("phase").textContent = choosing && !s.active ? "Song scan saved · waiting for your reference choice" : s.phase || "";
+  $("mix_mode").hidden = !s.mode;
+  $("mix_mode").textContent = s.mode === "beat" ? "Beat mode · muted vocal tracks are excluded."
+    : "Song mode · full reference balance.";
+  if (s.roles_revision !== lastRolesRevision && !rolesEdited && await loadRoles()) lastRolesRevision = s.roles_revision;
   tracks(s); usedRefs(s); const { ready } = steps(s);
-  $("start").disabled = s.active || !ready; $("cont").disabled = s.active || !(s.set || {same: true}).same;
+  $("start").disabled = s.active || !ready; $("cont").disabled = s.active || !ready || !refs;
   $("run_wait").hidden = true; $("run_idle").hidden = s.active; $("run_busy").hidden = !s.active;
-  const ck = s.checkpoint; $("cont").hidden = !ck;
-  if (ck) $("cont").textContent = `Continue at ${ck.next_channel || ck.phase}` + (ck.percent != null ? ` · ${ck.percent}%` : "");
-  $("start").textContent = ck ? "Start over" : "Mix the whole song";
-  $("start").className = ck ? "ghost" : "primary";
-  $("start_hint").textContent = ck ? "The last run stopped. Continue skips everything it already did."
-                                   : "Plays the set, listens, and keeps only changes that measurably help.";
+  $("cont").hidden = !ck || discover;
+  if (ck) $("cont").textContent = ({references: "Mix with selected references", master: "Continue mixing with references",
+    channels: "Continue mixing channels", effects: "Continue checking effects", final: "Continue final check"})[ck.phase] || "Continue mixing with references";
+  $("start").hidden = choosing && !discover;
+  $("start").textContent = discover ? "Find reference suggestions" : ck ? "Start mix over" : "Mix with selected references";
+  $("start").className = ck && !discover ? "ghost" : "primary";
+  $("start_hint").textContent = discover ? "Find suggestions first. MARA pauses for your choice before changing the mix."
+    : choosing ? "The mix is paused. Choose your references, then continue here. The saved song scan will be reused."
+    : ck ? "Continue with the selected references. Completed steps will be skipped."
+         : "Skip reference search and mix directly with the tracks you selected.";
   $("now_phase").textContent = s.phase || "Preparing …"; $("now_section").textContent = s.section || "";
   if (s.auto_imported && s.auto_imported.length !== lastImported) {
     if (lastImported >= 0 && s.auto_imported.length) $("msg").textContent = "Picked up from Downloads: " + s.auto_imported.slice(-3).join(", ");
     lastImported = s.auto_imported.length; lastRefs = ""; }
-  for (const w of ["before", "after"]) { const b = $("ab_" + w); b.disabled = s.active || !s.ab_ready;
-    b.className = s.ab === w ? "on" : ""; }
+  const previewChanged = previewVersions.before?.id !== s.previews?.before?.id;
+  const matchChanged = loudnessMatch.version !== s.loudness_match?.version;
+  loudnessMatch = s.loudness_match || {ready: false};
+  previewVersions = s.previews || {};
+  if (previewChanged) {
+    player.pause(); previewSelected = null; previewHidden = false;
+    if (previewVersions.before) choosePreview("before", false);
+    else { previewBaseUrl = ""; player.removeAttribute("src"); player.load(); }
+  }
+  else if (matchChanged && previewBaseUrl && $("equal_loudness").checked) {
+    loadPreview(previewBaseUrl, !player.paused, player.currentTime || 0);
+  }
+  updatePreviews();
   $("live").textContent = s.live === null ? "Live …" : (s.live ? "Live connected" : "Live busy or closed (exporting?)");
   $("live").className = "pill" + (s.live ? " on" : "");
   closeness(s); chart(s.history, s.history_phase, s.history_run); progress(s);
   $("song").innerHTML = [s.key && `<div><b>${esc(s.key)}</b></div>`, s.style && `<div class="muted">sounds like ${esc(s.style)}</div>`].filter(Boolean).join("") || "No run yet.";
   $("events").innerHTML = s.events.slice().reverse().map(e => `<div class="ev ${e.kind}">${esc(e.text)}</div>`).join("");
-  const refsKey = JSON.stringify(s.reference_files) + JSON.stringify(s.project_references) + s.references.length;
+  const refsKey = JSON.stringify(s.reference_files) + JSON.stringify(s.project_references) + JSON.stringify(s.reference_candidates) + s.active;
   if (refsKey !== lastRefs) { lastRefs = refsKey;
     $("refs_used").innerHTML = (s.project_references.length ? "<div class='muted'>in the Live set (always used):</div><ul>" +
       s.project_references.map(r => `<li><b>${esc(r.track)}</b>: ${esc(r.file)}</li>`).join("") + "</ul><div class='muted'>in references/:</div>" : "")
       + (s.reference_files.length ? "<ul class='reflist'>" + s.reference_files.map(f =>
       `<li><span>${esc(f)}</span><button class="ghost small" data-remove="${esc(f)}">remove</button></li>`).join("") + "</ul>"
-      : "<span class='muted'>references/ is empty</span>")
-      + (s.references.length ? "<div class='muted' style='margin-top:6px'>picked: " + s.references.map(esc).join("<br>") + "</div>" : "");
+      : "<span class='muted'>No reference files selected yet.</span>");
+    $("found_refs").innerHTML = s.reference_candidates?.length ? "<h3 class='sub'>Available references — choose for this song</h3><p class='hint'>The shared references/ folder is detected automatically. Use the tracks you want for this song.</p><ul class='candidate-list'>" +
+      s.reference_candidates.map(c => `<li><span>${esc(c.name)} <span class='muted'>(${esc(c.source)})</span></span>` +
+        (s.reference_files.includes(c.name) ? "<span class='muted'>Selected</span>"
+          : `<button class='small' data-pick-reference='${esc(c.id)}' ${s.active ? "disabled" : ""}>Use this reference</button>`) + "</li>").join("") + "</ul>" : "";
     document.querySelectorAll("[data-remove]").forEach(b => b.onclick = async () => {
       if (!b.classList.contains("danger")) { b.classList.add("danger"); b.textContent = "really? (to Trash)"; return; }
       const j = await post("/api/references/remove", {name: b.dataset.remove});
@@ -1199,10 +1572,10 @@ async function tick() {
       + "<div class='row'><button id='import_dl' class='ghost small'>Import from Downloads</button><span class='muted'>after «Get»: newest audio or ZIP from the last hour</span></div>" : "") : "–";
   document.querySelectorAll("[data-use]").forEach(b => b.onclick = async () => {
     b.disabled = true; b.textContent = "…"; const j = await post("/api/references/use", {url: b.dataset.use, name: b.dataset.name});
-    b.textContent = j.error ? "failed" : "added"; if (!j.error) { $("msg").textContent = "Added to references/: " + j.saved; lastRefs = ""; }
+    b.textContent = j.error ? "failed" : "added"; if (!j.error) { $("msg").textContent = "Added to references/: " + j.saved; selectedReferences(); tick(); }
   });
   if ($("import_dl")) $("import_dl").onclick = async () => { const j = await post("/api/references/import");
-    if (!j.error) { $("msg").textContent = j.added.length ? "Imported: " + j.added.join(", ") : "Nothing new in Downloads (last hour)."; lastRefs = ""; } };
+    if (!j.error) { $("msg").textContent = j.added.length ? "Imported: " + j.added.join(", ") : "Nothing new in Downloads (last hour)."; if (j.added.length) selectedReferences(); tick(); } };
   }
   $("effects").innerHTML = s.effects.length ? "<ul>" + s.effects.map(e => `<li>${esc(e)}</li>`).join("") + "</ul>"
     : "<span class='hint'>Fills in during the effect check near the end of a run: what was kept, switched off or removed.</span>";
@@ -1248,15 +1621,16 @@ function steps(s) {
     `<br><button data-act="taps">Set the missing taps</button>`));
   const used = s.used_references.length;
   if (refs) out.push(step("ok", `${refs} reference track${refs > 1 ? "s" : ""} for this track`, "Listed under References."));
-  else if ($("auto_ref").checked) out.push(step("info", "No references for this track yet",
-    "MARA looks for some itself after listening once. Or add your own under References" + (used ? `, or pick from ${used} used before.` : "."),
+  else if ($("reference_mode").value === "discover") out.push(step("info", "Find suggestions, then choose references",
+    "MARA will pause before mixing. You can also add your own under References" + (used ? `, or pick from ${used} used before.` : "."),
     used ? `<br><button data-act="used" class="ghost small">Show used references</button>` : ""));
-  else out.push(step("bad", "No references for this track", "Add some under References, or tick «look for more references by itself» in the options."));
+  else out.push(step("warn", "Choose your reference tracks", "Add your audio files or choose from the suggestions below.",
+    `<br><button data-act="references" class="small">Choose references</button>`));
   out.push(savedDesc.trim() ? step("ok", "Described: " + esc(savedDesc.trim().slice(0, 80)))
     : step("info", "Not described yet (optional)", "A few words under «Describe your track» help MARA pick references and decide."));
   $("steps").innerHTML = out.join("");
   $("taps_state").textContent = o ? `(${o.taps} of ${o.total} channels)` : "";
-  const ready = s.live && (s.set || {same: true}).same && !(o && o.taps === 0) && (refs > 0 || $("auto_ref").checked);
+  const ready = s.live && (s.set || {same: true}).same && !(o && o.taps === 0) && (refs > 0 || $("reference_mode").value === "discover");
   return { ready };
 }
 function usedRefs(s) {
@@ -1279,20 +1653,25 @@ $("used_btn").onclick = () => { $("used").hidden = !$("used").hidden; $("used_bt
 document.addEventListener("click", async e => {
   const b = e.target.closest("button"); if (!b) return;
   if (b.dataset.switch) return reload("/api/songs/switch", {slug: b.dataset.switch});
+  if (b.dataset.pickReference) { b.disabled = true; const j = await post("/api/references/choose", {id: b.dataset.pickReference});
+    if (!j.error) { $("msg").textContent = "Selected: " + j.saved; selectedReferences(); }
+    lastRefs = ""; tick(); return; }
   if (b.dataset.reuse) { b.disabled = true; const j = await post("/api/references/reuse", {slug: b.dataset.slug, file: b.dataset.reuse});
-    if (!j.error) { $("msg").textContent = "Added to this track: " + j.saved; lastRefs = ""; lastUsed = ""; tick(); } return; }
+    if (!j.error) { $("msg").textContent = "Added to this track: " + j.saved; selectedReferences(); lastUsed = ""; tick(); } return; }
   const act = b.dataset.act;
   if (act === "taps") { b.disabled = true; b.textContent = "Setting taps …"; post("/api/taps"); }
   else if (act === "newtrack") { $("newform").hidden = false; $("nt_name").focus(); pack(); }
   else if (act === "adopt") reload("/api/songs/adopt");
+  else if (act === "references") $("references_panel").scrollIntoView({behavior: "smooth", block: "start"});
   else if (act === "used") { $("used").hidden = false; $("used_btn").textContent = "Hide used";
     document.querySelector("#used").scrollIntoView({behavior: "smooth", block: "center"}); pack(); }
 });
 const drop = $("drop");
 ["dragenter", "dragover"].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.add("over"); }));
 ["dragleave", "drop"].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.remove("over"); }));
-drop.addEventListener("drop", async e => {
-  const files = [...e.dataTransfer.files];
+drop.addEventListener("drop", e => uploadReferences([...e.dataTransfer.files]));
+async function uploadReferences(files) {
+  if (!files.length) return;
   drop.textContent = `Adding ${files.length} file${files.length > 1 ? "s" : ""} …`;
   const results = await Promise.all(files.map(async file => {   // all at once, each with its own answer
     try {
@@ -1302,8 +1681,8 @@ drop.addEventListener("drop", async e => {
     } catch (err) { return `${file.name}: upload failed (${err.message || err})`; }
   }));
   $("msg").textContent = results.join(" · ");
-  drop.textContent = "Drop audio files here to add them to references/"; lastRefs = ""; tick();
-});
+  drop.textContent = "Drop reference audio files here"; selectedReferences(); tick();
+}
 // «Save» only when something changed: greyed out otherwise
 let savedDesc = "";
 const descDirty = () => { $("save_desc").disabled = $("desc").value.trim() === savedDesc.trim(); };
@@ -1327,7 +1706,7 @@ function pack() {
 const packer = new ResizeObserver(pack);
 packer.observe(document.querySelector("main"));
 for (const sec of document.querySelector("main").children) packer.observe(sec);
-loadRoles(); tick(); setInterval(tick, 1500);
+loadRoles(); tick(); setInterval(tick, 1500); setInterval(activityAge, 1000);
 </script>
 </body>
 </html>

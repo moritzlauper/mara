@@ -46,9 +46,9 @@ NAME_HINTS = [
     (r"clap", "clap"),
     (r"ride|cymbal|crash|splash|china", "cymbals"),
     (r"shaker|tamb", "shaker"),
-    (r"hat|\bhh\b|\boh\b", "hats"),
+    (r"hat|\bhh[cop]?\b|\boh\b", "hats"),
     (r"\btoms?\b|floor ?tom", "toms"),
-    (r"perc|conga|bongo|cowbell|clave", "percussion"),
+    (r"perc|conga|bongo|cowbell|clave|\bds (fm|clang)\b", "percussion"),
     (r"top ?loop|drum ?loop|break", "drum_loop"),
     (r"drum|beat|loop", "drums_bus"),
     (r"808", "808"),
@@ -94,12 +94,12 @@ class Role:
     name: str
     role: str
     priority: int
-    source: str              # name / devices / sound / claude / user
+    source: str              # name / drum pads / devices / midi / sound / user
     note: str = ""
 
 
 def from_name(name: str) -> str | None:
-    n = name.lower()
+    n = name.lower().replace("_", " ")
     for pattern, role in NAME_HINTS:
         if re.search(pattern, n):
             return role
@@ -107,12 +107,17 @@ def from_name(name: str) -> str | None:
 
 
 # Devices whose names say nothing about the sound: Live's own containers and MixMatch itself.
-NEUTRAL_DEVICES = {"drum rack", "instrument rack", "audio effect rack", "mixmatch tap"}
+NEUTRAL_DEVICES = {"drum rack", "ds drum rack", "instrument rack", "audio effect rack", "mixmatch tap", "drum buss"}
+NEUTRAL_CLASSES = {"drumbuss", "eq8", "redux2", "compressor2", "gluecompressor", "stereogain"}
 
 
 def from_devices(devices: list[dict]) -> str | None:
     """Name hints in device and preset names, e.g. «Kick Tight», «Basic Sub Sine», «vocalchain»."""
     for d in devices:
+        if not d.get("enabled", True) or d.get("class_name", "").lower() in NEUTRAL_CLASSES:
+            continue
+        if is_drum_rack([d]):
+            continue
         name = d.get("name", "")
         if name.lower() not in NEUTRAL_DEVICES:
             role = from_name(name)
@@ -122,8 +127,78 @@ def from_devices(devices: list[dict]) -> str | None:
 
 
 def is_drum_rack(devices: list[dict]) -> bool:
-    classes = " ".join(d.get("class_name", "") + " " + d.get("name", "") for d in devices).lower()
-    return "drumgroup" in classes or "drum rack" in classes
+    for d in devices:
+        if not d.get("enabled", True):
+            continue
+        label = (d.get("class_name", "") + " " + d.get("name", "")).lower()
+        if "drumgroup" in label or "drum rack" in label or "drum_pads" in d:
+            return True
+        if any(is_drum_rack(c.get("devices", [])) for c in d.get("chains", []) if not c.get("muted")):
+            return True
+    return False
+
+
+def from_rack_content(devices: list[dict], played_notes: dict | None = None) -> tuple[str | None, str]:
+    """Infer a rack's instrument from the pads actually played, never from a GM note table.
+
+    A full kit with one used kick pad is a kick. Different played drum families
+    form a kit. If note data is unavailable, many loaded pads are inconclusive;
+    one loaded sound can still identify the instrument.
+    """
+    played = None if played_notes is None else {int(n) for n, count in played_notes.items() if count > 0}
+    found_pads = []
+
+    def active(items):
+        soloed = any(x.get("solo") for x in items)
+        return [x for x in items if not x.get("muted") and (not soloed or x.get("solo"))]
+
+    def names(ds):
+        found = []
+        for d in ds:
+            if not d.get("enabled", True) or d.get("type") == 2:
+                continue  # an effect preset does not identify the instrument inside a pad
+            if d.get("sample_name"):
+                found.append(d["sample_name"])
+            found += names([child for c in active(d.get("chains", [])) for child in c.get("devices", [])])
+            found.append(d.get("name", ""))
+        return found
+
+    def walk(ds):
+        for d in ds:
+            if not d.get("enabled", True):
+                continue
+            if "drum_pads" in d:
+                pads = active(d["drum_pads"])
+                if played is not None:
+                    pads = [p for p in pads if p["note"] in played]
+                elif len(pads) > 1:
+                    continue  # loaded sounds alone do not say which of them the part plays
+                for p in pads:
+                    chains = active(p.get("chains", []))
+                    sounding = [child for c in chains for child in c.get("devices", [])
+                                if child.get("enabled", True) and child.get("type") != 2]
+                    if not sounding:
+                        continue
+                    labels = names(sounding) + [c.get("name", "") for c in chains] + [p.get("name", "")]
+                    roles = [from_name(n) for n in labels]
+                    role = next((r for r in roles if r and r not in {"drums_bus", "bus"}), None)
+                    found_pads.append((role, f"{p['note']}: {p['name']}"))
+            else:
+                walk([child for c in active(d.get("chains", [])) for child in c.get("devices", [])])
+    walk(devices)
+    if found_pads:
+        roles = {r for r, _ in found_pads}
+        note = "Played pads: " if played is not None else "Only populated pad: "
+        note += "; ".join(n for _, n in found_pads)
+        if len(roles) == 1 and None not in roles:
+            return next(iter(roles)), note
+        if len(roles - {None}) >= 2:
+            return "drums_bus", note
+        return None, note  # an unknown sound alongside a kick must not be called just a kick
+    if not is_drum_rack(devices):
+        role = from_devices([{"name": n} for n in names(devices)])
+        return role, ""
+    return None, ""
 
 
 def says_nothing(track: dict) -> bool:
@@ -180,15 +255,26 @@ def from_midi(notes: list | None) -> str | None:
 
 def guess(track: dict, st: Stats | None, notes: list | None = None) -> Role:
     devices = track.get("devices", [])
-    sources = [("name", None if says_nothing(track) else from_name(track["name"])),
-               ("devices", from_devices(devices)),
-               ("midi", from_midi(notes)),
+    detail = track.get("role_devices", devices)
+    rack = is_drum_rack(detail)
+    content_role, evidence = from_rack_content(detail, track.get("played_notes"))
+    name_role = None if says_nothing(track) else from_name(track["name"])
+    if track.get("is_group"):
+        role = "drums_bus" if name_role in set(ROLE_GROUPS["drums"]) else "bus"
+        return Role(track["key"], track["name"], role, DEFAULT_PRIORITY[role], "group")
+    # An automatic container name and an effect called "Drum Buss" are weak evidence.
+    specific_name = name_role if name_role not in {"drums_bus", "bus"} else None
+    sources = [("name", specific_name),
+               ("drum pads" if rack else "devices", content_role),
+               ("devices", from_devices(detail)),
+               ("midi", from_midi(notes) if not rack else None),
                ("sound", from_sound(st)),
-               ("devices", "drums_bus" if is_drum_rack(devices) else None),
-               ("name", from_name(track["name"]))]
+               ("devices", "percussion" if rack else None),
+               ("name", name_role)]
     for source, role in sources:
         if role:
-            return Role(track["key"], track["name"], role, DEFAULT_PRIORITY[role], source)
+            return Role(track["key"], track["name"], role, DEFAULT_PRIORITY[role], source,
+                        evidence if source == "drum pads" else "")
     return Role(track["key"], track["name"], "other", DEFAULT_PRIORITY["other"], "default")
 
 

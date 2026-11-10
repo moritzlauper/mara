@@ -4,6 +4,26 @@ import soundfile as sf
 from mixmatch.style import SR, library_files, loudest_clips, search_links, tempo
 
 
+def test_api_only_suggestions_never_start_claude_code(monkeypatch):
+    import json
+    from types import SimpleNamespace
+    import anthropic
+    import mixmatch.style as style
+
+    monkeypatch.setenv("MIXMATCH_PLANNER", "api")
+    calls = []
+    result = {"style": "pop", "suggestions": [], "free_suggestions": []}
+
+    def create(**kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(content=[SimpleNamespace(type="text", text=json.dumps(result))])
+
+    monkeypatch.setattr(anthropic, "Anthropic", lambda **kwargs: SimpleNamespace(messages=SimpleNamespace(create=create)))
+    monkeypatch.setattr(style.subprocess, "run", lambda *a, **k: (_ for _ in ()).throw(AssertionError("subscription used")))
+    assert style.suggest({"tempo_bpm": 140}, log=lambda *_: None) == result
+    assert calls[0]["output_config"]["format"]["schema"] == style.SUGGEST_SCHEMA
+
+
 def test_tempo_of_a_click_track():
     beat = int(SR * 60 / 140)                      # 140 BPM
     mono = np.zeros(SR * 20, dtype=np.float32)

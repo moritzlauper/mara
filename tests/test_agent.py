@@ -1,4 +1,5 @@
 import json
+import pytest
 
 from mixmatch.agent import Agent, Settings
 from mixmatch.planner import ACTION_SCHEMA, ClaudePlanner, RulePlanner
@@ -35,6 +36,75 @@ def test_a_project_without_vocals_runs_in_beat_mode():
     agent = Agent(live, hub, RulePlanner(), Settings(minutes=0.5, settle=1.0), env=env, log=logs.append)
     agent.understand()
     assert agent.beat and any("beat" in l for l in logs)
+
+
+@pytest.mark.parametrize("muted_parent", [False, True])
+def test_muted_vocals_do_not_select_song_mode_or_get_channel_work(tmp_path, muted_parent):
+    song, hub, env, live = demo_project()
+    vocal = next(t for t in song.tracks if t.name == "Lead Vox")
+    if muted_parent:
+        parent = next(t for t in song.tracks if t.name == "Pad")
+        parent.is_foldable, parent.mute = True, True
+        vocal.is_grouped, vocal.group_track = True, parent
+    else:
+        vocal.mute = True
+    env.wait(2)
+    stub = ChannelStub()
+    agent = Agent(live, hub, stub, Settings(minutes=None, complete=True, settle=1,
+                  roles_file=str(tmp_path / "roles.json"), log_dir=str(tmp_path)), env=env, log=lambda *_: None)
+    agent.run()
+    key = next(k for k, r in agent.roles.items() if r.name == "Lead Vox")
+    assert agent.roles[key].role == "lead_vocal"  # identity stays, audibility changes the mode
+    assert agent.beat and not agent.audible_vocals()
+    assert key not in stub.tasks
+
+
+@pytest.mark.parametrize("mode,muted,expected", [("auto", True, True), ("auto", False, False),
+                                                ("song", True, False), ("beat", False, True)])
+def test_resume_rechecks_vocal_mutes_and_respects_explicit_mode(tmp_path, mode, muted, expected):
+    song, hub, env, live = demo_project()
+    next(t for t in song.tracks if t.name == "Lead Vox").mute = muted
+    env.wait(2)
+    agent = Agent(live, hub, RulePlanner(), Settings(mode=mode, roles_file=str(tmp_path / "roles.json")),
+                  env=env, log=lambda *_: None)
+    agent.understand()
+    agent._resume_from({"regions": {}, "phase": "channels", "beat": True, "silent_vocals": []})
+    assert agent.beat is expected
+
+
+def test_corrected_roles_are_revisited_and_the_queue_survives_another_stop(tmp_path, monkeypatch):
+    song, hub, env, live = demo_project()
+    env.wait(2)
+    roles_path = tmp_path / "roles.json"
+    roles_path.write_text(json.dumps({"Kick": {"role": "drums_bus", "source": "auto"}}))
+    settings = Settings(resume="auto", roles_file=str(roles_path), log_dir=str(tmp_path))
+    agent = Agent(live, hub, RulePlanner(), settings, env=env, log=lambda *_: None)
+    agent.understand()
+    kick = next(k for k, r in agent.roles.items() if r.name == "Kick")
+    pad = next(k for k, r in agent.roles.items() if r.name == "Pad")
+    assert agent.role_reviews == {kick}
+    agent.regions = {k: (0, 16) for k in agent.roles}
+    agent._ck = {"main": ["drop", 0, 16], "regions": agent.regions}
+    monkeypatch.setattr(agent, "play_loop", lambda *args: None)
+    def interrupt(*args, **kwargs):
+        raise KeyboardInterrupt
+    monkeypatch.setattr(agent, "section", interrupt)
+    with pytest.raises(KeyboardInterrupt):
+        agent.channel_pass(("drop", 0, 16), float("inf"), "Pad")
+    ck = agent.load_checkpoint()
+    assert ck["pending_channels"] == [kick, pad]
+    assert ck["next_channel"] == "Kick"
+
+    resumed = Agent(live, hub, RulePlanner(), settings, env=env, log=lambda *_: None)
+    resumed.understand()  # roles.json now has the corrected identity
+    assert not resumed.role_reviews
+    resumed._resume_from(ck)
+    visited = []
+    monkeypatch.setattr(resumed, "play_loop", lambda *args: None)
+    monkeypatch.setattr(resumed, "section", lambda *args, **kwargs: visited.append(kwargs["focus"]))
+    resumed.channel_pass(("drop", 0, 16), float("inf"), ck["next_channel"])
+    assert visited == [kick, pad]  # no unrelated already-processed channels are repeated
+    assert not resumed.pending_channels and not resumed.role_reviews
 
 
 class FakeClaude:
@@ -336,6 +406,7 @@ class TinyPlanner:
 
 def test_a_round_without_measurable_effect_is_undone():
     song, hub, env, live = demo_project()
+    env.jitter = 0.0  # isolate the tiny move from the simulated measurement noise
     env.wait(5)
     logs = []
     agent = Agent(live, hub, TinyPlanner(), Settings(minutes=1, settle=1.0, fine=False), env=env, log=logs.append)
@@ -344,7 +415,7 @@ def test_a_round_without_measurable_effect_is_undone():
     vol = lambda s: next(p["value"] for t in s["tracks"] if t["key"] == "t5" for p in t["mixer"] if p["name"] == "Volume")
     agent.section("test", env.now() + 600, max_rounds=1)
     assert agent.history and agent.history[-1].undone
-    assert any("undone, no measurable change" in l for l in logs)
+    assert "no measurable improvement" in agent.history[-1].plan["verification"]
     assert abs(vol(live.get_set()) - vol(before)) < 1e-9
 
 
@@ -405,6 +476,33 @@ def test_silent_mode_turns_the_main_fader_down_and_back():
     assert during and all(v == 0.0 for v in during)       # down while it worked …
     assert vol() == before                                  # … and back afterwards
     assert any(h.after is not None and not h.undone for h in history)   # it still measured and improved
+
+
+@pytest.mark.parametrize("signal", ["tail", "never_quiet", "missing"])
+def test_silent_stop_waits_for_effect_tails_and_does_not_guess_silence(signal):
+    song, hub, env, live = demo_project()
+    agent = Agent(live, hub, RulePlanner(), Settings(silent=True), env=env, log=lambda *_: None)
+    agent.ex.refresh()
+    original = agent.mute_main()
+    started, wait = env.now(), env.wait
+
+    def decay(seconds):
+        assert song.master_track.mixer_device.volume.value == 0
+        wait(seconds)
+        tap = next(t for t in hub.snapshot() if t.kind == "master")
+        if signal == "missing":
+            tap.frames.clear()
+        elif signal == "never_quiet" or env.now() - started < 2 or 2.5 < env.now() - started < 2.9:
+            tap.frames[-1].peak = 0.1  # a delayed echo interrupts an otherwise quiet interval
+
+    env.wait = decay
+    restored = agent.restore_main_when_quiet(original)
+    assert not song.is_playing
+    if signal == "tail":
+        assert restored and env.now() - started >= 4.0
+        assert song.master_track.mixer_device.volume.value == original
+    else:
+        assert not restored and song.master_track.mixer_device.volume.value == 0
 
 
 def test_progress_rises_round_by_round_and_ends_at_the_total(tmp_path):
@@ -488,13 +586,76 @@ def test_a_stopped_run_continues_exactly_where_it_stopped(tmp_path):
     assert open(ab.latest_before(str(tmp_path))).read() == original_before   # «before» is the state before the first part
 
 
+def test_resume_preserves_automatically_selected_references(tmp_path):
+    from conftest import write_audio
+    from mixmatch.reference import ReferenceSet
+
+    song, hub, env, live = demo_project()
+    path = write_audio(str(tmp_path / "reference.wav"))
+    refs = ReferenceSet([path], log=lambda *_: None)
+    settings = Settings(log_dir=str(tmp_path))
+    first = Agent(live, hub, RulePlanner(), settings, env=env, log=lambda *_: None, references=refs)
+    first.save_checkpoint(phase="master", regions={}, beat=True)
+    saved = json.loads((tmp_path / "checkpoint.json").read_text())
+    resumed = Agent(live, hub, RulePlanner(), settings, env=env, log=lambda *_: None)
+    resumed._resume_from(saved)
+    assert resumed.refset.paths == [path]
+    assert resumed.beat and resumed.target.loudness == refs.target(True).loudness
+    assert resumed.target.description == refs.target(True).description
+
+
+@pytest.mark.parametrize("complete", [False, True])
+def test_reference_search_pauses_and_only_explicit_selection_resumes(tmp_path, monkeypatch, complete):
+    from conftest import write_audio
+    from mixmatch import ab
+    from mixmatch.reference import ReferenceSet
+
+    song, hub, env, live = demo_project()
+    env.wait(5)
+    found = ReferenceSet([write_audio(str(tmp_path / "found.wav"))], log=lambda *_: None)
+    chosen = ReferenceSet([write_audio(str(tmp_path / "chosen.wav"), seed=1)], log=lambda *_: None)
+    before = ab.snapshot(live.get_set())
+    calls = []
+
+    def find(agent, part):
+        calls.append("search")
+        agent.refset = found
+
+    def section(agent, *args, **kwargs):
+        calls.append(("mix", agent.refset.paths))
+
+    monkeypatch.setattr(Agent, "find_references", find)
+    monkeypatch.setattr(Agent, "section", section)
+    settings = lambda **kw: Settings(minutes=None, complete=complete, mode="song", focus="loud", settle=1,
+                                    fine=False, audit=False, log_dir=str(tmp_path / "runs"), **kw)
+    first = Agent(live, hub, RulePlanner(), settings(auto_ref=True, review_references=True), env=env, log=lambda *_: None)
+    first.run()
+    ck = first.load_checkpoint()
+    assert calls == ["search"] and ck["phase"] == "references" and ck["complete"] == complete
+    assert not ab.changes_to(before, live.get_set(), bypass_new=True)
+    assert ab.snapshot(live.get_set())["tracks"] == before["tracks"]
+
+    # Continue without a new choice must not silently reuse the search result.
+    waiting = Agent(live, hub, RulePlanner(), settings(resume="auto"), env=env, log=lambda *_: None)
+    waiting.run()
+    assert calls == ["search"] and waiting.load_checkpoint()["phase"] == "references"
+
+    monkeypatch.setattr(Agent, "scan", lambda *a: pytest.fail("saved scan must be reused"))
+    resumed = Agent(live, hub, RulePlanner(), settings(resume="auto", replace_references=True),
+                    references=chosen, env=env, log=lambda *_: None)
+    resumed.run()
+    assert calls[1:] and all(c == ("mix", chosen.paths) for c in calls[1:])
+    assert resumed.load_checkpoint() is None
+
+
 def test_a_channel_outside_the_loudest_part_is_not_compared_with_the_references():
     song, hub, env, live = demo_project()
     env.wait(5)
     agent = Agent(live, hub, RulePlanner(), Settings(minutes=1, settle=1.0), env=env, log=lambda *_: None)
     agent.understand()
     m = agent.measure("local")
-    assert m["cmp"] is None and set(m["parts"]) <= {"masking", "low_side"}
+    assert m["cmp"] is None and set(m["parts"]) <= {"masking", "low_side", "clipping"}
+    assert m["parts"]["clipping"] == pytest.approx(max(0, m["master"].peak_db + 1) * 4)
     ctx = agent.context("channel Bass", m, focus="t1")
     assert "outside the song's loudest part" in ctx["scope"] and ctx["master_vs_reference"] is None
 

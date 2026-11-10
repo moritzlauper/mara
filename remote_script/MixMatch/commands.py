@@ -48,6 +48,16 @@ def _display(param, value=None):
 
 
 TAP = "MixMatch Tap"
+DUCKER = "MARA Duck"
+
+
+def _routing_name(route):
+    return str(route.get("display_name", "")) if isinstance(route, dict) else str(getattr(route, "display_name", ""))
+
+
+def _routing_options(device, prop):
+    value = getattr(device, prop)
+    return list(value.get(prop, [])) if isinstance(value, dict) else list(value)
 
 
 def _stem(name):
@@ -127,6 +137,68 @@ class Commands:
     def ping(self, _):
         return {"pong": True}
 
+    def role_context(self, _):
+        """Read instrument identities inside racks once per run, without copying parameters.
+
+        Pad.note is the rack's actual mapping; MIDI note 36 is not assumed to be a
+        kick. Only populated pads are returned, with mute/solo and nested devices.
+        See https://docs.cycling74.com/apiref/lom/rackdevice/ and /drumpad/.
+        """
+        def device_info(d, depth, budget):
+            if depth > 6 or budget[0] <= 0:
+                return None
+            budget[0] -= 1
+            params = list(getattr(d, "parameters", []))
+            out = {"name": d.name, "class_name": getattr(d, "class_name", ""),
+                   "type": int(getattr(d, "type", 0)),
+                   "enabled": next((p.value >= 0.5 for p in params if p.name == "Device On"), True)}
+            try:
+                sample = getattr(d, "sample", None)
+                path = getattr(sample, "file_path", "") if sample is not None else ""
+                if path:
+                    out["sample_name"] = str(path).replace("\\", "/").rsplit("/", 1)[-1]
+            except Exception:
+                pass  # not every instrument exposes a sample
+
+            def chain_info(c):
+                children = [device_info(child, depth + 1, budget) for child in c.devices]
+                return {"name": c.name, "muted": bool(getattr(c, "mute", False)),
+                        "solo": bool(getattr(c, "solo", False)), "devices": [x for x in children if x]}
+
+            pads = list(getattr(d, "drum_pads", [])) if getattr(d, "can_have_drum_pads", False) else []
+            if pads:
+                out["drum_pads"] = [{"name": p.name, "note": int(p.note), "muted": bool(p.mute),
+                                     "solo": bool(p.solo), "chains": [chain_info(c) for c in p.chains]}
+                                    for p in pads if len(p.chains)]
+            elif getattr(d, "can_have_chains", False):
+                out["chains"] = [chain_info(c) for c in d.chains]
+            return out
+
+        tracks = {}
+        for key, kind, track in self._tracks():
+            if kind == "master":
+                continue
+            budget = [512]
+            devices = [device_info(d, 0, budget) for d in track.devices]
+            counts = None
+            if getattr(track, "has_midi_input", False):
+                try:
+                    counts = {}
+                    clips = list(getattr(track, "arrangement_clips", []))
+                    clips += [slot.clip for slot in getattr(track, "clip_slots", []) if slot.has_clip
+                              and getattr(slot.clip, "is_playing", False)]
+                    for clip in clips:
+                        if not clip.is_midi_clip or getattr(clip, "muted", False):
+                            continue
+                        for note in clip.get_notes_extended(0, 128, clip.start_marker, clip.end_marker - clip.start_marker):
+                            if not getattr(note, "mute", False) and note.velocity > 0:
+                                pitch = str(int(note.pitch))
+                                counts[pitch] = counts.get(pitch, 0) + 1
+                except Exception:
+                    counts = None  # unavailable is different from a part with no notes
+            tracks[key] = {"devices": [d for d in devices if d], "played_notes": counts}
+        return {"tracks": tracks}
+
     def get_set(self, _):
         tracks = []
         for key, kind, t in self._tracks():
@@ -154,6 +226,9 @@ class Commands:
                 ],
             })
         return {
+            "capabilities": {"sidechain_ducking": True},
+            "name": getattr(self.song, "name", "") or "",
+            "file_path": getattr(self.song, "file_path", "") or "",
             "tempo": self.song.tempo,
             "is_playing": self.song.is_playing,
             "song_time": self.song.current_song_time,
@@ -216,6 +291,93 @@ class Commands:
             new = list(track.devices)[-1]
             self.song.move_device(new, track, at)
         return {"index": at}
+
+    def create_ducker(self, req):
+        """Create one bounded parallel sidechain Compressor, or leave the set unchanged.
+
+        Routing follows CompressorDevice's input_routing_type/channel API:
+        https://docs.cycling74.com/apiref/lom/compressordevice/
+        Only a newly created device is configured. Existing compressors are never
+        repurposed, and failures remove the new device before returning an error.
+        """
+        key, source_key = req["track"], req["source_track"]
+        if key == source_key or not key.startswith("t") or not source_key.startswith("t"):
+            raise CommandError("ducking requires two different normal tracks")
+        track, source = self._track(key), self._track(source_key)
+        if any(getattr(t, "is_foldable", False) or getattr(t, "mute", False) or getattr(t, "is_frozen", False)
+               for t in (track, source)):
+            raise CommandError("cannot duck a group, muted or frozen track")
+        source_matches = [t for _, _, t in self._tracks() if t.name == source.name]
+        if len(source_matches) != 1:
+            raise CommandError("sidechain source name is ambiguous")
+        for d in track.devices:
+            if d.name.startswith(DUCKER):
+                raise CommandError("a MARA ducker already exists; do not stack ducking")
+            if getattr(d, "class_name", "") in ("Compressor2", "GlueCompressor"):
+                params = {p.name: p.value for p in d.parameters}
+                if params.get("Device On", 1) < 0.5 or params.get("S/C On", 0) >= 0.5:
+                    raise CommandError("existing disabled or sidechain compressor is left alone")
+        level = float(req["source_level_dbfs"])
+        depth = float(req.get("reduction_db", 2.0))
+        release = float(req.get("release_ms", 120.0))
+        if not all(math.isfinite(v) for v in (level, depth, release)) or not -70 <= level <= 6:
+            raise CommandError("invalid measured source level or ducking settings")
+        depth, release = max(0.5, min(3.0, depth)), max(50.0, min(250.0, release))
+        before = list(track.devices)
+        device = None
+        try:
+            at = self.load_device({"track": key, "name": "Compressor"})["index"]
+            device = list(track.devices)[at]
+            if getattr(device, "class_name", "") != "Compressor2":
+                raise CommandError("Live did not load its native Compressor")
+            params = {p.name: p for p in device.parameters}
+            raw = {"Device On": 0, "S/C On": 1, "S/C Listen": 0, "S/C EQ On": 0,
+                   "Makeup": 0, "Auto Release On/Off": 0}
+            targets = {"Threshold": max(-60.0, min(0.0, level - 12.0)), "Ratio": 4.0,
+                       "Attack": 2.0, "Release": release, "Output": 0.0, "S/C Gain": 0.0,
+                       "S/C Mix": 100.0, "Dry/Wet": (1 - 10 ** (-depth / 20)) * 100}
+            if any(name not in params for name in (*raw, *targets, "Model")):
+                raise CommandError("Compressor is missing required sidechain controls")
+            params["Device On"].value = 0
+            routes = [r for r in _routing_options(device, "available_input_routing_types")
+                      if _routing_name(r) == source.name]
+            if len(routes) != 1:
+                raise CommandError("sidechain source is unavailable or ambiguous")
+            device.input_routing_type = routes[0]
+            channels = [r for r in _routing_options(device, "available_input_routing_channels")
+                        if _routing_name(r).lower() == "post fx"]
+            if len(channels) != 1:
+                raise CommandError("Post FX sidechain input is unavailable")
+            device.input_routing_channel = channels[0]
+            model = params["Model"]
+            items = list(getattr(model, "value_items", []))
+            if "RMS" not in items:
+                raise CommandError("Compressor RMS detector is unavailable")
+            model.value = model.min + items.index("RMS")
+            for name, value in raw.items():
+                params[name].value = value
+            for name, target in targets.items():
+                p = params[name]
+                value = self._search(p, target)
+                p.value = max(p.min, min(p.max, value))
+                actual = parse_display(_display(p))
+                if actual is None or abs(actual - target) > max(0.1, abs(target) * 0.03):
+                    raise CommandError("could not set Compressor %s" % name)
+            # Dry signal bounds the attenuation even if the trigger exceeds its measured level.
+            # Round down the wet control if display rounding would exceed that bound.
+            wet = params["Dry/Wet"]
+            while parse_display(_display(wet)) > targets["Dry/Wet"] + 0.01:
+                wet.value = max(wet.min, wet.value - (wet.max - wet.min) / 1000)
+            device.name = "%s ← %s" % (DUCKER, source.name)
+            params["Device On"].value = 1
+            return {"index": at, "name": device.name}
+        except Exception:
+            # Identity matters: never delete an existing device after a failed browser load.
+            for i in reversed(range(len(track.devices))):
+                d = track.devices[i]
+                if d not in before:
+                    track.delete_device(i)
+            raise
 
     def browser_tree(self, req):
         """Diagnostics: a part of Live's browser with the flags of each item."""
@@ -302,6 +464,23 @@ class Commands:
         return {"notes": out}
 
     # ── capturing the master (for listening with CLAP) ──────────────────────
+    def preview_output(self, req):
+        """Temporarily disconnect hardware output without muting the recorded signal."""
+        master = self.song.master_track
+        if req.get("muted"):
+            if not hasattr(self, "_preview_output"):
+                route = next((r for r in getattr(master, "available_output_routing_types", [])
+                              if r.display_name == "Sends Only"), None)
+                if route is None:
+                    raise CommandError("silent preview recording is not available on this output")
+                original = (master.output_routing_type, master.output_routing_channel)
+                master.output_routing_type = route
+                self._preview_output = original
+        elif hasattr(self, "_preview_output"):
+            master.output_routing_type, master.output_routing_channel = self._preview_output
+            del self._preview_output
+        return {"muted": hasattr(self, "_preview_output")}
+
     def capture_start(self, req):
         """New audio track recording the master («Resampling») or, with `source`, one track after its devices,
         into its first clip slot; monitoring off."""

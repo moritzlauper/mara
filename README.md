@@ -9,7 +9,8 @@ made things worse.
 A run is complete by default:
 
 1. It plays the song once and notes where each channel plays and how loud.
-2. It matches the master to the references at the song's loudest 16 bars.
+2. It diagnoses the mix at the song's loudest 16 bars, using the references
+   as an important direction while preserving the track's own character.
 3. It goes through every channel, group and return, most important first,
    each looped where it plays: level, EQ, masking, width, dynamics, sends, or
    nothing if it sits well.
@@ -46,12 +47,53 @@ and on the master  (UDP 9878)                    compare with the references
 ### Understanding the channels
 
 At the start every channel gets a role (kick, bass, lead vocal, pad, …) and a
-priority, from the track name, the devices on it and how it sounds. The result
+priority, from the track name, instrument/sample names inside racks, played MIDI
+notes and how it sounds. Drum racks are identified from their actually played
+pads: a rack playing only DS Kick is a kick, only DS Cymbal is cymbals; a mixed
+kit can be a drums bus. A Drum Buss effect does not define the instrument. The result
 is written to `roles.json`; correct it there if needed, e.g.
 
 ```json
 { "Synth 3": { "role": "lead_synth", "priority": 4, "note": "the hook, keep it upfront" } }
 ```
+
+When continuing a stopped run, corrected roles are rechecked even if those
+channels were already processed. Unchanged channels keep their place in the run.
+
+### Instruments masking each other
+
+Masking is measured from simultaneous tap frames (about 100 ms apart), with
+the channel and group faders accounted for. Alternating notes, silence and
+quiet tails do not count as collisions. The detector protects the channel
+with the higher role priority, including when it is quieter than its masker.
+It reports the strongest frequency regions, simultaneous activity and any
+observed drop in the background level during foreground activity. That drop
+is evidence of existing separation, not proof of a particular sidechain setup.
+All detected pairs count in the score; channel passes see their own pairs first.
+
+For repeated intermittent collisions, the planner can use `duck`: a dedicated
+native Compressor on the background, triggered by the foreground's Post FX
+signal. The detector uses RMS, a 2 ms attack, 50–250 ms release and no makeup
+gain. Its parallel dry/wet mix bounds the attenuation to at most 3 dB, even
+when a trigger is louder than the measured window. Existing disabled or
+sidechain compressors are left alone; duckers are not stacked. Failed setup
+removes the new device, and a rejected mixing round removes it too. The
+before/after switch bypasses it for the original mix.
+
+Sustained conflicts use small static EQ cuts on the lower-priority channel;
+the rule planner now handles other instrument pairs as well as kick/bass and
+limits cumulative masking cuts to about 4 dB. The AI receives the same guidance.
+This is broadband sidechain ducking, not frequency-selective dynamic EQ.
+
+The detector remains a coarse heuristic: 31 bands at 10 Hz cannot establish
+perceptual masking or resolve individual transients. The UI therefore calls
+it *potential masking*. Missing or poorly aligned tap data never establishes
+a collision, and a round cannot claim improvement by losing the observations
+of a previously detected pair.
+
+Sidechain creation requires the updated MixMatch remote script in Live
+(reinstall using the setup steps below and reload Live). Older scripts still
+use temporal detection and EQ correction, but do not offer the `duck` action.
 
 ### References
 
@@ -67,17 +109,18 @@ track can stay muted, and it never mixes that track.
 
 ### Beats without vocals
 
-If your project has no vocal channel (or with `--mode beat`), MixMatch compares
-your beat with the references **without their vocals**:
+If your project has no audible vocal channel (or with `--mode beat`), MixMatch
+uses beat mode while comparing against the full reference songs.
 
-* With Demucs installed (`pip install "mixmatch[stems]"`), each reference is
-  split into vocals and instrumental once (cached). Tonal balance, width and
-  dynamics come from the instrumental.
-* The loudness target comes from the full songs, since beats are usually
-  mastered as loud as songs. Use `--loudness-from instrumental` to change that.
-* Without Demucs, the vocal range (200 Hz–5 kHz) only counts where your beat is
-  louder than the references, so the missing vocals are not "fixed" by pushing
-  instruments into that range.
+Muted vocal tracks, including tracks inside muted groups, do not select song
+mode and are skipped in the channel pass. Auto mode also switches to beat when
+the full song scan proves all vocal channels silent. On resume, track mutes are
+checked again; `--mode song` and `--mode beat` remain explicit overrides.
+
+The vocal range (200 Hz–5 kHz) may sit up to 4 dB below the references, leaving
+space for vocals without pushing instruments up to imitate a voice. Level is
+matched using the bands outside that range; loudness and dynamics still come
+from the full songs.
 
 ### Safety
 
@@ -88,8 +131,10 @@ your beat with the references **without their vocals**:
   limiter, Classic Clipper before it, Pro-C 2 and others when Claude asks for
   them. Plugins that show Live no parameters (Pro-Q 3) cannot be controlled.
 * Automated parameters (filter sweeps, build-ups) are never touched.
-* Every round is measured; a round that makes the distance to the target worse
-  is undone, and Claude sees that in the history.
+* Every round is measured against its stated purpose. A verified reduction in
+  masking, peak overload or stereo bass can justify a small reference setback.
+  Moves with no verified benefit, lost layers, excessive dynamics loss or too
+  much spectral drift are undone; Claude sees the reason in the history.
 * Touch a fader or knob yourself and that parameter is locked for the rest of
   the run.
 * The limiter ceiling is fixed at −1 dBFS.
@@ -150,6 +195,35 @@ so a full mix takes roughly 5 to 20 minutes.
 
 ## What to expect
 
+The Before/After controls play recorded 16-bar excerpts in the browser, with
+Play/Pause, seeking and volume. Before stays available while Live mixes
+silently; After appears when that run has an after snapshot and audio recording.
+Equal loudness is on by default once both excerpts are available. It measures
+integrated loudness with pyloudnorm (BS.1770), then attenuates the louder excerpt
+to the quieter one for playback, including blind comparison. The original WAVs,
+mix parameters, waveform dynamics and the player's volume setting are preserved.
+Both use the same passage. Continued runs carry the original Before recording
+forward. Blind random also plays these files without changing the Live set.
+Preview recording temporarily disconnects Live's hardware output rather than
+muting the recorded signal, then restores the mix, routing and transport.
+
+MARA uses a mix-first policy (`mix-first-v1`). Claude receives a six-region
+spectrum overview with the strongest source channels, roles, user notes and
+measured conflicts. Each round states one measurable priority, its evidence,
+what character to preserve and how the reference is relevant. An arrangement
+or timbre difference is not automatically a defect, and a remaining loudness
+gap does not require exhausting the limiter or clipper.
+
+Fresh measurements verify the chosen benefit. Reference-only moves must still
+improve the overall measurement; mix-health improvements may trade a small
+amount of reference proximity. Fixed passage baselines bound cumulative tonal,
+level and dynamics changes across channel passes and checkpoint resumes. An
+effect is not bypassed just because the reference score improves without it.
+The distance display remains a measurement, not a verdict on musical quality.
+These protections are heuristics; PLR and spectral energy cannot prove how a
+change sounds. Existing stopped runs load this policy on continuation, without
+discarding the retained mix changes or rescanning the song.
+
 Reliable: loudness like the references, tonal balance of the master, bass in
 mono, clipping, kick/bass separation, rough balance between channels. Harder:
 compression settings (attack and release are only approximated from the
@@ -175,15 +249,16 @@ suggests real tracks to mix against, with Bandcamp and Beatport search links.
 Buy the ones you like and put the WAVs into `references/`; MixMatch does not
 download music itself.
 
-### Fully automatic
+### Find suggestions, then choose
 
 `mixmatch run` without `--ref` finds its references itself (`--auto-ref`):
 it records the loudest 16 bars from Live's master (a temporary track with
 input «Resampling», monitoring off, deleted afterwards), names the style with
 CLAP, and picks the closest mastered songs from `references/` and your
 library. It also writes a list of real tracks to get, with Bandcamp links
-(`runs/…-buy.md`); put what you get into `references/` and the next run uses
-it. `--jamendo` adds Creative Commons tracks from Jamendo (`JAMENDO_CLIENT_ID`
+(`runs/…-buy.md`). It saves the song scan and pauses before making mix changes.
+Choose your tracks in the interface, or continue with `mixmatch run --continue --ref chosen.wav --no-suggest`.
+`--jamendo` adds Creative Commons tracks from Jamendo (`JAMENDO_CLIENT_ID`
 in `env.local`, which MixMatch reads by itself).
 
 ## Interface
@@ -192,14 +267,33 @@ in `env.local`, which MixMatch reads by itself).
 mixmatch ui        # opens http://127.0.0.1:8765
 ```
 
-Each track has its own folder `songs/<track>/` with its references, roles,
+The top-level `references/` is a shared reference library, detected automatically
+even when a run works inside a song folder. Its files appear under References,
+where «Use this reference» selects one for the current song. They also take part
+in reference discovery. Adding a file to the library does not start a mix.
+
+Each track has its own folder `songs/<track>/` with its selected references, roles,
 description and runs. «New track» starts an empty one for the set that is open
 in Live; MARA notices when Live has another set open and offers to switch or
 start a new track. Before a run, a checklist shows whether Live is connected,
 whether every channel has a tap, the references and the description.
 References of earlier tracks can be picked again under References → Used
-before. On the first start, files from the old layout (`references/`, `runs/`,
-`roles.json`, `mixmatch.json`) move into the first track.
+before. On the first start, `runs/`, `roles.json` and `mixmatch.json` move into
+the first track; the shared `references/` stays in place.
+
+Choose «I already have reference tracks» to add your tracks and skip discovery,
+or «Find reference suggestions for me» to prepare the song and review suggestions
+before mixing. «Continue mixing with references» resumes a paused mix from its
+checkpoint. Silent mode mutes Main before starting playback. At the end it stops
+playback and waits for measured effect tails to fade before restoring the volume.
+If silence cannot be confirmed within eight seconds, Main stays muted.
+
+For a blind before/after comparison after the run, click **Blind random · B**
+or press **B** with your eyes closed. A focused blind button also responds to
+Space. Every press independently chooses the original or processed mix;
+the same version can occur twice. Neither the active version nor a parameter
+count is shown until you click **Reveal**. Both snapshots of the latest run
+must exist, and comparison is disabled while MARA is mixing.
 
 Start, stop and resume runs, follow what MixMatch does and why (distance to
 the target and where it comes from, every round kept or undone), see key,
