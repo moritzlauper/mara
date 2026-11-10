@@ -210,6 +210,10 @@ def log_chain(path: str) -> list[str]:
     i = logs.index(path) if path in logs else 0
     while i > 0 and any(m in open(chain[0]).read() for m in ("━━ Channel pass, resumed at", "↻ Continuing the run")):
         i -= 1
+        # A failed connection/measurement startup never replaced the checkpoint.
+        # When continuing it, walk past these attempts to the actual previous run.
+        while i > 0 and "Stopped: no channel reports through a MixMatch Tap" in open(logs[i]).read():
+            i -= 1
         chain.insert(0, logs[i])
     return chain
 

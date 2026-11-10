@@ -232,6 +232,32 @@ def test_a_resumed_run_shows_the_whole_history_and_its_progress(tmp_path):
     assert s["progress"]["done"] == 4 and s["progress_start"]["t"] == 100.0
 
 
+def test_resume_retains_comparison_and_song_after_failed_tap_start(tmp_path):
+    from mixmatch.ui import log_chain
+
+    first = tmp_path / "ui-20260101-100000.log"
+    first.write_text("Taps: 3 channels\nKey: G minor\nsounds like: atmospheric house\n"
+                     "━━ Master against the reference\n  distance 2.5   (tonal 2.5)\n")
+    failed = tmp_path / "ui-20260101-110000.log"
+    failed.write_text("Taps: 0 channels\nStopped: no channel reports through a MixMatch Tap, "
+                      "so there is nothing to measure.\n")
+    resumed = tmp_path / "ui-20260101-120000.log"
+    resumed.write_text("Taps: 3 channels\n↻ Continuing the run from 2026-01-01 10:00 at effects\n"
+                       "━━ Effects: what does nothing or harms\n")
+    chain = log_chain(str(resumed))
+    assert chain == [str(first), str(resumed)]
+    state = parse_log([line for path in chain for line in open(path)])
+    assert state["distance"] == 2.5
+    assert state["key"] == "G minor"
+    assert state["style"] == "atmospheric house"
+    assert state["phase"] == "Effects: what does nothing or harms"
+    assert state["done"] is None
+
+    # A new run must never inherit the previous run's comparison or song.
+    resumed.write_text("Taps: 3 channels\n━━ Master against the reference\n")
+    assert log_chain(str(resumed)) == [str(resumed)]
+
+
 def test_buy_list_adds_a_preview_from_the_cache(tmp_path, monkeypatch):
     import json as _json
     import mixmatch.style as style
