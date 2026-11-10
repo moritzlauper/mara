@@ -227,7 +227,7 @@ class Commands:
                 ],
             })
         return {
-            "capabilities": {"sidechain_ducking": True},
+            "capabilities": {"sidechain_ducking": True, "aligned_capture": True},
             "name": getattr(self.song, "name", "") or "",
             "file_path": getattr(self.song, "file_path", "") or "",
             "tempo": self.song.tempo,
@@ -537,7 +537,19 @@ class Commands:
         track.current_monitoring_state = 2  # Off: hearing the master on it again would feed back
         track.arm = True
         slot = list(track.clip_slots)[0]
-        slot.fire(record_length=float(req.get("beats", 64)))
+        try:
+            if "start" in req:
+                # Position and launch in the same Live command, after track creation.
+                # Do not depend on the user's global launch quantization or TCP latency.
+                song.is_playing = False
+                song.current_song_time = float(req["start"])
+                slot.fire(record_length=float(req.get("beats", 64)), launch_quantization=0)
+                song.is_playing = True
+            else:
+                slot.fire(record_length=float(req.get("beats", 64)))
+        except Exception:
+            song.delete_track(len(list(song.tracks)) - 1)
+            raise
         return {"track": len(list(song.tracks)) - 1}
 
     def capture_status(self, req):

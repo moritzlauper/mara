@@ -94,3 +94,15 @@ def test_added_device_keeps_verified_settings_in_review(tmp_path):
     assert item['kind']=='added'
     assert item['settings']==[{'param':'Frequency','value':'403 Hz'},{'param':'Gain','value':'-1.5 dB'}]
     assert item['verification']=='Verified masking improvement'
+
+
+def test_review_excludes_automated_values_from_change_count(tmp_path):
+    _, _, _, live = demo_project()
+    before = live.get_set()
+    track = before['tracks'][0]
+    track['mixer'][0]['automated'] = True
+    ab.save(before, str(tmp_path), '1', 'before')
+    track['mixer'][0]['value'] += .1
+    ab.save(before, str(tmp_path), '1', 'after')
+    result = review.changes(str(tmp_path))
+    assert result['ready'] and result['kept'] == []

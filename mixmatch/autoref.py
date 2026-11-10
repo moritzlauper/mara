@@ -129,9 +129,11 @@ def capture(live, start: float, length: float, tempo: float, log=print) -> str |
     return path
 
 
-def capture_begin(live, beats: float, source: str | None = None) -> int:
+def capture_begin(live, beats: float, source: str | None = None, *, start: float | None = None) -> int:
     """Starts recording `beats` of the master (or of track `source`) at the next bar; returns the capture track."""
     req = {"beats": beats}
+    if start is not None:
+        req["start"] = start
     if source:
         req["source"] = source
     return live.request("capture_start", **req)["track"]

@@ -28,6 +28,7 @@ def _device_ids(devices: list[dict]) -> list[str]:
 def snapshot(set_state: dict) -> dict:
     tracks = {}
     displays = {}
+    automation = {}
     for t in set_state["tracks"]:
         tracks[t["key"]] = {
             "name": t["name"],
@@ -35,10 +36,13 @@ def snapshot(set_state: dict) -> dict:
             "devices": {i: {p["name"]: p["value"] for p in d["params"]}
                         for i, d in zip(_device_ids(t["devices"]), t["devices"])},
         }
+        automation[t["key"]] = {"Mixer": [p["name"] for p in t["mixer"] if p.get("automated")],
+                                 **{i: [p["name"] for p in d["params"] if p.get("automated")]
+                                    for i, d in zip(_device_ids(t["devices"]), t["devices"])}}
         displays[t["key"]] = {"Mixer": {p["name"]: p.get("display", str(p["value"])) for p in t["mixer"]},
                               **{i: {p["name"]: p.get("display", str(p["value"])) for p in d["params"]}
                                  for i, d in zip(_device_ids(t["devices"]), t["devices"])}}
-    return {"time": time.strftime("%Y-%m-%d %H:%M:%S"), "tracks": tracks, "display": displays}
+    return {"time": time.strftime("%Y-%m-%d %H:%M:%S"), "tracks": tracks, "display": displays, "automation": automation}
 
 
 def save(set_state: dict, log_dir: str, stamp: str, which: str) -> str:
@@ -56,20 +60,24 @@ def changes_to(target: dict, set_state: dict, bypass_new: bool) -> list[dict]:
         want = target["tracks"].get(t["key"])
         if want is None or want["name"] != t["name"]:
             continue
+        automated = target.get("automation", {}).get(t["key"], {})
         for p in t["mixer"]:
+            if p.get("automated") or p["name"] in automated.get("Mixer", []):
+                continue
             v = want["mixer"].get(p["name"])
             if v is not None and abs(v - p["value"]) > 1e-6:
                 out.append({"track": t["key"], "device": "mixer", "param": p["name"], "value": v})
         for i, (dev_id, d) in enumerate(zip(_device_ids(t["devices"]), t["devices"])):
             if d["name"] == "MixMatch Tap":
                 continue   # the taps are switched by the runs, not part of the mix
+            protected = set(automated.get(dev_id, [])) | {p["name"] for p in d["params"] if p.get("automated")}
             params = {p["name"]: p["value"] for p in d["params"]}
             if dev_id not in want["devices"]:
-                if bypass_new and params.get("Device On", 0) >= 0.5 and d["name"] != "MixMatch Tap":
+                if bypass_new and "Device On" not in protected and params.get("Device On", 0) >= 0.5 and d["name"] != "MixMatch Tap":
                     out.append({"track": t["key"], "device": i, "param": "Device On", "value": 0.0})
                 continue
             for name, v in want["devices"][dev_id].items():
-                if name in params and abs(v - params[name]) > 1e-6:
+                if name not in protected and name in params and abs(v - params[name]) > 1e-6:
                     out.append({"track": t["key"], "device": i, "param": name, "value": v})
     return out
 

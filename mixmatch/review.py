@@ -94,7 +94,10 @@ def changes(folder: str) -> dict:
                              "kind": "added" if a is None else "removed", "reason": meta.get('reason') or "The device chain changed.",
                              "verification": meta.get('verification'), 'section': meta.get('section'), 'settings': settings, 'at': changed_at})
                 continue
+            protected = set(before.get("automation", {}).get(key, {}).get(device, [])) | set(after.get("automation", {}).get(key, {}).get(device, []))
             for param in sorted(set(a) & set(b)):
+                if param in protected:
+                    continue
                 if abs(a[param] - b[param]) < 1e-6:
                     continue
                 meta = evidence.get((key, device, param), {})

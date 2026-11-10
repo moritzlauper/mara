@@ -152,9 +152,14 @@ def render(live, snapshot: str, start: float, length: float, log=print) -> dict:
         restore_output = routing.get("restore")
         disconnected = True
         _apply(live, target)
-        # One bar of preroll lets quantized session recording start on the chosen bar.
-        live.transport(loop_start=start, loop_length=length, loop=True, time=max(0, start - 4), play=True)
-        cap = capture_begin(live, length)
+        aligned = current.get("capabilities", {}).get("aligned_capture", False)
+        if aligned:
+            live.transport(loop_start=start, loop_length=length, loop=True, time=start, play=False)
+            cap = capture_begin(live, length, start=start)
+        else:
+            # Older bridges retain compatibility; metadata explicitly identifies them.
+            live.transport(loop_start=start, loop_length=length, loop=True, time=max(0, start - 4), play=True)
+            cap = capture_begin(live, length)
         path = capture_end(live, cap, timeout=(length + 4) * 60 / current["tempo"] + 20)
         if path is None:
             raise RuntimeError("preview recording did not finish")
@@ -167,7 +172,7 @@ def render(live, snapshot: str, start: float, length: float, log=print) -> dict:
         sf.write(dest + ".part", data, sr, format="WAV", subtype="PCM_24")
         os.replace(dest + ".part", dest)
         meta = {"start_bar": start / 4 + 1, "bars": length / 4, "seconds": seconds,
-                "peak_dbfs": 20 * float(np.log10(peak))}
+                "peak_dbfs": 20 * float(np.log10(peak)), "aligned_start": aligned}
         tmp = metadata_path(snapshot) + ".part"
         Path(tmp).write_text(json.dumps(meta))
         os.replace(tmp, metadata_path(snapshot))

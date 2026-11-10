@@ -90,7 +90,7 @@ def test_recording_restores_mix_main_routing_and_transport_even_on_failure(tmp_p
     live.transport(loop_start=32, loop_length=32, time=35, play=True)
     saved = ab.snapshot(live.get_set())
     recorded = write_audio(str(tmp_path / "capture.wav"), seconds=2)
-    monkeypatch.setattr(capture, "capture_begin", lambda *args: 123)
+    monkeypatch.setattr(capture, "capture_begin", lambda *args, **kwargs: 123)
     def end(*args, **kwargs):
         assert song.master_track.output_routing_type.display_name == "Sends Only"
         assert song.master_track.mixer_device.volume.value > 0
@@ -204,3 +204,28 @@ def test_equal_loudness_needs_a_valid_pair_and_uses_perceived_level_not_peaks(tm
     sf.write(preview.audio_path(after), np.zeros(sr * 2), sr)
     assert not preview.matching(str(tmp_path))["ready"]
     assert preview.matched_file(str(tmp_path), "after", "1-after") is None
+
+
+def test_capture_positions_and_launches_atomically_without_global_quantization():
+    from MixMatch.commands import Commands
+    fired = []
+    song = NS(tracks=[], is_playing=True, current_song_time=123)
+    slot = NS(fire=lambda **kw: fired.append((song.is_playing, song.current_song_time, kw)))
+    track = NS(available_input_routing_types=[NS(display_name='Resampling')], clip_slots=[slot])
+    song.create_audio_track = lambda index: song.tracks.append(track)
+    result = Commands(song).capture_start({'beats': 64, 'start': 392})
+    assert result['track'] == 0
+    assert fired == [(False, 392, {'record_length': 64., 'launch_quantization': 0})]
+    assert song.is_playing
+
+
+def test_preview_passes_exact_start_to_supported_bridge(tmp_path, monkeypatch):
+    import mixmatch.autoref as capture
+    song, live, path = prepared(tmp_path)
+    recorded = write_audio(str(tmp_path / 'capture.wav'), seconds=2)
+    starts = []
+    monkeypatch.setattr(capture, 'capture_begin', lambda *a, **kw: starts.append(kw['start']) or 1)
+    monkeypatch.setattr(capture, 'capture_end', lambda *a, **kw: recorded)
+    meta = preview.render(live, path, 64, 4, log=lambda *_: None)
+    assert starts == [64]
+    assert meta['aligned_start'] is True

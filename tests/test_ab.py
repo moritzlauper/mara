@@ -74,3 +74,26 @@ def test_failed_switch_does_not_reveal_a_trial(tmp_path, monkeypatch):
     with pytest.raises(RuntimeError):
         trial.choose(live, str(tmp_path))
     assert trial.reveal(str(tmp_path)) is None
+
+
+def test_snapshots_preserve_automation_including_legacy_snapshots():
+    import copy
+    state = {'tracks': [{'key': 't0', 'name': 'Pad',
+        'mixer': [{'name': 'Volume', 'value': .5, 'automated': True}],
+        'devices': [{'name': 'EQ', 'params': [
+            {'name': 'Frequency', 'value': .2, 'automated': True},
+            {'name': 'Gain', 'value': .4, 'automated': False}]}]}]}
+    snapshot = ab.snapshot(state)
+    now = copy.deepcopy(state)
+    now['tracks'][0]['mixer'][0]['value'] = .8
+    for p in now['tracks'][0]['devices'][0]['params']:
+        p['value'] = .8
+    expected = [{'track': 't0', 'device': 0, 'param': 'Gain', 'value': .4}]
+    assert ab.changes_to(snapshot, now, True) == expected
+    legacy = copy.deepcopy(snapshot)
+    legacy.pop('automation')
+    assert ab.changes_to(legacy, now, True) == expected
+    # Snapshot metadata also protects a lane when the bridge temporarily reports it inactive.
+    now['tracks'][0]['mixer'][0]['automated'] = False
+    now['tracks'][0]['devices'][0]['params'][0]['automated'] = False
+    assert ab.changes_to(snapshot, now, True) == expected

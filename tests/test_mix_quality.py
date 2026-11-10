@@ -5,7 +5,7 @@ import numpy as np
 import pytest
 
 from mixmatch.analysis import Comparison, Stats
-from mixmatch.mix_quality import anchor, diagnosis, evaluate
+from mixmatch.mix_quality import VERSION, anchor, diagnosis, evaluate, combine, revisit_candidates
 
 
 def measurement(masking=2.0, tonal=1.0, **costs):
@@ -94,7 +94,7 @@ def test_mix_loop_keeps_the_verified_tradeoff_and_logs_why(monkeypatch):
 
     class Planner:
         def plan(self, ctx):
-            assert ctx["mix_diagnosis"]["policy"] == "mix-first-v1"
+            assert ctx["mix_diagnosis"]["policy"] == VERSION
             return {"assessment": "give the kick room", "done": True,
                     "mix_intent": {"priority": "masking", "evidence": "kick/bass collision",
                                    "preserve": "warmth", "reference_relevance": "keep useful low mids"},
@@ -106,7 +106,8 @@ def test_mix_loop_keeps_the_verified_tradeoff_and_logs_why(monkeypatch):
     agent.understand()
     before, after = measurement(), measurement(masking=1.8, tonal=1.4)
     monkeypatch.setattr(agent, "measure_fine", lambda *args: copy.deepcopy(before))
-    monkeypatch.setattr(agent, "measure", lambda *args: copy.deepcopy(after))
+    samples = iter([before, after, after])
+    monkeypatch.setattr(agent, "measure", lambda *args: copy.deepcopy(next(samples)))
     agent.section("test", env.now() + 600, max_rounds=1)
     assert not agent.history[-1].undone
     assert agent.history[-1].after > agent.history[-1].before
@@ -135,3 +136,109 @@ def test_resume_retains_cumulative_protections_and_old_checkpoints_start_fresh(t
     ck.pop("mix_policy")
     resumed._resume_from(ck)
     assert resumed.quality_anchors == {}
+
+
+def test_repeat_measurements_reject_noise_but_accept_a_clear_reference_gain():
+    before = combine([measurement(tonal=2), measurement(tonal=2.2)])
+    noise_only = combine([measurement(tonal=1.95), measurement(tonal=2.15)])
+    assert not evaluate(before, noise_only, anchor(before), 'tonal', .05)[0]
+    improved = combine([measurement(tonal=1.2), measurement(tonal=1.25)])
+    assert evaluate(before, improved, anchor(before), 'tonal', .05)[0]
+    assert before['samples'] == 2
+    assert before['noise']['tonal'] == pytest.approx(.2)
+
+
+def test_reference_gain_does_not_have_to_outweigh_unrelated_masking_noise():
+    before = measurement(masking=7, tonal=2)
+    after = measurement(masking=7.15, tonal=1.9)
+    assert after['objective'] > before['objective']
+    assert evaluate(before, after, anchor(before), 'tonal', .05)[0]
+    assert not evaluate(before, measurement(masking=8, tonal=1), anchor(before), 'tonal', .05)[0]
+
+
+def test_drifted_baseline_allows_recovery_but_not_more_drift():
+    start, before = measurement(masking=7, tonal=2), measurement(masking=8.1, tonal=2)
+    assert evaluate(before, measurement(masking=8.0, tonal=1.7), anchor(start), 'tonal', .05)[0]
+    assert not evaluate(before, measurement(masking=8.3, tonal=1.7), anchor(start), 'tonal', .05)[0]
+
+
+def test_repeated_windows_cannot_hide_missing_audio_or_a_peak():
+    before = measurement()
+    bad = measurement(tonal=0)
+    bad['master'] = replace(bad['master'], peak_db=.5)
+    after = combine([measurement(tonal=0), bad])
+    assert not evaluate(before, after, anchor(before), 'tonal', .05)[0]
+    bad = measurement(tonal=0)
+    bad['cmp'] = None
+    after = combine([measurement(tonal=0), bad])
+    assert not evaluate(before, after, anchor(before), 'tonal', .05)[0]
+
+
+def test_other_passage_can_stay_unchanged_but_cannot_lose_a_layer():
+    before = measurement()
+    assert evaluate(before, copy.deepcopy(before), anchor(before), 'protect', .05)[0]
+    after = copy.deepcopy(before)
+    after['tracks']['t1'] = None
+    assert not evaluate(before, after, anchor(before), 'protect', .05)[0]
+
+
+def test_revisit_selects_active_sources_of_unresolved_spectrum():
+    m = measurement(tonal=3)
+    m['cmp'].tonal_excess[:] = 3
+    channels = [{'track': key, 'name': key, 'role': 'keys', 'priority': 3, 'kind': 'track'}
+                for key in ['t0', 't1', 'missing']]
+    assert revisit_candidates(m, channels, 1) == ['t0']
+    m['cmp'].tonal_excess[:] = 0
+    assert revisit_candidates(m, channels) == []
+
+
+def test_final_repair_resumes_remaining_sources_without_repeating_completed_ones(tmp_path, monkeypatch):
+    from mixmatch.agent import Agent, Settings
+    from mixmatch.sim import demo_project
+    from mixmatch.planner import RulePlanner
+    song, hub, env, live = demo_project()
+    agent = Agent(live, hub, RulePlanner(), Settings(log_dir=str(tmp_path)), env=env, log=lambda *_: None)
+    agent.understand()
+    agent._ck = {'phase': 'final', 'revisit_pending': ['t0', 't1']}
+    seen = []
+    def section(name, deadline, focus, **kwargs):
+        if focus == 't1':
+            raise KeyboardInterrupt()
+        seen.append(focus)
+    monkeypatch.setattr(agent, 'section', section)
+    with pytest.raises(KeyboardInterrupt):
+        agent.final_revisit(('Main', 0, 32), env.now()+100)
+    assert seen == ['t0']
+    assert agent._ck['revisit_pending'] == ['t1']
+    monkeypatch.setattr(agent, 'section', lambda name, deadline, focus, **kw: seen.append(focus))
+    assert agent.final_revisit(('Main', 0, 32), env.now()+100)
+    assert seen == ['t0', 't1']
+    assert agent._ck['revisit_done']
+    assert agent.final_revisit(('Main', 0, 32), env.now()+100)
+    assert seen == ['t0', 't1']
+
+
+def test_final_move_is_undone_when_it_damages_a_different_passage(monkeypatch):
+    from mixmatch.agent import Agent, Settings
+    from mixmatch.sim import demo_project
+    class Planner:
+        def plan(self, ctx):
+            return {'done': True, 'mix_intent': {'priority': 'tonal'},
+                    'actions': [{'type': 'volume', 'track': 't1', 'delta_db': -1, 'reason': 'balance'}]}
+    song, hub, env, live = demo_project()
+    env.wait(2)
+    agent = Agent(live, hub, Planner(), Settings(fine=False), env=env, log=lambda *_: None)
+    agent.understand()
+    before, after = measurement(tonal=2), measurement(tonal=1)
+    monkeypatch.setattr(agent, 'measure_fine', lambda *args: copy.deepcopy(before))
+    samples = iter([before, after, after, before, before])
+    monkeypatch.setattr(agent, 'measure', lambda *args: copy.deepcopy(next(samples)))
+    broken = copy.deepcopy(before)
+    broken['tracks']['t1'] = None
+    other = iter([{(64, 32): before}, {(64, 32): broken}])
+    monkeypatch.setattr(agent, 'measure_validation_passages', lambda: next(other))
+    original = song.tracks[1].mixer_device.volume.value
+    agent.section('final repair', env.now()+100, max_rounds=1)
+    assert agent.history[-1].undone
+    assert 'other passage' in agent.history[-1].plan['verification']
+    assert song.tracks[1].mixer_device.volume.value == original

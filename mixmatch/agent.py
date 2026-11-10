@@ -73,6 +73,8 @@ class Settings:
     suggest: bool = True          # complete runs: write references to get and free ones (runs/…-buy.md)
     fine: bool = True             # record the master during its first measurement: narrow resonances
     fine_channels: bool = False   # also record single channels (routing a capture track to a channel once crashed Live)
+    verification_passes: int = 2  # repeat the same passage before accepting a change
+    revisit_channels: int = 3     # bounded automatic repair during the final phase
     audit_bars: int = 4           # A/B window per effect
 
 
@@ -365,14 +367,14 @@ class Agent:
         from .activity import focus as report_focus
         report_focus(self.log, channel=track_name, device=dev_name, region=region)
         scoring = "full" if key == "m" else "balance"
-        on = self.measure(scoring)
+        on = self.measure_verified(scoring)
         rr = RoundResult()
         try:
             self.ex._set(rr, key, idx, "Device On", value=0)
         except Exception as e:
             self.log(f"  {dev_name} on {track_name}: {e}")
             return
-        off = self.measure(scoring)
+        off = self.measure_verified(scoring)
         a = on["master"] if key == "m" else on["tracks"].get(key)
         b = off["master"] if key == "m" else off["tracks"].get(key)
         if a is None or b is None:
@@ -381,7 +383,8 @@ class Agent:
         audible = a.bands_db > a.bands_db.max() - 40
         band = float(np.max(np.abs((b.bands_db - a.bands_db)[audible] - (b.loudness - a.loudness)))) if audible.any() else 0.0
         level, plr, width = b.loudness - a.loudness, b.plr - a.plr, b.width_db - a.width_db
-        nothing = abs(level) < 0.3 and band < 0.5 and abs(plr) < 0.3 and abs(width) < 0.5
+        stable = max((*on.get("noise", {}).values(), *off.get("noise", {}).values()), default=0) <= self.s.min_gain
+        nothing = stable and abs(level) < 0.3 and band < 0.5 and abs(plr) < 0.3 and abs(width) < 0.5
         # A deliberate effect is not harmful just because bypassing matches the reference.
         # Require a measurable mix-health benefit, without sacrificing its character, twice.
         margin = max(self.s.min_gain, 0.2)
@@ -393,9 +396,9 @@ class Agent:
                    and mix_quality.evaluate(on, off, mix_quality.anchor(on), health, margin)[0])
         if harmful:
             self.ex.undo(rr)
-            again = self.measure(scoring)
+            again = self.measure_verified(scoring)
             self.ex._set(rr := RoundResult(), key, idx, "Device On", value=0)
-            off2 = self.measure(scoring)
+            off2 = self.measure_verified(scoring)
             harmful = mix_quality.evaluate(again, off2, mix_quality.anchor(on), health, margin)[0]
             if not harmful:
                 self.log(f"  {dev_name} on {track_name}: better without it only once "
@@ -695,6 +698,13 @@ class Agent:
                 "cmp": None if scoring == "local" else cmp,   # the references do not apply outside the loud part
                 "objective": obj, "parts": parts}
 
+    def measure_verified(self, scoring="full", first=None) -> dict:
+        samples = [] if first is None else [first]
+        for _ in range(len(samples), max(2, self.s.verification_passes)):
+            workflow.check_pause()
+            samples.append(self.measure(scoring))
+        return mix_quality.combine(samples)
+
     def limiter_at_cap(self) -> bool:
         gain = self.ex.limiter_gain() if self.ex.set_state else None
         return gain is not None and gain >= LIMITER_MAX_GAIN_DB - 0.05
@@ -850,8 +860,11 @@ class Agent:
                 "serve this track. A remaining loudness gap is acceptable when closing it would sacrifice punch "
                 "or character; limiter/clipper headroom is permission, not a target to exhaust. Only raise loudness "
                 "when the mix already sits well and the evidence supports it. Small broad master EQ moves up to "
-                "1.5 dB require an overall problem the channels did not explain. Channels are done; do not change "
-                "them here. Stop when no evidenced benefit remains, even with reference differences.")
+                "1.5 dB can address a persistent broad reference mismatch after the automatic source repair. "
+                "Do not dismiss a measurable loudness gap solely because raising gain might reduce punch: "
+                "test a modest move when headroom and PLR support it; repeated measurements enforce the limits. "
+                "Work on the master here; the preceding final repair has already revisited unresolved channels. "
+                "Stop when no evidenced benefit remains, and distinguish unresolved problems from deliberate differences.")
         if focus is not None and self.ex.track(focus).get("is_group"):
             r = self.roles[focus]
             ctx["task"] = (
@@ -1145,10 +1158,78 @@ class Agent:
             self.log(f"\n━━ Final check: master, {name}")
             self.play_loop(start, length)
             self.begin_step(self.W_FINAL)
+            self._validation_regions = list(dict.fromkeys(
+                tuple(region) for region in self.regions.values() if region and
+                (region[0] + region[1] <= start or region[0] >= start + length)))[:2]
+            if not self.final_revisit(main[0], deadline) or self.env.now() >= deadline:
+                return
             self.section("final check", deadline, max_rounds=self.s.final_rounds)
+            if self.env.now() >= deadline:
+                return
+            measured = self.measure_verified("full")
+            self.log(f"  distance {measured['objective']:.2f}   ({_parts(measured['parts'])})")
+            self.explain(measured)
+            report = {"basis": "repeated automated measurements", "samples": measured["samples"],
+                      "reference_cost": mix_quality.reference_cost(measured["parts"]),
+                      "parts": measured["parts"], "spread": measured["noise"],
+                      "revisited_channels": self._ck.get("revisited_channels", []),
+                      "other_passages_checked": len(getattr(self, "_checked_passages", set())),
+                      "listening_judgment": False}
+            workflow.update(quality_check=report)
+            self.log("  Final measurements verified; this is an automated check, not a listening judgment.")
             self.finish_step("done")
             self.clear_checkpoint()               # the run is complete: nothing left to continue
             self._mix_complete = True
+
+    def measure_validation_passages(self) -> dict:
+        """Check contrasting passages in final repair without asking the user to select them."""
+        original = self.loop
+        measured = {}
+        try:
+            for region in getattr(self, "_validation_regions", []):
+                workflow.check_pause()
+                self.play_loop(region[0], min(region[1], self.s.channel_bars * 4))
+                from .activity import focus as report_focus
+                report_focus(self.log, channel="Mix validation", region=self.loop)
+                activity(self.log, f"Checking another passage · bar {region[0] / 4 + 1:g}")
+                measured[region] = self.measure_verified("local")
+                self._checked_passages = getattr(self, "_checked_passages", set()) | {region}
+        finally:
+            if original is not None and self.loop != original:
+                self.play_loop(*original)
+                from .activity import focus as report_focus
+                report_focus(self.log, channel=getattr(self, "_inspection_channel", "Main"), region=original)
+        return measured
+
+    def final_revisit(self, main, deadline) -> bool:
+        """Revisit a few unresolved sources automatically; resume without repeating completed work."""
+        if self._ck.get("revisit_done"):
+            return True
+        if "revisit_pending" not in self._ck:
+            m = self.measure_verified("full")
+            channels = self.context("final assessment", m).get("channels", [])
+            keys = mix_quality.revisit_candidates(m, channels, self.s.revisit_channels)
+            self.save_checkpoint(phase="final", revisit_pending=keys)
+        pending = list(self._ck["revisit_pending"])
+        for key in list(pending):
+            workflow.check_pause()
+            if self.env.now() >= deadline:
+                return False
+            if key in self.roles and not self.track_muted(key):
+                role = self.roles[key]
+                self.log(f"\n▶ Final repair: {role.name}, bars {main[1] / 4 + 1:g}–{(main[1] + main[2]) / 4 + 1:g}")
+                from .activity import focus
+                focus(self.log, channel=role.name, region=(main[1], main[2]))
+                self.section(f"final repair {role.name}", deadline, focus=key,
+                             max_rounds=self.s.channel_rounds, scoring="full")
+            pending.remove(key)
+            visited = list(self._ck.get("revisited_channels", []))
+            if key not in visited:
+                visited.append(key)
+            self.save_checkpoint(phase="final", revisit_pending=pending, revisited_channels=visited)
+        self.save_checkpoint(phase="final", revisit_pending=[], revisit_done=True)
+        self.log("\n▶ Final master comparison")
+        return True
 
     def _prepare(self, sections, deadline) -> list:
         """Key, one pass through the whole song, beat mode, the loudest part, references; then every
@@ -1297,7 +1378,10 @@ class Agent:
                 scoring: str = "full") -> None:
         workflow.check_pause()
         workflow.update(section=name)
-        m = self.measure_fine(scoring, focus or "m")
+        from .activity import focus as report_focus
+        self._inspection_channel = self.roles[focus].name if focus in self.roles else "Main"
+        report_focus(self.log, channel=self._inspection_channel, region=self.loop)
+        m = self.measure_verified(scoring, first=self.measure_fine(scoring, focus or "m"))
         # Same passage retains its baseline across channel passes and resumes.
         anchor_key = json.dumps([self.loop, scoring, self.beat,
                                  m["ref"].summary() if m.get("ref") and m.get("cmp") else None], sort_keys=True)
@@ -1317,6 +1401,8 @@ class Agent:
             workflow.check_pause()
             self.log(f"  round {n}: {plan.get('assessment', '')}")
             intent = plan.get("mix_intent") or {}
+            plan["measurement_samples"] = m.get("samples", 1)
+            plan["measurement_spread"] = m.get("noise", {})
             if intent:
                 self.log(f"  intent {json.dumps(intent, ensure_ascii=False)}")
             actions = plan.get("actions", [])
@@ -1329,9 +1415,9 @@ class Agent:
                     self.log(f"    – not now: {a['type']} {a.get('track') or 'master'} (channel pass is on {focus})")
             if not actions:
                 if focus is not None:
-                    self.log("  sits well, nothing to change")
+                    self.log("  No supported change proposed for this channel.")
                 elif plan.get("done"):
-                    self.log("  targets reached for this section")
+                    self.log("  Planner finished this section; remaining differences stay documented.")
                 return
             from . import monitoring
             if self.s.silent or monitoring.read(self.s.log_dir).get("managed"):
@@ -1354,6 +1440,7 @@ class Agent:
             if self.s.assist and self.ask("    apply? [Y/n] ").strip().lower() == "n":
                 self._record(Round(name, n, best, None, plan))
                 continue
+            validation_before = self.measure_validation_passages()
             rr = self.ex.apply(actions)
             if not rr.changes:
                 self._record(Round(name, n, best, best, plan, rr.applied, rr.skipped))
@@ -1363,11 +1450,19 @@ class Agent:
                 continue
             try:
                 self.env.wait(self.s.settle)
-                after = self.measure(scoring)
+                after = self.measure_verified(scoring)
+                validation_after = self.measure_validation_passages() if validation_before else {}
             except BaseException:
                 self.ex.undo(rr)
                 raise
             accepted, verification = mix_quality.evaluate(m, after, baseline, intent.get("priority"), self.s.min_gain)
+            for region, passage in validation_before.items():
+                safe, reason = mix_quality.evaluate(passage, validation_after[region],
+                                                   mix_quality.anchor(passage), "protect", self.s.min_gain)
+                if not safe:
+                    accepted, verification = False, f"other passage at bar {region[0] / 4 + 1:g}: {reason}"
+                    break
+            plan["validation_passages"] = len(validation_before)
             plan["verification"] = verification
             rnd = Round(name, n, best, after["objective"], plan, rr.applied, rr.skipped,
                         parameters=self.journal_parameters(rr))
@@ -1380,6 +1475,8 @@ class Agent:
                 rnd.undone = True
                 self.log("    ↺ undone: insufficient simultaneous tap data to verify the masking change")
                 self.env.wait(self.s.settle)
+                m = self.measure_verified(scoring)
+                best = m["objective"]
                 stall += 1
             elif accepted:
                 self.log(f"    ✓ {best:.2f} → {after['objective']:.2f}   ({_parts(after['parts'])})")
@@ -1394,7 +1491,7 @@ class Agent:
                 else:
                     self.log(f"    ↺ undone: {verification} ({best:.2f} → {after['objective']:.2f})")
                 self.env.wait(self.s.settle)
-                m = self.measure(scoring)
+                m = self.measure_verified(scoring)
                 best = m["objective"]
                 stall += 1
             self._record(rnd)
@@ -1403,7 +1500,7 @@ class Agent:
                 self._budget -= piece
                 self.progress(piece, name)
             if plan.get("done") or stall >= self.s.stall_rounds:
-                self.log("  no further improvement in this section" if stall else "  targets reached")
+                self.log("  no further improvement in this section" if stall else "  Planner finished this section.")
                 return
 
     TRANSIENT = ("can't reach", "cannot reach", "enotfound", "network", "timed out", "timeout", "connection",
