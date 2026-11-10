@@ -1,4 +1,5 @@
 import math
+import os
 import pytest
 
 from MixMatch.commands import parse_display as live_parse
@@ -238,6 +239,7 @@ def test_taps_sleep_between_runs_and_can_be_removed():
     assert remove_taps(live, log=lambda *_: None) == 0
 
 
+@pytest.mark.skipif(os.name == 'nt', reason='POSIX inherited SIGINT and preexec_fn are not available on Windows')
 def test_a_run_started_with_sigint_ignored_still_stops_in_order(tmp_path):
     """Background shells start processes with SIGINT ignored; «Stop» must still end a run through its finally."""
     import signal

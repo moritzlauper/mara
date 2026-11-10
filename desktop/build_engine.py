@@ -7,6 +7,7 @@ import sys
 root=Path(__file__).resolve().parent.parent
 triple=subprocess.check_output(['rustc','-vV'],text=True).split('host: ')[1].splitlines()[0]
 subprocess.run([sys.executable,'-m','PyInstaller','--noconfirm','--clean','--onefile','--name','mara-engine',
+ '--python-option','X utf8',
  '--distpath',str(root/'.build/engine'),'--workpath',str(root/'.build/pyinstaller'),'--specpath',str(root/'.build'),
  '--paths',str(root),'--collect-submodules','mixmatch','--collect-data','mixmatch','--collect-all','imageio_ffmpeg',
  '--collect-submodules','keyring.backends','--copy-metadata','keyring','--collect-all','soundfile','--collect-all','pyloudnorm','--copy-metadata','anthropic',

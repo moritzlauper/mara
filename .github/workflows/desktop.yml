@@ -6,6 +6,8 @@ on:
     tags: ['desktop-v*']
 permissions:
   contents: read
+env:
+  PYTHONUTF8: '1'
 concurrency:
   group: desktop-${{ github.ref }}
   cancel-in-progress: false
@@ -39,6 +41,9 @@ jobs:
           cache: npm
           cache-dependency-path: desktop/package-lock.json
       - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2.9.3
+        with:
+          workspaces: desktop/src-tauri -> target
       - run: python -m pip install ".[dev]"
       - run: python -m pytest -q
       - run: python desktop/build_engine.py
