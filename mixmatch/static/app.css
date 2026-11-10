@@ -101,25 +101,27 @@ section[data-panel=mix]>.progress{margin-top:16px}#progress-label{margin-bottom:
 
 .planner-fields{display:grid;grid-template-columns:1fr 1fr;gap:16px}.planner-fields label{margin-top:0}.setup label select,.setup label input{display:block;width:100%;margin-top:8px}@media(max-width:650px){.planner-fields{grid-template-columns:1fr}}
 
-#mix-stage{font:700 18px var(--sans);color:var(--accent);margin:18px 0 6px}#mix-stage-purpose{margin:0 0 8px}
-
-/* One connected sequence, rather than separate status cards. */
-#mix-phases{list-style:none;display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:0;padding:0;margin:28px 0 24px}
-.phase-item{position:relative;min-width:0;display:grid;grid-template-rows:36px auto auto;align-content:start;justify-items:center;text-align:center;padding:0 8px;color:var(--muted)}
-.phase-item:not(:last-child)::after{content:"";position:absolute;top:16px;left:calc(50% + 18px);width:calc(100% - 36px);height:4px;background:var(--lo)}
-.phase-item.complete::after{background:var(--accent)}
-.phase-mark{position:relative;z-index:1;width:36px;height:36px;display:grid;place-items:center;border:2px solid var(--lo);background:var(--panel);font:14px var(--pixel);color:var(--muted)}
-.phase-item.complete .phase-mark{background:var(--accent);border-color:var(--accent);color:var(--on-accent)}
-.phase-item.current .phase-mark{background:var(--lime);color:var(--on-bright);border-color:var(--lime-edge);box-shadow:inset 2px 2px var(--hi),inset -2px -2px var(--lime-edge)}
-.phase-name{margin-top:10px;font:600 13px/1.4 var(--sans);max-width:160px;min-height:37px}
-.phase-state{font:11px/1.4 var(--sans);margin-top:4px}
-.phase-item.current .phase-name,.phase-item.current .phase-state{color:var(--accent);font-weight:700}
-.phase-item.complete .phase-state{color:var(--accent)}
+/* Neutral headings; violet identifies the active phase and measured feedback. */
+#mix-title{font-size:22px;color:var(--ink);margin-bottom:14px}
+#mix-stage,.phase-state{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
+#mix-stage-purpose{margin:0 0 5px;font-size:12px}
+#mix-description{min-height:20px;margin:0 0 12px;font-size:12px}
+section[data-panel=mix]>.mix-dashboard{margin-top:18px}
+#mix-phases{list-style:none;display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:0;padding:0;margin:16px 0}
+.phase-item{position:relative;min-width:0;display:grid;grid-template-rows:20px auto;align-content:start;justify-items:center;text-align:center;padding:0 5px;color:var(--muted)}
+.phase-item:not(:last-child)::after{content:"";position:absolute;top:9px;left:calc(50% + 10px);width:calc(100% - 20px);height:2px;background:var(--lo);opacity:.5}
+.phase-item.complete::after{background:var(--ink);opacity:.45}
+.phase-mark{position:relative;z-index:1;width:20px;height:20px;display:grid;place-items:center;border:1px solid var(--lo);background:var(--panel);font:11px var(--mono);color:var(--muted)}
+.phase-item.complete .phase-mark{border-color:var(--ink);color:var(--ink)}
+.phase-item.current .phase-mark{background:var(--accent);color:var(--on-accent);border-color:var(--accent)}
+.phase-name{margin-top:6px;font:500 12px/1.35 var(--sans);max-width:155px}
+.phase-item.complete .phase-name{color:var(--ink)}
+.phase-item.current .phase-name{color:var(--accent);font-weight:700}
 @media(max-width:700px){
- #mix-phases{grid-template-columns:1fr;gap:0;margin:24px 0}
- .phase-item{grid-template-columns:36px minmax(0,1fr) auto;grid-template-rows:auto;align-items:center;justify-items:start;text-align:left;gap:12px;padding:0 0 20px}
+ #mix-title{font-size:20px}
+ #mix-phases{grid-template-columns:1fr;gap:0;margin:14px 0}
+ .phase-item{grid-template-columns:20px minmax(0,1fr);grid-template-rows:auto;align-items:center;justify-items:start;text-align:left;gap:9px;padding:0 0 9px}
  .phase-item:last-child{padding-bottom:0}
- .phase-item:not(:last-child)::after{top:36px;left:16px;width:4px;height:calc(100% - 36px)}
- .phase-name{margin:0;max-width:none;min-height:0}
- .phase-state{margin:0;text-align:right}
+ .phase-item:not(:last-child)::after{top:20px;left:9px;width:2px;height:calc(100% - 20px)}
+ .phase-name{margin:0;max-width:none}
 }
