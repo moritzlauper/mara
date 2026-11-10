@@ -307,9 +307,10 @@ def parse_log(lines: list[str]) -> dict:
     state = {"phase": None, "section": None, "distance": None, "parts": {}, "history": [], "events": [],
              "key": None, "style": None, "mood": None, "explain": {}, "effects": [], "references": [], "to_get": [], "done": None,
              "history_phase": [], "history_run": [], "progress": None, "progress_start": None,
-             "activity": None, "planner": None, "mode": None}
+             "measurement_groups": [], "activity": None, "planner": None, "mode": None}
     run = 0
     traceback_event = None
+    current_group = None
 
     def point(value: float) -> None:
         state["history"].append(value)
@@ -321,6 +322,7 @@ def parse_log(lines: list[str]) -> dict:
         s = line.strip()
         if s.startswith("Taps:"):            # the first lines of every run: a resumed run starts its own log
             run += 1
+            current_group = None
             traceback_event = None
             state["progress"] = state["progress_start"] = state["done"] = None
             state["mode"] = None
@@ -360,9 +362,12 @@ def parse_log(lines: list[str]) -> dict:
             if state["progress_start"] is None:
                 state["progress_start"] = p
         elif s.startswith("━━"):
+            current_group = None
             state["phase"] = s.strip("━ ").strip()
+            state["section"] = None
             state["events"].append({"kind": "phase", "text": state["phase"]})
         elif s.startswith("▶"):
+            current_group = None
             state["section"] = s[1:].strip()
             state["events"].append({"kind": "section", "text": state["section"]})
         elif s.startswith("distance "):
@@ -370,12 +375,25 @@ def parse_log(lines: list[str]) -> dict:
             if m:
                 state["distance"], state["parts"] = float(m.group(1)), _parts(s)
                 point(state["distance"])
+                phase = phase_label(state["phase"])
+                section = state["section"] or state["phase"] or "Measurement"
+                scoring = ("local" if "outside the loudest part" in section else
+                           "balance" if phase == "channels" else "full")
+                # Every initial measurement starts its own comparison, even when a
+                # resumed run revisits the same channel. Never bridge these baselines.
+                current_group = {"phase": phase, "section": section, "run": run,
+                                 "scoring": scoring, "values": [state["distance"]], "verification": None}
+                state["measurement_groups"].append(current_group)
         elif s.startswith("✓") and "→" in s:
             m = re.search(r"→ ([\d.]+)", s)
             if m:
                 state["distance"], state["parts"] = float(m.group(1)), _parts(s) or state["parts"]
                 point(state["distance"])
+                if current_group is not None:
+                    current_group["values"].append(state["distance"])
             state["events"].append({"kind": "kept", "text": s})
+        elif s.startswith("verified:") and current_group is not None:
+            current_group["verification"] = s[len("verified:"):].strip()
         elif s.startswith("↺ undone, no measurable") or s.startswith("= no measurable"):
             state["events"].append({"kind": "neutral", "text": s})
         elif s.startswith("↺"):
@@ -402,7 +420,8 @@ def parse_log(lines: list[str]) -> dict:
         elif s.startswith(("Stopped:", "Done.", "Ready:")):
             state["done"] = s
             if s.startswith("Stopped: reverted to the state before the run."):
-                for key in ("history", "history_phase", "history_run", "effects"):
+                current_group = None
+                for key in ("history", "history_phase", "history_run", "measurement_groups", "effects"):
                     state[key] = []
                 state.update(distance=None, parts={}, explain={}, phase=None, section=None,
                              progress=None, progress_start=None, activity=None)
@@ -1065,18 +1084,21 @@ td{padding:4px 6px;border-bottom:1px solid var(--line)}select,input,textarea{bac
 pre{max-height:260px;overflow:auto;font-size:12px;background:var(--bg);padding:10px;border-radius:8px;margin:0;white-space:pre-wrap}
 svg{width:100%;height:90px}.prog{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:12px}
 .prog i{display:block;width:160px;height:7px;border-radius:4px;background:var(--line);overflow:hidden}.prog b{display:block;height:100%;background:var(--accent)}
-.history-panel{margin:16px 0 8px;padding:12px;border:1px solid var(--lo);background:var(--face)}
-.history-heading{display:flex;justify-content:space-between;gap:12px;align-items:baseline;margin-bottom:10px;font-size:12px}
-.history-heading b{font-weight:600}.history-heading span{color:var(--muted)}
-#chart{display:block;width:100%;height:120px;overflow:visible}
-#chart polyline,#chart line{vector-effect:non-scaling-stroke}
-.chartlabels{display:flex;flex-wrap:wrap;gap:8px 18px;margin-top:10px;font-size:12px;color:var(--muted)}
-.chartlabels span{display:inline-flex;align-items:center;gap:6px}
-.phase-dot{display:inline-block;flex:none;width:8px;height:8px;background:var(--phase-color,var(--accent))}
-.history-master{--phase-color:var(--accent)}.history-channels{--phase-color:var(--accent2)}
-.history-effects{--phase-color:var(--warn)}.history-final{--phase-color:var(--good)}
-#chart polyline{stroke:var(--phase-color,var(--accent))}#chart circle{fill:var(--phase-color,var(--accent))}
-.resume-key{width:14px;border-top:1px dashed var(--muted)}
+#phases{margin-top:16px}
+.phase-card{border:1px solid var(--lo);background:var(--face);margin:8px 0;padding:10px 12px}
+.phase-card.current{border-left:3px solid var(--accent)}
+.phase-card summary{cursor:pointer;font-size:13px;font-weight:600;overflow-wrap:anywhere}
+.phase-status{display:block;font-size:11px;font-weight:400;color:var(--muted);margin:3px 0 0 15px}
+.phase-description{font-size:12px;color:var(--muted);margin:8px 0}
+.measurement-list{max-height:360px;overflow:auto;margin-top:8px;padding-right:4px}
+.measurement{padding:12px 0;border-top:1px solid var(--lo)}
+.measurement h4{margin:0;font-size:12px;font-weight:600;overflow-wrap:anywhere}
+.measurement .context{font-size:11px;color:var(--muted);margin:3px 0 8px}
+.measurement-values{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;font-size:13px;font-variant-numeric:tabular-nums}
+.measurement-values span{display:block;font-size:10px;color:var(--muted);font-family:var(--sans);margin-bottom:2px}
+.measurement-values .lower{color:var(--good)}.measurement-values .higher{color:var(--warn)}
+.measurement-note{font-size:11px;color:var(--muted);margin:8px 0 0;overflow-wrap:anywhere}
+.history-note{padding:10px 12px;border-left:3px solid var(--lo);font-size:12px;color:var(--muted);background:var(--face)}
 .drop{margin-top:12px;border:2px dashed var(--line);border-radius:10px;padding:34px 16px;min-height:110px;display:flex;align-items:center;justify-content:center;text-align:center;color:var(--muted);font-size:14px}
 .drop.over{border-color:var(--accent);color:var(--accent)}.reflist li{display:flex;justify-content:space-between;gap:8px;align-items:center}
 .reflist li span{flex:1;min-width:0;overflow-wrap:anywhere}.reflist li button{flex-shrink:0}
@@ -1170,14 +1192,7 @@ button:disabled,button.ghost:disabled,.seg button:disabled{opacity:1;color:var(-
   border:2px solid;border-color:var(--lo) var(--hi) var(--hi) var(--lo)}
 .scale i{position:absolute;top:-6px;width:4px;height:20px;margin-left:-2px;background:var(--shadow);transition:left .5s}
 .scale-labels{display:flex;justify-content:space-between;font:11px var(--mono);color:var(--muted)}
-.phase-table{table-layout:fixed;margin-top:12px;font-size:12px}
-.phase-table th,.phase-table td{padding:9px 4px;border-bottom:1px solid var(--lo);text-align:right;vertical-align:middle}
-.phase-table thead th{font-size:11px;font-weight:400;color:var(--muted)}
-.phase-table th:first-child{width:35%;text-align:left;padding-left:0}
-.phase-table th:last-child{width:25%}.phase-table td:last-child{padding-right:0}
-.phase-table tbody th{font-weight:400}.phase-table .phase-name{display:flex;align-items:center;gap:7px}
-.phase-table td{font-variant-numeric:tabular-nums;white-space:nowrap}
-.phase-table .good{color:var(--good);font-weight:600}.mono{font-family:var(--mono)}
+.mono{font-family:var(--mono)}
 h3.sub{font:400 12px var(--pixel);text-transform:uppercase;letter-spacing:.06em;margin:16px 0 6px}
 .part{margin:0 0 10px}.part-head{display:grid;grid-template-columns:minmax(150px,auto) 1fr;gap:10px;align-items:center;font-weight:600;font-size:13.5px}
 .part-head i{display:block;height:9px;background:var(--title)}.part-why{font-size:12.5px;color:var(--muted);margin:3px 0 0}
@@ -1271,13 +1286,9 @@ ol.steps button{margin:4px 8px 0 0}
   <div class="scale"><i id="scale_mark"></i></div>
   <div class="scale-labels"><span>like the reference</span><span>far off</span></div>
   <p class="hint" id="scope"></p>
-  <div class="history-panel" id="history_panel" hidden>
-    <div class="history-heading"><b>Score history</b><span>Lower is better</span></div>
-    <svg id="chart" viewBox="0 0 300 90" preserveAspectRatio="none" role="img" aria-label="Score history, separated by mixing phase and resumed run"></svg>
-    <div id="chartlabels" class="chartlabels"></div>
-  </div>
   <div id="phases"></div>
-  <h3 class="sub">What is still different</h3>
+  <h3 class="sub" id="parts_heading">Last measured differences</h3>
+  <p class="hint" id="parts_context"></p>
   <div class="parts" id="parts"><span class="muted">–</span></div>
 
 </section>
@@ -1431,35 +1442,61 @@ async function loadRoles() {
   return true;
   } finally { rolesLoading = false; }
 }
-function chart(values, phases, runs) {
-  $("history_panel").hidden = !values.length;
-  if (!values.length) { $("chart").innerHTML = ""; $("chartlabels").innerHTML = ""; return; }
-  phases = phases || []; runs = runs || [];
-  const max = Math.max(1, ...values) * 1.05, w = 300, h = 90;
-  const x = i => 3 + (i/Math.max(1, values.length-1))*(w-6), y = v => h-3 - (v/max)*(h-6);
-  // one line per phase: master and channels are measured differently, so their numbers are not joined
-  let svg = [0, 1, 2].map(i => `<line x1="0" x2="300" y1="${3+i*42}" y2="${3+i*42}" stroke="var(--lo)" opacity=".25"/>`).join("");
-  let from = 0, resumed = false;
-  for (let i = 1; i <= values.length; i++) {
-    if (i < values.length && phases[i] === phases[from] && runs[i] === runs[from]) continue;
-    const seg = values.slice(from, i).map((v, j) => `${x(from + j)},${y(v)}`).join(" ");
-    const cls = `history-${esc(phases[from] || "setup")}`;
-    svg += i - from > 1 ? `<polyline class="${cls}" fill="none" stroke-width="2" points="${seg}"/>`
-                        : `<circle class="${cls}" cx="${x(from)}" cy="${y(values[from])}" r="1.5"/>`;
-    if (from > 0) {
-      const xx = (x(from) + x(from-1))/2, restart = runs[from] !== runs[from-1];
-      resumed ||= restart;
-      svg += `<line x1="${xx}" x2="${xx}" y1="0" y2="${h}" stroke="var(--muted)" opacity=".5" stroke-dasharray="${restart ? "4 4" : "0"}"/>`;
+function stageOf(phase) {
+  const p = (phase || "").toLowerCase();
+  return p.startsWith("final") ? "final" : p.startsWith("channel") ? "channels" :
+    p.startsWith("effect") ? "effects" : p.startsWith("master") ? "master" : "setup";
+}
+function phaseText(phase) {
+  return stageOf(phase) === "effects" ? "Effect checks · keep or bypass" : phase || "";
+}
+let sectionResultsMarkup = "";
+function sectionResults(s) {
+  const groups = s.measurement_groups || [], current = stageOf(s.phase);
+  const order = ["master", "channels", "effects", "final"];
+  const descriptions = {
+    master: "Tone, loudness, punch and width in the selected master passage.",
+    channels: "Each channel has its own starting measurement. Passage and scoring can change between channels.",
+    effects: "Listen and measure with each effect on and off, then decide whether to keep it.",
+    final: "Check the master again after the channel and effect passes."
+  };
+  const scoring = {full: "Full mix score", balance: "Balance score · excludes loudness and punch", local: "Local mix checks · no reference match"};
+  const open = new Map([...$("phases").querySelectorAll("details[data-phase]")].map(el => [el.dataset.phase, el.open]));
+  const scroll = new Map([...$("phases").querySelectorAll("details[data-phase]")].map(el => [el.dataset.phase, el.querySelector(".measurement-list")?.scrollTop || 0]));
+  const markup = '<p class="history-note">These are separate checks, not an overall before/after curve. Compare scores only within the same measurement below. Lower scores do not by themselves prove a better mix.</p>' + order.map((phase, index) => {
+    const measurements = groups.filter(g => g.phase === phase), isCurrent = current === phase;
+    const status = isCurrent && s.active ? "In progress" : measurements.length ? `${measurements.length} measurement${measurements.length === 1 ? "" : "s"} recorded` :
+      phase === "effects" && s.effects?.length ? "Effect decisions recorded" : order.indexOf(current) > index ? "No score recorded" : "Pending";
+    const expanded = open.has(phase) ? open.get(phase) : phase === "master" || isCurrent;
+    const items = measurements.map((g, i) => {
+      const first = g.values[0], last = g.values[g.values.length-1], delta = last-first;
+      const changed = g.values.length > 1;
+      const title = g.section.replace(/ \([^)]*\)/g, "").split(", bars ")[0];
+      const bars = g.section.match(/bars [\d.]+–[\d.]+/);
+      const difference = Math.abs(delta) < .005 ? "0.00" : (delta > 0 ? "+" : "−") + Math.abs(delta).toFixed(2);
+      return `<article class="measurement"><h4>${esc(title)}</h4>` +
+        `<p class="context">Measurement ${i+1}${bars ? " · " + esc(bars[0]) : ""}<br>${esc(scoring[g.scoring] || "Section score")}</p>` +
+        `<div class="measurement-values"><div class="mono"><span>Start</span>${first.toFixed(2)}</div>` +
+        `<div class="mono"><span>Last logged</span>${changed ? last.toFixed(2) : "—"}</div>` +
+        `<div class="mono ${changed ? delta < -.005 ? "lower" : delta > .005 ? "higher" : "" : ""}"><span>Change · points</span>${changed ? difference : "—"}</div></div>` +
+        `<p class="measurement-note">${changed ? esc(g.verification || "Verified changes recorded within this section.") : "No verified change recorded for this measurement."}</p></article>`;
+    }).join("");
+    const effects = phase === "effects" ? `<p class="measurement-note">${(s.effects || []).length} effect decisions recorded. These on/off checks do not produce an overall reference score.</p>` : "";
+    return `<details class="phase-card${isCurrent ? " current" : ""}" data-phase="${phase}" ${expanded ? "open" : ""}><summary>${index+1}. ${esc(PHASE_NAMES[phase])}<span class="phase-status">${status}</span></summary>` +
+      `<p class="phase-description">${descriptions[phase]}</p>${effects}${items ? `<div class="measurement-list">${items}</div>` : phase !== "effects" ? '<p class="measurement-note">No comparable measurements recorded yet.</p>' : ""}</details>`;
+  }).join("");
+  if (markup !== sectionResultsMarkup) {
+    $("phases").innerHTML = markup;
+    sectionResultsMarkup = markup;
+    for (const el of $("phases").querySelectorAll("details[data-phase]")) {
+      const list = el.querySelector(".measurement-list");
+      if (list) list.scrollTop = scroll.get(el.dataset.phase) || 0;
     }
-    from = i;
   }
-  let labels = [...new Set(phases.filter(Boolean))].map(p => `<span class="history-${esc(p)}"><i class="phase-dot"></i>${esc(PHASE_NAMES[p] || p)}</span>`).join("");
-  if (resumed) labels += '<span><i class="resume-key"></i>Resumed run</span>';
-  $("chart").innerHTML = svg; $("chartlabels").innerHTML = labels;
 }
 const PART_NAMES = {masking: "Potential masking between instruments", tonal: "Tone balance", loudness: "Loudness",
   dynamics: "Punch (dynamics)", width: "Stereo width", low_side: "Bass in stereo", clipping: "Clipping"};
-const PHASE_NAMES = {master: "Master", channels: "Single channels", effects: "Effects", final: "Final check", setup: "Start"};
+const PHASE_NAMES = {master: "Master comparison", channels: "Channel balance", effects: "Effect checks · keep or bypass", final: "Final master check", setup: "Preparation"};
 function verdict(d) {
   return d == null ? ["No run yet", 0] : d < 1 ? ["Very close", d / 6] : d < 2.5 ? ["Close", d / 6]
        : d < 4 ? ["Audible differences", d / 6] : ["Still far off", Math.min(1, d / 6)];
@@ -1476,39 +1513,29 @@ function closeness(s) {
   // shown on its own line, not mixed into «how close».
   const p = s.parts || {}, ref = Object.entries(p).filter(([k]) => k !== "masking").reduce((a, [, v]) => a + v, 0);
   const waiting = !s.active && s.checkpoint?.phase === "references";
+  const checkingEffects = stageOf(s.phase) === "effects";
   const local = (s.section || "").includes("outside the loudest part");
-  const compared = !waiting && "tonal" in (s.explain || {});
-  const [word, pos] = compared ? verdict(ref) : [waiting ? "Choose references" : local ? "Not compared here" : "Waiting for comparison", 0];
+  const compared = !waiting && !local && !checkingEffects && "tonal" in (s.explain || {});
+  const [word, pos] = compared ? verdict(ref) : [waiting ? "Choose references" : checkingEffects ? "Final comparison pending" : local ? "Not compared here" : "Waiting for comparison", 0];
   $("verdict").textContent = word;
   $("distance").textContent = compared ? ref.toFixed(2) + " points" : local && !waiting ? "this part is not meant to sound like the references" : "";
   const ov = p.masking || 0;
-  $("overlap").innerHTML = ov >= 0.05 ? `Potential masking during simultaneous playback: <b>${ov < 1 ? "small" : ov < 2.5 ? "noticeable" : "strong"}</b> <span class="score">${ov.toFixed(2)} points</span>` : "";
+  $("overlap").innerHTML = !checkingEffects && ov >= 0.05 ? `Potential masking during simultaneous playback: <b>${ov < 1 ? "small" : ov < 2.5 ? "noticeable" : "strong"}</b> <span class="score">${ov.toFixed(2)} points</span>` : "";
   $("scale_mark").style.left = (pos * 100).toFixed(1) + "%";
   $("scale_mark").parentElement.hidden = !compared;
   document.querySelector(".scale-labels").hidden = !compared;
   const phase = (s.history_phase || []).slice(-1)[0];
   const where = (s.section || "a channel").replace(/ \(outside the loudest part[^)]*\)/, "").replace(/_/g, " ");
   $("scope").textContent = waiting ? "Choose your reference tracks below, then mix with them. The song scan is saved."
+    : checkingEffects ? "MARA is checking effects on and off. The last channel score is not a current master comparison. The final master check follows this phase."
     : !compared && !local ? "Results appear once reference tracks are chosen and mixing begins."
     : phase === "channels"
     ? (local ? `Now on ${where}. This part is outside the loudest part, so it is not compared with the references: only how the instruments cover each other and a mono bass count.`
              : `Now on ${where}. While MARA works on single channels, loudness and punch are left out: that part of the song need not sound like the drop.`)
     : (s.section ? `Now on the master, ${s.section}. Tone, loudness, punch and width are compared with the references.` : "");
-  // one row per phase: where it started and where it is now
-  const rows = [], hist = s.history || [], ph = s.history_phase || [];
-  for (let i = 0; i < hist.length; i++) {
-    const last = rows[rows.length - 1];
-    if (last && last.phase === ph[i]) { last.now = hist[i]; last.best = Math.min(last.best, hist[i]); }
-    else rows.push({phase: ph[i], start: hist[i], now: hist[i], best: hist[i]});
-  }
-  const phaseRows = rows.filter(r => r.phase !== "setup").map(r => {
-    const gain = r.start > 0 ? Math.round(100 * (r.start - r.best) / r.start) : 0;
-    return `<tr><th scope="row"><span class="phase-name history-${esc(r.phase)}"><i class="phase-dot"></i>${esc(PHASE_NAMES[r.phase] || r.phase)}</span></th>` +
-      `<td class="mono">${r.start.toFixed(2)}</td><td class="mono">${r.best.toFixed(2)}</td>` +
-      `<td class="${gain > 0 ? "good" : "muted"}">${gain > 0 ? "−" + gain + "%" : "Unchanged"}</td></tr>`;
-  }).join("");
-  $("phases").innerHTML = phaseRows ? `<table class="phase-table" aria-label="Scores by mixing phase"><thead><tr><th scope="col">Phase</th><th scope="col">Start</th><th scope="col">Best</th><th scope="col">Change</th></tr></thead><tbody>${phaseRows}</tbody></table>` : "";
   const parts = Object.entries(s.parts || {}).filter(([, v]) => v >= 0.05).sort((a, b) => b[1] - a[1]);
+  const lastMeasurement = (s.measurement_groups || []).slice(-1)[0];
+  $("parts_context").textContent = lastMeasurement ? lastMeasurement.section.replace(/ \([^)]*\)/g, "") : "";
   const top = Math.max(1, ...parts.map(p => p[1])), ex = s.explain || {};
   $("parts").innerHTML = parts.length ? parts.map(([k, v]) =>
     `<div class="part"><div class="part-head"><span>${esc(PART_NAMES[k] || k)}</span><i style="width:${(v/top)*100}%"></i></div>` +
@@ -1578,7 +1605,7 @@ async function tick() {
     : refs ? `Use the ${refs} reference track${refs > 1 ? "s" : ""} listed below. Reference search will be skipped.`
            : "Choose at least one reference track below: add audio files or use a suggestion.";
   $("status").textContent = s.active ? "running" : choosing ? "choose references" : (s.done ? (s.done.startsWith("Stopped:") ? "stopped" : "finished") : "ready"); $("status").className = "pill" + (s.active ? " on" : "");
-  $("phase").textContent = choosing && !s.active ? "Song scan saved · waiting for your reference choice" : s.phase || "";
+  $("phase").textContent = choosing && !s.active ? "Song scan saved · waiting for your reference choice" : phaseText(s.phase);
   $("mix_mode").hidden = !s.mode;
   $("mix_mode").textContent = s.mode === "beat" ? "Beat mode · muted vocal tracks are excluded."
     : "Song mode · full reference balance.";
@@ -1596,7 +1623,7 @@ async function tick() {
     : choosing ? "The mix is paused. Choose your references, then continue here. The saved song scan will be reused."
     : ck ? "Continue with the selected references. Completed steps will be skipped."
          : "Skip reference search and mix directly with the tracks you selected.";
-  $("now_phase").textContent = s.phase || "Preparing …"; $("now_section").textContent = s.section || "";
+  $("now_phase").textContent = phaseText(s.phase) || "Preparing …"; $("now_section").textContent = s.section || "";
   if (s.auto_imported && s.auto_imported.length !== lastImported) {
     if (lastImported >= 0 && s.auto_imported.length) $("msg").textContent = "Picked up from Downloads: " + s.auto_imported.slice(-3).join(", ");
     lastImported = s.auto_imported.length; lastRefs = ""; }
@@ -1615,9 +1642,9 @@ async function tick() {
   updatePreviews();
   $("live").textContent = s.live === null ? "Live …" : (s.live ? "Live connected" : "Live busy or closed (exporting?)");
   $("live").className = "pill" + (s.live ? " on" : "");
-  closeness(s); chart(s.history, s.history_phase, s.history_run); progress(s);
+  closeness(s); sectionResults(s); progress(s);
   $("song").innerHTML = [s.key && `<div><b>${esc(s.key)}</b></div>`, s.style && `<div class="muted">sounds like ${esc(s.style)}</div>`].filter(Boolean).join("") || "No run yet.";
-  $("events").innerHTML = s.events.slice().reverse().map(e => `<div class="ev ${e.kind}">${esc(e.text)}</div>`).join("");
+  $("events").innerHTML = s.events.slice().reverse().map(e => `<div class="ev ${e.kind}">${esc(e.kind === "phase" ? phaseText(e.text) : e.text)}</div>`).join("");
   const refsKey = JSON.stringify(s.reference_files) + JSON.stringify(s.project_references) + JSON.stringify(s.reference_candidates) + s.active;
   if (refsKey !== lastRefs) { lastRefs = refsKey;
     $("refs_used").innerHTML = (s.project_references.length ? "<div class='muted'>in the Live set (always used):</div><ul>" +

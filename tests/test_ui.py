@@ -30,14 +30,41 @@ def test_parse_log():
     assert [e["kind"] for e in s["events"]][:4] == ["phase", "section", "round", "action"]
 
 
+def test_measurements_do_not_compare_different_channels_or_resumed_baselines():
+    state = parse_log([
+        "Taps: 3 channels", "━━ Channel pass: 3 channels",
+        "▶ Piano (keys, priority 3), bars 98–114", "distance 8.0 (tonal 8.0)",
+        "✓ 8.0 → 7.0 (tonal 7.0)",
+        "▶ Intro (pad, priority 2), bars 17–25 (outside the loudest part: overlap and mono bass only)",
+        "distance 0.5 (masking 0.5)",
+        "Taps: 3 channels", "━━ Channel pass, resumed at Piano: 2 channels left",
+        "▶ Piano (keys, priority 3), bars 98–114", "distance 9.0 (tonal 9.0)",
+        "✓ 9.0 → 9.1 (tonal 9.1)", "verified: less masking, protected punch",
+        "━━ Effects: what does nothing or harms",
+    ])
+    groups = state["measurement_groups"]
+    assert [g["values"] for g in groups] == [[8.0, 7.0], [0.5], [9.0, 9.1]]
+    assert [g["scoring"] for g in groups] == ["balance", "local", "balance"]
+    assert [g["run"] for g in groups] == [1, 1, 2]
+    assert groups[-1]["verification"] == "less masking, protected punch"
+    assert state["section"] is None  # effects must not be labelled as the previous channel
+
+
+def test_reverted_run_clears_section_comparisons():
+    state = parse_log(["━━ Master against the reference", "▶ loudest part", "distance 8.0 (tonal 8.0)",
+                       "Stopped: reverted to the state before the run."])
+    assert state["measurement_groups"] == []
+
+
 def test_restarted_ui_can_pause_its_existing_run(tmp_path):
     import subprocess
     import sys
     from mixmatch.ui import _AttachedProcess
 
-    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"],
-                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    child = subprocess.Popen([sys.executable, "-c", "import time; print('ready', flush=True); time.sleep(60)"],
+                             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
     try:
+        assert child.stdout.readline().strip() == "ready"  # macOS Python's launcher has finished execing
         folder = tmp_path / "runs"
         folder.mkdir()
         log_path = str(folder / "ui-test.log")
