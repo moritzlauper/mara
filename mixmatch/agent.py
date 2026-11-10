@@ -61,7 +61,7 @@ class Settings:
     complete: bool = False        # after the master: one pass over every channel, then a final master check
     channel_bars: int = 8         # loop length when a channel is worked on outside the loudest part
     channel_rounds: int = 2       # rounds per channel in the channel pass
-    final_rounds: int = 4         # rounds of the final master check
+    final_rounds: int = 2         # enough for a verified final master check; avoid a long second mix pass
     resume: str | None = None     # track name: skip the master phase and start the channel pass there
     silent: bool = False          # Main fader down while running (the taps measure before it), put back at the end
     auto_ref: bool = False        # find references by listening to the project (library and Jamendo)
@@ -77,7 +77,7 @@ class Settings:
     fine: bool = True             # record the master during its first measurement: narrow resonances
     fine_channels: bool = False   # also record single channels (routing a capture track to a channel once crashed Live)
     verification_passes: int = 2  # repeat the same passage before accepting a change
-    revisit_channels: int = 3     # bounded automatic repair during the final phase
+    revisit_channels: int = 1     # repair only the strongest unresolved source before the final master check
     audit_bars: int = 4           # A/B window per effect
 
 

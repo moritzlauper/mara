@@ -134,7 +134,7 @@ A complete run works through five phases:
 1. **Master comparison:** assess the starting mix and references.
 2. **Channels, groups & returns:** work on channels by priority, in suitable passages.
 3. **Effect checks:** test suitable existing effects and bypass them when justified.
-4. **Final master check:** revisit the overall balance and master after channel adjustments.
+4. **Final master check:** revisit the strongest unresolved source, then verify the overall balance and master after channel adjustments.
 5. **Record After & restore Live:** record the result and restore the temporary recording state.
 
 The dashboard displays reference distance and potential masking separately. History series group measurements by passage and scoring method so that different evaluation contexts remain distinguishable. Lower values indicate reduced measured cost within that context; the values do not constitute a perceptual quality score.
