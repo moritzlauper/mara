@@ -473,6 +473,8 @@ def test_a_stopped_run_continues_exactly_where_it_stopped(tmp_path):
     assert any("Stopped: the planner failed" in l for l in first)
     ck = json.load(open(tmp_path / "checkpoint.json"))
     assert ck["phase"] == "channels" and ck["next_channel"] == "Snare"
+    original_before = (tmp_path / ck["before"]).read_text()
+    live.batch([{"track": "t0", "device": "mixer", "param": "Volume", "value": 0.3}])   # a change before continuing
 
     second = []
     Agent(live, hub, RulePlanner(), settings(resume="auto"), env=env, log=second.append).run()
@@ -482,6 +484,8 @@ def test_a_stopped_run_continues_exactly_where_it_stopped(tmp_path):
     assert "Final check" in text and not os.path.exists(tmp_path / "checkpoint.json")   # complete: nothing left
     first_progress = [json.loads(l.split("progress ", 1)[1]) for l in second if l.strip().startswith("progress {")]
     assert first_progress[0]["done"] == ck["done"]                                       # the bar goes on from there
+    from mixmatch import ab
+    assert open(ab.latest_before(str(tmp_path))).read() == original_before   # «before» is the state before the first part
 
 
 def test_a_channel_outside_the_loudest_part_is_not_compared_with_the_references():

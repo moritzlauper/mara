@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import shutil
 import time
 from dataclasses import dataclass, field, replace
 
@@ -759,7 +760,15 @@ class Agent:
 
         stamp = time.strftime("%Y%m%d-%H%M%S")
         self.ex.refresh()
-        ab.save(self.ex.set_state, self.s.log_dir, stamp, "before")   # for the before/after switch
+        # for the before/after switch; a continued run compares with the state before the run it continues
+        ck = self.load_checkpoint() if self.s.resume and self.s.complete else None
+        first = os.path.join(self.s.log_dir, ck["before"]) if ck and ck.get("before") else None
+        self._before_file = f"{stamp}-before.json"
+        if first and os.path.exists(first):
+            if os.path.abspath(first) != os.path.abspath(os.path.join(self.s.log_dir, self._before_file)):
+                shutil.copyfile(first, os.path.join(self.s.log_dir, self._before_file))
+        else:
+            ab.save(self.ex.set_state, self.s.log_dir, stamp, "before")
         main_volume = self.mute_main() if self.s.silent else None
         try:
             self._run(deadline)
@@ -798,7 +807,7 @@ class Agent:
     def save_checkpoint(self, **changes) -> None:
         """Where a complete run stands, so a stopped run continues there without the preparation:
         the loudest part, every channel's region, beat mode, key, the phase and the next channel."""
-        self._ck = {**getattr(self, "_ck", {}), **changes,
+        self._ck = {**getattr(self, "_ck", {}), **changes, "before": getattr(self, "_before_file", None),
                     "done": round(getattr(self, "_done", 0.0), 2), "total": round(getattr(self, "_total", 0.0), 2)}
         try:
             with open(os.path.join(self.s.log_dir, self.CHECKPOINT), "w") as f:
