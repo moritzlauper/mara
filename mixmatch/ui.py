@@ -1065,7 +1065,18 @@ td{padding:4px 6px;border-bottom:1px solid var(--line)}select,input,textarea{bac
 pre{max-height:260px;overflow:auto;font-size:12px;background:var(--bg);padding:10px;border-radius:8px;margin:0;white-space:pre-wrap}
 svg{width:100%;height:90px}.prog{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:12px}
 .prog i{display:block;width:160px;height:7px;border-radius:4px;background:var(--line);overflow:hidden}.prog b{display:block;height:100%;background:var(--accent)}
-.chartlabels{position:relative;height:30px;font-size:11px;color:var(--muted)}.chartlabels span{position:absolute;white-space:nowrap}
+.history-panel{margin:16px 0 8px;padding:12px;border:1px solid var(--lo);background:var(--face)}
+.history-heading{display:flex;justify-content:space-between;gap:12px;align-items:baseline;margin-bottom:10px;font-size:12px}
+.history-heading b{font-weight:600}.history-heading span{color:var(--muted)}
+#chart{display:block;width:100%;height:120px;overflow:visible}
+#chart polyline,#chart line{vector-effect:non-scaling-stroke}
+.chartlabels{display:flex;flex-wrap:wrap;gap:8px 18px;margin-top:10px;font-size:12px;color:var(--muted)}
+.chartlabels span{display:inline-flex;align-items:center;gap:6px}
+.phase-dot{display:inline-block;flex:none;width:8px;height:8px;background:var(--phase-color,var(--accent))}
+.history-master{--phase-color:var(--accent)}.history-channels{--phase-color:var(--accent2)}
+.history-effects{--phase-color:var(--warn)}.history-final{--phase-color:var(--good)}
+#chart polyline{stroke:var(--phase-color,var(--accent))}#chart circle{fill:var(--phase-color,var(--accent))}
+.resume-key{width:14px;border-top:1px dashed var(--muted)}
 .drop{margin-top:12px;border:2px dashed var(--line);border-radius:10px;padding:34px 16px;min-height:110px;display:flex;align-items:center;justify-content:center;text-align:center;color:var(--muted);font-size:14px}
 .drop.over{border-color:var(--accent);color:var(--accent)}.reflist li{display:flex;justify-content:space-between;gap:8px;align-items:center}
 .reflist li span{flex:1;min-width:0;overflow-wrap:anywhere}.reflist li button{flex-shrink:0}
@@ -1159,8 +1170,14 @@ button:disabled,button.ghost:disabled,.seg button:disabled{opacity:1;color:var(-
   border:2px solid;border-color:var(--lo) var(--hi) var(--hi) var(--lo)}
 .scale i{position:absolute;top:-6px;width:4px;height:20px;margin-left:-2px;background:var(--shadow);transition:left .5s}
 .scale-labels{display:flex;justify-content:space-between;font:11px var(--mono);color:var(--muted)}
-.phase-row{display:grid;grid-template-columns:1fr auto auto;gap:12px;padding:5px 0;border-bottom:1px dotted var(--lo);font-size:13px}
-.phase-row .good{color:var(--good);font-weight:600}.mono{font-family:var(--mono)}
+.phase-table{table-layout:fixed;margin-top:12px;font-size:12px}
+.phase-table th,.phase-table td{padding:9px 4px;border-bottom:1px solid var(--lo);text-align:right;vertical-align:middle}
+.phase-table thead th{font-size:11px;font-weight:400;color:var(--muted)}
+.phase-table th:first-child{width:35%;text-align:left;padding-left:0}
+.phase-table th:last-child{width:25%}.phase-table td:last-child{padding-right:0}
+.phase-table tbody th{font-weight:400}.phase-table .phase-name{display:flex;align-items:center;gap:7px}
+.phase-table td{font-variant-numeric:tabular-nums;white-space:nowrap}
+.phase-table .good{color:var(--good);font-weight:600}.mono{font-family:var(--mono)}
 h3.sub{font:400 12px var(--pixel);text-transform:uppercase;letter-spacing:.06em;margin:16px 0 6px}
 .part{margin:0 0 10px}.part-head{display:grid;grid-template-columns:minmax(150px,auto) 1fr;gap:10px;align-items:center;font-weight:600;font-size:13.5px}
 .part-head i{display:block;height:9px;background:var(--title)}.part-why{font-size:12.5px;color:var(--muted);margin:3px 0 0}
@@ -1254,7 +1271,11 @@ ol.steps button{margin:4px 8px 0 0}
   <div class="scale"><i id="scale_mark"></i></div>
   <div class="scale-labels"><span>like the reference</span><span>far off</span></div>
   <p class="hint" id="scope"></p>
-  <svg id="chart" viewBox="0 0 300 90" preserveAspectRatio="none"></svg><div id="chartlabels" class="chartlabels"></div>
+  <div class="history-panel" id="history_panel" hidden>
+    <div class="history-heading"><b>Score history</b><span>Lower is better</span></div>
+    <svg id="chart" viewBox="0 0 300 90" preserveAspectRatio="none" role="img" aria-label="Score history, separated by mixing phase and resumed run"></svg>
+    <div id="chartlabels" class="chartlabels"></div>
+  </div>
   <div id="phases"></div>
   <h3 class="sub">What is still different</h3>
   <div class="parts" id="parts"><span class="muted">–</span></div>
@@ -1411,26 +1432,29 @@ async function loadRoles() {
   } finally { rolesLoading = false; }
 }
 function chart(values, phases, runs) {
-  if (values.length < 2) { $("chart").innerHTML = ""; $("chartlabels").innerHTML = ""; return; }
+  $("history_panel").hidden = !values.length;
+  if (!values.length) { $("chart").innerHTML = ""; $("chartlabels").innerHTML = ""; return; }
   phases = phases || []; runs = runs || [];
-  const max = Math.max(...values) * 1.05, w = 300, h = 90, x = i => (i/(values.length-1))*w, y = v => h - (v/max)*h;
+  const max = Math.max(1, ...values) * 1.05, w = 300, h = 90;
+  const x = i => 3 + (i/Math.max(1, values.length-1))*(w-6), y = v => h-3 - (v/max)*(h-6);
   // one line per phase: master and channels are measured differently, so their numbers are not joined
-  let svg = "", labels = "", from = 0, lastPx = -1e9, row = 0;
-  const px = $("chart").getBoundingClientRect().width || 300;
+  let svg = [0, 1, 2].map(i => `<line x1="0" x2="300" y1="${3+i*42}" y2="${3+i*42}" stroke="var(--lo)" opacity=".25"/>`).join("");
+  let from = 0, resumed = false;
   for (let i = 1; i <= values.length; i++) {
     if (i < values.length && phases[i] === phases[from] && runs[i] === runs[from]) continue;
     const seg = values.slice(from, i).map((v, j) => `${x(from + j)},${y(v)}`).join(" ");
-    svg += i - from > 1 ? `<polyline fill="none" stroke="var(--accent)" stroke-width="2" points="${seg}"/>`
-                        : `<circle cx="${x(from)}" cy="${y(values[from])}" r="2" fill="var(--accent)"/>`;
-    if (from > 0) svg += `<line x1="${x(from) - w/(values.length-1)/2}" x2="${x(from) - w/(values.length-1)/2}" y1="0" y2="${h}" stroke="var(--line)" stroke-dasharray="${runs[from] !== runs[from-1] ? "4 3" : "0"}"/>`;
-    if (phases[from] !== phases[from-1] && phases[from]) {
-      const at = (x(from) / w) * px;
-      row = at - lastPx < 70 ? 1 - row : 0;     // too close to the previous label: the other line
-      lastPx = at;
-      labels += `<span style="left:${(x(from)/w)*100}%;top:${row * 14}px">${esc(phases[from])}${runs[from] !== runs[from-1] && from ? " (resumed)" : ""}</span>`;
+    const cls = `history-${esc(phases[from] || "setup")}`;
+    svg += i - from > 1 ? `<polyline class="${cls}" fill="none" stroke-width="2" points="${seg}"/>`
+                        : `<circle class="${cls}" cx="${x(from)}" cy="${y(values[from])}" r="1.5"/>`;
+    if (from > 0) {
+      const xx = (x(from) + x(from-1))/2, restart = runs[from] !== runs[from-1];
+      resumed ||= restart;
+      svg += `<line x1="${xx}" x2="${xx}" y1="0" y2="${h}" stroke="var(--muted)" opacity=".5" stroke-dasharray="${restart ? "4 4" : "0"}"/>`;
     }
     from = i;
   }
+  let labels = [...new Set(phases.filter(Boolean))].map(p => `<span class="history-${esc(p)}"><i class="phase-dot"></i>${esc(PHASE_NAMES[p] || p)}</span>`).join("");
+  if (resumed) labels += '<span><i class="resume-key"></i>Resumed run</span>';
   $("chart").innerHTML = svg; $("chartlabels").innerHTML = labels;
 }
 const PART_NAMES = {masking: "Potential masking between instruments", tonal: "Tone balance", loudness: "Loudness",
@@ -1477,12 +1501,13 @@ function closeness(s) {
     if (last && last.phase === ph[i]) { last.now = hist[i]; last.best = Math.min(last.best, hist[i]); }
     else rows.push({phase: ph[i], start: hist[i], now: hist[i], best: hist[i]});
   }
-  $("phases").innerHTML = rows.filter(r => r.phase !== "setup").map(r => {
+  const phaseRows = rows.filter(r => r.phase !== "setup").map(r => {
     const gain = r.start > 0 ? Math.round(100 * (r.start - r.best) / r.start) : 0;
-    return `<div class="phase-row"><span>${esc(PHASE_NAMES[r.phase] || r.phase)}</span>` +
-      `<span class="mono">${r.start.toFixed(2)} → ${r.best.toFixed(2)}</span>` +
-      `<span class="${gain > 0 ? "good" : "muted"}">${gain > 0 ? gain + "% closer" : "no change yet"}</span></div>`;
+    return `<tr><th scope="row"><span class="phase-name history-${esc(r.phase)}"><i class="phase-dot"></i>${esc(PHASE_NAMES[r.phase] || r.phase)}</span></th>` +
+      `<td class="mono">${r.start.toFixed(2)}</td><td class="mono">${r.best.toFixed(2)}</td>` +
+      `<td class="${gain > 0 ? "good" : "muted"}">${gain > 0 ? "−" + gain + "%" : "Unchanged"}</td></tr>`;
   }).join("");
+  $("phases").innerHTML = phaseRows ? `<table class="phase-table" aria-label="Scores by mixing phase"><thead><tr><th scope="col">Phase</th><th scope="col">Start</th><th scope="col">Best</th><th scope="col">Change</th></tr></thead><tbody>${phaseRows}</tbody></table>` : "";
   const parts = Object.entries(s.parts || {}).filter(([, v]) => v >= 0.05).sort((a, b) => b[1] - a[1]);
   const top = Math.max(1, ...parts.map(p => p[1])), ex = s.explain || {};
   $("parts").innerHTML = parts.length ? parts.map(([k, v]) =>
