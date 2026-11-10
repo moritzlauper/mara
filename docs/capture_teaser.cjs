@@ -6,11 +6,11 @@ const path = require('node:path');
 (async () => {
   const browser = await chromium.launch({ headless: true });
   try {
-    const page = await browser.newPage({ viewport: { width: 1440, height: 1200 }, deviceScaleFactor: 2 });
+    const page = await browser.newPage({ viewport: { width: 1440, height: 1700 }, deviceScaleFactor: 2 });
     const errors = [];
     page.on('pageerror', error => errors.push(error.message));
     await page.goto('http://127.0.0.1:8876/workflow?demo=mix');
-    await page.locator('#latest-changes li').first().waitFor();
+    await page.locator('#change-review .change').first().waitFor();
     await page.evaluate(() => document.fonts.ready);
     await page.addStyleTag({ content: `
       :root { color-scheme: light; }

@@ -1,36 +1,41 @@
-import {renderCharts} from '/app/charts.js';
+import {renderCharts,analysisFeedback} from '/app/charts.js';
 const $ = id => document.getElementById(id);
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const PHASES = {master:'Master comparison',channels:'Channels, groups & returns',effects:'Effect checks',final:'Final master check',preview:'Record After & restore Live'};
 const PHASE_PURPOSE={master:'Compare the full mix with your reference.',channels:'Improve individual channels, groups and returns in the mix.',effects:'Test effects one at a time · keep useful effects, bypass those that do not help.',final:'Check the finished mix as a whole.',preview:'Record the result and restore normal Live playback.'};
-const STATUS = {idle:'Ready',preparing:'Preparing',analysing:'Analysing',ready:'Ready to mix',mixing:'Mixing',pausing:'Pausing safely',paused:'Paused',interrupted:'Interrupted',finalizing:'Preparing your result',repairing:'Repairing previews',finished:'Finished',preview_failed:'Preview needs attention',failed:'Needs attention',restored:'Original restored'};
+const STATUS = {idle:'Ready',preparing:'Preparing',analysing:'Analysing',reviewing:'Reviewing roles',ready:'Ready to mix',mixing:'Mixing',pausing:'Pausing safely',paused:'Paused',interrupted:'Interrupted',finalizing:'Preparing your result',repairing:'Repairing previews',finished:'Finished',preview_failed:'Preview needs attention',failed:'Needs attention',restored:'Original restored'};
 let state, projectId, workflowKey, stage='project', dirty=false, rolesDirty=false, rolesRevision, roles={}, rolesProject, pending=false, pausedRequested=false;
 let selected='before', baseAudio='', audioId='', hiddenAudio=false, changeTab='kept', reviewHash='', restoreToken;
 const player=$('player'); player.volume=.5;
 const monitorPlayer=$('monitor-player');monitorPlayer.volume=1;
-function protectPlayback(audio,other){audio.onplay=()=>{other.pause();if(state?.output?.silent===false){audio.pause();api('/api/output',{silent:true,current:true}).then(r=>{state.output=r;audio.play().catch(()=>{});}).catch(e=>message(e.message,true));}};}
-protectPlayback(monitorPlayer,player);protectPlayback(player,monitorPlayer);
+const referencePlayer=$('reference-player');referencePlayer.volume=.5;
+function protectPlayback(audio,other){audio.onplay=()=>{other.pause();if(audio!==referencePlayer)referencePlayer.pause();if(state?.output?.silent===false){audio.pause();api('/api/output',{silent:true,current:true}).then(r=>{state.output=r;audio.play().catch(()=>{});}).catch(e=>message(e.message,true));}};}
+protectPlayback(monitorPlayer,player);protectPlayback(player,monitorPlayer);protectPlayback(referencePlayer,player);referencePlayer.addEventListener('play',()=>monitorPlayer.pause());
 async function api(path, body, method='POST') {
  const response=await fetch(path,{method:body === undefined && method==='POST'?'GET':method,headers:body !== undefined && method!=='PUT'?{'Content-Type':'application/json'}:{},body:body === undefined?undefined:method==='PUT'?body:JSON.stringify(body)});
  const data=await response.json(); if(!response.ok || data.error) throw new Error(data.error || `Request failed (${response.status})`); return data;
 }
 function message(text,error=false){$('message').textContent=text;$('message').hidden=!text;$('message').classList.toggle('error',error);}
-function show(next){stage=next;document.querySelectorAll('[data-panel]').forEach(el=>el.hidden=el.dataset.panel!==next);document.querySelectorAll('nav [data-stage]').forEach(el=>{if(el.dataset.stage===next)el.setAttribute('aria-current','step');else el.removeAttribute('aria-current');});}
+function show(next){stage=next;if(next==='mix' || next==='result')$(next==='mix'?'mix-change-review':'result-change-review').appendChild($('change-review'));document.querySelectorAll('[data-panel]').forEach(el=>el.hidden=el.dataset.panel!==next);document.querySelectorAll('nav [data-stage]').forEach(el=>{if(el.dataset.stage===next)el.setAttribute('aria-current','step');else el.removeAttribute('aria-current');});}
 async function action(fn){if(pending)return;pending=true;try{message('');await fn();await refresh();}catch(e){message(e.message,true);}finally{pending=false;}}
 document.querySelectorAll('[data-stage]').forEach(button=>button.onclick=()=>show(button.dataset.stage));
 let theme=localStorage.getItem('mara-theme') || 'auto';
 function applyTheme(){const hour=new Date().getHours();document.documentElement.dataset.theme=theme==='auto'?(hour>=7 && hour<19?'light':'dark'):theme;$('theme').textContent=`Theme: ${theme}`;}
+async function openSettings(){try{const r=await api('/api/preferences');$('workspace-path').value=r.workspace;$('reference-library-path').value=r.reference_library;$('settings-message').textContent='';if(!$('settings-dialog').open)$('settings-dialog').showModal();}catch(e){message(e.message,true);}}
+$('settings').onclick=openSettings;$('close-settings').onclick=()=>$('settings-dialog').close();
+$('save-settings').onclick=async()=>{try{await api('/api/preferences',{reference_library:$('reference-library-path').value});$('settings-message').textContent='Saved. The library is available under References.';await refresh();}catch(e){$('settings-message').textContent=e.message;}};
+$('connection-settings').onclick=()=>{$('settings-dialog').close();show('project');document.querySelectorAll('[data-panel="project"] details.setup').forEach(d=>d.open=true);};
+document.addEventListener('keydown',e=>{if((e.metaKey || e.ctrlKey) && e.key===','){e.preventDefault();openSettings();}});
 $('theme').onclick=()=>{theme=['auto','light','dark'][(['auto','light','dark'].indexOf(theme)+1)%3];localStorage.setItem('mara-theme',theme);applyTheme();};applyTheme();
-$('header-progress').onclick=()=>action(async()=>{if(state?.following_live===false)await api('/api/songs/follow-live',{});show('mix');});
+$('header-progress').onclick=()=>action(async()=>{if(state?.following_live===false)await api('/api/songs/follow-live',{});show(state?.workflow?.stage || 'mix');});
 $('project-switch').onchange=()=>action(async()=>{if($('project-switch').value==='__live__')await api('/api/songs/follow-live',{});else await api('/api/songs/switch',{slug:$('project-switch').value});});
-async function changeSilent(silent){await action(async()=>{if(!silent){monitorPlayer.pause();player.pause();}state.output=await api('/api/output',{silent,equal:$('current-equal').checked});updateCurrentMatch(state.output.match);$('monitor-context').textContent=silent?'Live is muted.':'Listening to Current.';});}
+async function changeSilent(silent){await action(async()=>{if(!silent){monitorPlayer.pause();player.pause();referencePlayer.pause();}state.output=await api('/api/output',{silent,equal:$('current-equal').checked});updateCurrentMatch(state.output.match);$('monitor-context').textContent=silent?'Live is muted.':'Listening to Current.';});}
 
 $('unmute-current').onclick=()=>{monitorPlayer.pause();player.pause();$('monitor-preview').hidden=true;changeSilent(!(state?.output?.silent ?? true));};
 function closeBefore(){monitorPlayer.pause();$('monitor-preview').hidden=true;$('monitor-before').textContent='Before';}
 $('monitor-before').onclick=()=>action(async()=>{if(!$('monitor-preview').hidden){closeBefore();return;}const p=state?.previews?.before;if(!p)return;player.pause();state.output=await api('/api/output',{silent:true,equal:$('current-equal').checked});updateCurrentMatch(state.output.match);const src=state.output.match?.ready?state.output.match.before_url:`/api/preview-audio?which=before&id=${encodeURIComponent(p.id)}`;if(monitorPlayer.dataset.source!==src){monitorPlayer.src=src;monitorPlayer.dataset.source=src;}$('monitor-preview').hidden=false;await monitorPlayer.play().catch(()=>{});});
 function updateCurrentMatch(match){$('current-equal-status').textContent=!$('current-equal').checked?'Original listening levels.':match?.ready?`Matched listening level · ${match.target_lufs.toFixed(1)} LUFS. Current uses the latest passage measurement (approximate).`:match?.reason || 'Matching will use the next available Current measurement.';}
 $('current-equal').onchange=()=>action(async()=>{const playing=!monitorPlayer.paused,position=monitorPlayer.currentTime;state.output=await api('/api/output',{silent:state.output?.silent!==false,equal:$('current-equal').checked});updateCurrentMatch(state.output.match);if(!$('monitor-preview').hidden && state.previews?.before){const p=state.previews.before;const src=state.output.match?.ready?state.output.match.before_url:`/api/preview-audio?which=before&id=${encodeURIComponent(p.id)}`;monitorPlayer.src=src;monitorPlayer.dataset.source=src;monitorPlayer.volume=1;monitorPlayer.onloadedmetadata=()=>{monitorPlayer.currentTime=Math.min(position,monitorPlayer.duration-.1);};if(playing)await monitorPlayer.play();}});
-$('analysis-pause').onclick=()=>$('pause').click();
 $('description').oninput=$('mode').onchange=()=>{dirty=true;$('save-project').disabled=false;};
 $('save-project').onclick=()=>action(async()=>{const body={description:$('description').value};if(!state?.active)body.mode=$('mode').value;const r=await api('/api/project',body);dirty=false;if(state?.active)message(r.applies==='next_step'?'Goal saved. MARA uses it at the next planning step.':'Goal saved. This running version picks it up on resume or on the next run.');else show('references');});
 let plannerSettings, plannerDrafts={}, editingProvider;
@@ -48,15 +53,25 @@ $('set-taps').onclick=()=>action(async()=>{await api('/api/taps',{});message('Se
 let removingMara=false,cleanedProject;
 $('remove-mara').onclick=()=>action(async()=>{const project=state.project_id;removingMara=true;$('remove-mara').disabled=true;try{await api('/api/taps/remove',{project_id:project});cleanedProject=project;message('MARA measurement devices removed. Your mix and saved previews are kept.');}finally{removingMara=false;}});
 $('install-bridge').onclick=()=>action(async()=>{const r=await api('/api/setup/install',{library:$('library-path').value});message(r.message);});
+$('browse-references').onclick=()=>{$('reference-library').open=true;$('reference-search').focus();};
+$('reference-search').oninput=()=>renderReferences(state);
+$('change-references').onclick=()=>action(async()=>{await api('/api/stop',{});pausedRequested=true;message('Stopping at the next safe checkpoint. Reference selection becomes available when the run has stopped.');});
 $('pick-files').onclick=()=>$('reference-files').click();
-async function upload(files){await action(async()=>{for(const file of files){const r=await api('/api/references/'+encodeURIComponent(file.name),file,'PUT');message(r.warning || `Added ${r.saved}`);}});}
+async function upload(files){
+ if(state?.active || state?.running){message('Reference files can be added when the current run has stopped.',true);return;}
+ if(pending){message('An import or another action is still running. Try the drop again when it finishes.');return;}
+ if(!files.length){message('Drop audio files directly from Finder or File Explorer, or choose Add audio files.',true);return;}
+ if(files.some(f=>!f.size || !/\.(wav|aif|aiff|flac|mp3|m4a|aac)$/i.test(f.name))){message('Choose audio files (WAV, AIFF, FLAC, MP3, M4A or AAC). Folders and empty files cannot be imported.',true);return;}
+ await action(async()=>{const warnings=[];for(const [i,file] of files.entries()){message(`Importing ${file.name} · ${i+1} of ${files.length}…`);const r=await api('/api/references/'+encodeURIComponent(file.name),file,'PUT');if(r.warning)warnings.push(r.warning);}message(`Added ${files.length} reference ${files.length===1?'file':'files'}. ${warnings.join(' ')}`);});
+}
 $('reference-files').onchange=e=>{upload([...e.target.files]);e.target.value='';};
-for(const name of ['dragenter','dragover'])$('drop').addEventListener(name,e=>{e.preventDefault();$('drop').classList.add('over');});
-for(const name of ['dragleave','drop'])$('drop').addEventListener(name,e=>{e.preventDefault();$('drop').classList.remove('over');});
-$('drop').ondrop=e=>{if(!state?.active)upload([...e.dataTransfer.files]);};
+const fileDrag=e=>[...(e.dataTransfer?.types || [])].includes('Files');
+for(const name of ['dragenter','dragover'])document.addEventListener(name,e=>{if(!fileDrag(e))return;e.preventDefault();e.dataTransfer.dropEffect=stage==='references' && !state?.active?'copy':'none';$('drop').classList.toggle('over',stage==='references' && !state?.active);});
+document.addEventListener('dragleave',e=>{if(!e.relatedTarget)$('drop').classList.remove('over');});
+document.addEventListener('drop',e=>{if(!fileDrag(e))return;e.preventDefault();$('drop').classList.remove('over');if(stage==='references')upload([...e.dataTransfer.files]);else message('Open References to add audio files.');});
 function runBody(extra={}){return {reference_mode:'selected',silent:true,mode:$('mode').value,...extra};}
 $('discover').onclick=()=>action(async()=>{await api('/api/analyse',runBody({reference_mode:'discover'}));show('analysis');});
-$('analyse').onclick=()=>action(async()=>{await api('/api/analyse',runBody());show('analysis');});
+$('analyse').onclick=()=>action(async()=>{await api('/api/analyse',runBody({auto_mix:true}));show('analysis');});
 $('start').onclick=()=>action(async()=>{await api('/api/run',runBody({continue:!!state.checkpoint}));show('mix');});
 $('resume').onclick=()=>action(async()=>{await api('/api/run',runBody({continue:true}));pausedRequested=false;show('mix');});
 $('pause').onclick=()=>action(async()=>{await api('/api/stop',{});pausedRequested=true;message('Pausing at the next safe checkpoint. Any current test will be restored first.');});
@@ -65,11 +80,11 @@ $('new-run').onclick=()=>{show('project');message('Review your goal and referenc
 function markup(id,html){const el=$(id);if(el.dataset.render!==html){el.innerHTML=html;el.dataset.render=html;}}
 function phaseOf(phase=''){phase=phase.toLowerCase();return phase.startsWith('final')?'final':phase.startsWith('channel')?'channels':phase.startsWith('effect')?'effects':phase.startsWith('master')?'master':'setup';}
 function renderReferences(s){
- markup('reference-list',(s.reference_files || []).map(name=>`<div class="card ref"><div><strong>${esc(name)}</strong><p class="muted">Selected for this project</p></div><button data-remove="${esc(name)}" ${s.active?'disabled':''}>Remove</button></div>`).join('')+(s.project_references || []).map(r=>`<div class="card ref"><div><strong>${esc(r.file?.split(/[\\/]/).pop() || r.track || r)}</strong><p class="muted">Reference clip in Live · ${esc(r.track)}</p></div></div>`).join(''));
- markup('candidates',(s.reference_candidates || []).filter(r=>!r.hidden).map(r=>`<div class="fact"><span>${esc(r.name)}</span><button data-reference="${esc(r.id)}" ${s.active?'disabled':''}>Add</button></div>`).join('') || '<p class="muted">No more files in the shared library.</p>');
+ markup('reference-list',(s.reference_files || []).map(name=>`<div class="card ref"><div><strong>${esc(name)}</strong><p class="muted">Selected for this project</p></div><button data-listen-name="${esc(name)}">Listen</button><button data-remove="${esc(name)}" ${s.active?'disabled':''}>Remove</button></div>`).join('')+(s.project_references || []).map(r=>`<div class="card ref"><div><strong>${esc(r.file?.split(/[\\/]/).pop() || r.track || r)}</strong><p class="muted">Reference clip in Live · ${esc(r.track)}</p></div></div>`).join(''));
+ markup('candidates',(s.reference_candidates || []).filter(r=>!r.hidden && r.name.toLowerCase().includes($('reference-search').value.toLowerCase())).map(r=>`<div class="fact"><span>${esc(r.name)}</span><span class="row"><button data-listen-reference="${esc(r.id)}">Listen</button><button data-reference="${esc(r.id)}" ${s.active?'disabled':''}>Add</button></span></div>`).join('') || '<p class="muted">No more files in the shared library.</p>');
  markup('suggestions',(s.to_get || []).map(r=>`<div class="fact"><span>${esc(r.title || r.name)}<br><small>${esc(r.why || '')}</small></span></div>`).join(''));
 }
-document.addEventListener('click',e=>{const b=e.target.closest('button');if(!b)return;if(b.dataset.remove)action(()=>api('/api/references/remove',{name:b.dataset.remove}));if(b.dataset.reference)action(()=>api('/api/references/choose',{id:b.dataset.reference}));});
+document.addEventListener('click',e=>{const b=e.target.closest('button');if(!b)return;if(b.dataset.listenReference || b.dataset.listenName){const c=(state.reference_candidates || []).find(c=>c.id===b.dataset.listenReference);$('reference-playing').textContent=c?.name || b.dataset.listenName;referencePlayer.src='/api/reference-audio?'+(c?'id='+encodeURIComponent(c.id):'name='+encodeURIComponent(b.dataset.listenName));$('reference-player-box').hidden=false;referencePlayer.play().catch(()=>message('Press Play to listen to this reference.'));}if(b.dataset.remove)action(()=>api('/api/references/remove',{name:b.dataset.remove}));if(b.dataset.reference)action(()=>api('/api/references/choose',{id:b.dataset.reference}));});
 async function loadRoles(s){
  if(rolesDirty || (rolesRevision===s.roles_revision && rolesProject===s.project_id))return;
  const expected=s.project_id;const data=await api('/api/roles');if(state?.project_id!==expected || rolesDirty)return;roles=data;rolesRevision=s.roles_revision;rolesProject=expected;
@@ -78,7 +93,10 @@ async function loadRoles(s){
  $('save-roles').disabled=true;
 }
 $('roles').onchange=()=>{rolesDirty=true;$('save-roles').disabled=false;};
-$('save-roles').onclick=()=>action(async()=>{const updated=structuredClone(roles);Object.entries(roles).forEach(([name,r],i)=>{const role=document.querySelector(`[data-role="${i}"]`).value,priority=+document.querySelector(`[data-priority="${i}"]`).value;if(role!==r.role || priority!==r.priority)updated[name]={...r,role,priority,source:'user'};});await api('/api/roles',updated);rolesDirty=false;rolesRevision=undefined;message('Roles saved. The next run uses your corrections.');});
+async function saveRoles(){const updated=structuredClone(roles);Object.entries(roles).forEach(([name,r],i)=>{const role=document.querySelector(`[data-role="${i}"]`).value,priority=+document.querySelector(`[data-priority="${i}"]`).value;if(role!==r.role || priority!==r.priority)updated[name]={...r,role,priority,source:'user'};});await api('/api/roles',updated);rolesDirty=false;rolesRevision=undefined;message(state?.workflow?.status==='reviewing'?'Roles saved. This mix will use your corrections.':'Roles saved. The next run uses your corrections.');}
+$('save-roles').onclick=()=>action(saveRoles);
+$('hold-review').onclick=()=>action(()=>api('/api/analysis/review',{run_id:state.workflow.id,action:'hold'}));
+$('continue-review').onclick=()=>action(async()=>{if(rolesDirty)await saveRoles();await api('/api/analysis/review',{run_id:state.workflow.id,action:'continue'});});
 function loadAudio(url,play=false,position=0){baseAudio=url;player.src=url+($('equal').checked && state.loudness_match?.ready?'&equal=1&match='+encodeURIComponent(state.loudness_match.version):'');player.onloadedmetadata=()=>{if(position)player.currentTime=Math.min(position,Math.max(0,player.duration-.1));};if(play)player.play().catch(()=>message('Press Play to listen.'));}
 function choose(which,play=true){const p=state?.previews?.[which];if(!p)return;const position=player.currentTime || 0;selected=which;audioId=p.id;hiddenAudio=false;$('blind-label').textContent='';loadAudio(`/api/preview-audio?which=${which}&id=${encodeURIComponent(p.id)}`,play,position);renderAudio(state);}
 $('ab-before').onclick=()=>choose('before');$('ab-after').onclick=()=>choose('after');
@@ -117,7 +135,9 @@ function timeLeft(progress,active){if(!active)return '';const minutes=progress?.
 function isConnectedProject(s){return !!s.open_set && s.following_live!==false;}
 function render(s){const w=s.workflow || {},status=w.status || 'idle',live=s.open_set,active=s.active || s.running;
  const projects=`<option value="__live__">${esc(s.engine?.track || s.open_set?.name || s.track || 'Open Live project')} (current)</option>`+(s.tracks || []).map(t=>`<option value="${esc(t.slug)}">${esc(t.name)}</option>`).join('');if($('project-switch').dataset.render!==projects){$('project-switch').innerHTML=projects;$('project-switch').dataset.render=projects;}$('project-switch').value=s.following_live?'__live__':s.project_id;$('project-switch').disabled=false;$('project-switch').title='Choose a project · the current run continues in its own project';
- $('analysis-pause').hidden=!active;$('analysis-pause').disabled=pausedRequested;
+ const analysis=analysisFeedback(s);
+ $('role-fields').disabled=active && !(analysis.review && analysis.held);
+ $('start').hidden=status!=='ready';
 
  $('project-name').textContent=s.track || 'No project yet';$('connection').textContent=live?'Live connected':'Waiting for Live';$('connection').classList.toggle('connected',!!live);$('status').textContent=pausedRequested && active?'Pausing safely':STATUS[status] || status;
  $('footer-project').textContent=live?.path || s.track || 'Open your set in Ableton Live';$('footer-state').textContent=active?s.activity?.text || w.activity?.text || s.phase || 'Working …':'Changes are saved with this project';
@@ -129,29 +149,46 @@ function render(s){const w=s.workflow || {},status=w.status || 'idle',live=s.ope
  const refs=(s.reference_files?.length || 0)+(s.project_references?.length || 0),taps=live && live.taps>0,connected=!!live && s.following_live!==false;
  $('analyse').disabled=active || !connected || !taps || !refs;
  $('start').disabled=active || !connected || !refs || !s.previews?.before || status!=='ready';
+ $('references-context').textContent=active?'Browse and audition references while MARA works. To change the mix target, pause here, update the selection, then start a new run.':'Choose references for the next run. Listen before adding a file to your selection.';
+ $('change-references').hidden=!active;$('change-references').disabled=pausedRequested;
  renderReferences(s);renderAudio(s);renderChanges(s);renderLatestChanges(s);renderCharts(s);updatePlannerCost();
  $('unmute-current').textContent=s.output?.silent===false?'Mute Current':'Unmute Current';
- $('unmute-current').disabled=!connected || ['finalizing','repairing'].includes(status);
+ $('unmute-current').disabled=!connected || w.preview_recording || ['finalizing','repairing'].includes(status);
  $('monitor-before').textContent=$('monitor-preview').hidden?'Before':'Close Before';
  $('monitor-before').disabled=!connected || !s.previews?.before || ['finalizing','repairing'].includes(status);
  $('review-so-far').hidden=!(s.review?.kept?.length || s.review?.rejected?.length);
  $('monitor-context').textContent=s.output?.silent===false?'Listening to Current · live working passage, including changes being tested.':!monitorPlayer.paused?'Listening to Before · saved original recording. Live is muted.':'Live is muted. Unmute Current to hear what MARA is doing.';
 
- $('analysis-title').textContent=status==='ready'?'Your mix is ready to work on.':status==='analysing'?'MARA is understanding your mix.':'Understand first. Then improve.';
+ $('analysis-title').textContent=status==='ready' || status==='reviewing' || w.analysis_complete?'Your mix is ready to work on.':status==='analysing'?'MARA is understanding your mix.':'Understand first. Then improve.';
  markup('analysis-info',`<div class="fact"><span>Original preview</span><span>${s.previews?.before?'Recorded · ready to hear':'Pending'}</span></div><div class="fact"><span>References</span><span>${refs} selected</span></div><p>${esc(s.song || s.style || 'Instrument roles and arrangement details appear after analysis.')}</p>`);
- $('analysis-progress').textContent=active?s.activity?.text || w.activity?.text || 'Analysing …':w.error || '';
- const phase=status==='finalizing'?'preview':phaseOf(s.phase || w.phase || ''),index=Object.keys(PHASES).indexOf(phase);
+ $('analysis-status').hidden=!analysis.running && !w.error;
+ $('analysis-status-title').textContent=analysis.title;$('analysis-progress').textContent=w.error || analysis.detail;
+ $('analysis-elapsed').textContent=analysis.running?`${analysis.elapsed} elapsed`:'';
+ $('analysis-guidance').textContent=analysis.hint;$('analysis-next').textContent=analysis.review?'':analysis.next;
+ $('analysis-meter').hidden=analysis.review || !analysis.running;
+ const ap=analysis.progress;$('analysis-meter').classList.toggle('indeterminate',ap===null);$('analysis-bar').style.width=ap===null?'30%':ap+'%';
+ if(ap===null)$('analysis-meter').removeAttribute('aria-valuenow');else $('analysis-meter').setAttribute('aria-valuenow',ap);
+ $('analysis-review-actions').hidden=!analysis.review;$('hold-review').hidden=analysis.held;
+ $('continue-review').textContent=rolesDirty?'Save roles & continue →':'Continue now →';
+ if(['reviewing','ready'].includes(status) || w.analysis_complete){const key=s.project_id+'|'+w.id;if($('roles-details').dataset.opened!==key){$('roles-details').open=true;$('roles-details').dataset.opened=key;}}
+ const phase=analysis.running?'setup':status==='finalizing'?'preview':phaseOf(s.phase || w.phase || ''),index=Object.keys(PHASES).indexOf(phase);
  const phaseLabel=index>=0?`Phase ${index+1} of 5 · ${PHASES[phase]}`:'Preparing your mix';
- $('mix-stage').textContent=phaseLabel;$('mix-stage-purpose').textContent=PHASE_PURPOSE[phase] || 'Restoring the saved checkpoint and connecting to Live.';
+ $('mix-stage').textContent=phaseLabel;$('mix-stage-purpose').textContent=PHASE_PURPOSE[phase] || analysis.hint;
  markup('mix-phases',Object.entries(PHASES).map(([key,name],i)=>{const complete=status==='finished' || i<index,current=status!=='finished' && key===phase,label=complete?'Done':current?(status==='paused'?'Paused':status==='pausing'?'Pausing':status==='interrupted' || status==='failed'?'Needs attention':'In progress'):'Upcoming';return `<li class="phase-item ${complete?'complete':current?'current':'upcoming'}"${current?' aria-current="step"':''}><span class="phase-mark" aria-hidden="true">${complete?'✓':i+1}</span><span class="phase-name">${esc(name)}</span><span class="phase-state">${label}</span></li>`;}).join(''));
 
  $('mix-title').textContent=status==='paused'?'Your run is paused.':status==='failed' || status==='interrupted'?'This run needs attention.':status==='finalizing'?'Preparing your result.':'MARA is working on your mix.';
  $('mix-description').textContent=w.error || s.activity?.text || w.activity?.text || s.phase || 'Your progress is saved at each safe checkpoint.';
  const p=s.progress || w.progress,percent=s.display_progress?.percent ?? 0,hp=s.engine?.active?(s.engine.display_progress?.percent ?? percent):percent;$('header-progress-bar').style.width=hp+'%';const headerEta=timeLeft(s.engine?.active?s.engine.display_progress:s.display_progress,s.engine?.active || active);$('header-progress-label').textContent=hp+'%'+(headerEta?' · '+headerEta:'');$('header-progress').style.visibility=s.engine?.active || active || s.checkpoint || status==='finished'?'visible':'hidden';$('header-progress').setAttribute('aria-label',`${hp}% complete. Show mix progress.`);$('progress-bar').style.width=percent+'%';$('progress-bar').parentElement.setAttribute('aria-valuenow',percent);const eta=timeLeft(s.display_progress,active);$('progress-label').textContent=p?`${percent}%${eta?' · '+eta:''} · ${phaseLabel}`:'Waiting for the next step';
+ const headerState=s.engine?.active && s.following_live===false?{...s.engine,active:true}:s,headerAnalysis=analysisFeedback(headerState);
+ $('header-progress-bar').parentElement.hidden=headerAnalysis.review;
+ $('header-progress-bar').parentElement.classList.toggle('indeterminate',headerAnalysis.running && headerAnalysis.progress===null);
+ if(headerAnalysis.running){$('header-progress-bar').style.width=headerAnalysis.progress===null?'30%':headerAnalysis.progress+'%';$('header-progress-label').textContent=headerAnalysis.review?headerAnalysis.detail:`${headerAnalysis.counter || headerAnalysis.title} · ${headerAnalysis.elapsed}`;$('header-progress').setAttribute('aria-label',headerAnalysis.detail+'. Show analysis progress.');}
+ $('progress-bar').parentElement.classList.toggle('indeterminate',analysis.running && analysis.progress===null);
+ if(analysis.running){$('progress-bar').style.width=ap===null?'30%':ap+'%';if(ap===null)$('progress-bar').parentElement.removeAttribute('aria-valuenow');else $('progress-bar').parentElement.setAttribute('aria-valuenow',ap);$('progress-label').textContent=analysis.detail+' · '+analysis.elapsed+' elapsed';}
  $('pause').hidden=!active;$('pause').disabled=pausedRequested;$('resume').hidden=active || !s.checkpoint || status==='ready';if(!active)pausedRequested=false;
  markup('events',(s.events || []).slice(-25).map(e=>`<div class="event">${esc(e.text || e.message || e)}</div>`).join(''));$('log').textContent=(s.log || []).join('\n');
  const done=status==='finished',repair=status==='preview_failed';$('result-title').textContent=done?'Your mix run is finished.':status==='restored'?'Original restored in Live.':repair?'Mix complete. Preview needs attention.':active?'Changes so far.':'Your saved mix result.';
- $('result-description').textContent=done?'Before and After are ready to hear. The MARA mix is already in Live.':status==='restored'?'The original settings are back in Live. You can still listen to the saved comparison.':repair?'The mix is saved. Repair the missing audio before comparing.':w.error || 'This run is not marked complete. Review its status in the Mix stage.';
+ $('result-description').textContent=done?'Before and After are ready to hear. The MARA mix is already in Live.'+(w.error?' '+w.error:''):status==='restored'?'The original settings are back in Live. You can still listen to the saved comparison.':repair?'The mix is saved. Repair the missing audio before comparing.':w.error || 'This run is not marked complete. Review its status in the Mix stage.';
  const quality=w.quality_check,hasAssessment=quality?.schema===1;
  $('quality-check').hidden=!w.mix_complete;
  markup('quality-check',`<h2>Mix assessment</h2>${hasAssessment?`<p><strong>${esc(quality.summary)}</strong></p><p>${esc(quality.benefit_text)}</p><details><summary>What was checked</summary><dl class="remaining-list">${(quality.checks || []).map(c=>`<div><dt>${esc(c.name)}</dt><dd>${esc(c.text)}</dd></div>`).join('')}</dl><p class="muted">${esc(quality.basis)} · ${quality.samples} measurements. ${quality.other_passages_checked || 0} other passages checked during changes.</p></details><p class="muted">Automatic measurements do not establish audible improvement or artistic quality. Reference differences can be intentional.</p>`:'<p class="muted">This saved run has no comparable final assessment. The next complete run checks automatically.</p>'}`);
@@ -167,10 +204,10 @@ function render(s){const w=s.workflow || {},status=w.status || 'idle',live=s.ope
  const resultLabels={loudness:'Loudness',dynamics:'Dynamics',width:'Stereo width',low_side:'Low-end stereo',clipping:'Peak level',tonal:'Tone balance',masking:'Masking'};
  markup('remaining','<dl class="remaining-list">'+Object.entries(resultLabels).map(([key,name])=>`<div><dt>${name}</dt><dd>${esc((s.explain?.[key] || 'Awaiting measurement').replace(/bass -([\d.]+) dB more stereo/,'bass $1 dB less stereo'))}</dd></div>`).join('')+'</dl>');
 }
-let refreshing=false;
+let refreshing=false,followingStage;
 async function refresh(){if(refreshing)return;refreshing=true;try{const s=await api('/api/state');state=s;
- if(projectId!==s.project_id){projectId=s.project_id;dirty=false;rolesDirty=false;rolesRevision=undefined;workflowKey=undefined;reviewHash='';audioId='';baseAudio='';hiddenAudio=false;player.pause();player.removeAttribute('src');player.load();monitorPlayer.pause();monitorPlayer.removeAttribute('src');monitorPlayer.dataset.source='';monitorPlayer.load();$('monitor-preview').hidden=true;}
- const key=[s.project_id,s.workflow?.id,s.workflow?.status].join('|');if(key!==workflowKey){const previous=workflowKey;workflowKey=key;const next=s.workflow?.stage || 'project';if(!previous)show('project');else if(['finished','preview_failed','ready','restored'].includes(s.workflow?.status) || s.active)show(next);}
+ if(projectId!==s.project_id){projectId=s.project_id;dirty=false;rolesDirty=false;rolesRevision=undefined;workflowKey=undefined;reviewHash='';audioId='';baseAudio='';hiddenAudio=false;referencePlayer.pause();$('reference-player-box').hidden=true;player.pause();player.removeAttribute('src');player.load();monitorPlayer.pause();monitorPlayer.removeAttribute('src');monitorPlayer.dataset.source='';monitorPlayer.load();$('monitor-preview').hidden=true;}
+ const key=[s.project_id,s.workflow?.id,s.workflow?.status].join('|');if(key!==workflowKey){const previous=workflowKey;workflowKey=key;const next=s.workflow?.stage || 'project';if(!previous)show(document.body.dataset.demoStage || 'project');else if(stage===followingStage)show(next);followingStage=next;}
  render(s);await loadRoles(s);
  }catch(e){$('connection').textContent='Connection interrupted';$('connection').classList.remove('connected');message(e.message,true);}finally{refreshing=false;}}
 api('/api/setup').then(r=>{$('library-path').value=r.library;setupPlanner(r.planner_settings);}).catch(e=>message(e.message,true));show('project');refresh();setInterval(refresh,1500);

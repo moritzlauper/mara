@@ -209,7 +209,7 @@ def cmd_run(args):
         if getattr(agent, "_awaiting_references", False):
             workflow.update(status="ready", phase="review", error=None)
         elif getattr(agent, "_mix_complete", False):
-            workflow.update(status="finished" if ready and current.get("output_restored") else "preview_failed",
+            workflow.update(status="finished" if ready and (current.get("output_restored") or current.get("output_muted_for_tails")) else "preview_failed",
                             mix_complete=True, previews_ready=ready)
         else:
             workflow.update(status="paused")
@@ -243,6 +243,7 @@ def _cmd_run(args):
                                            resume="auto" if args.cont else args.resume,
                                            auto_ref=auto_ref,
                                            review_references=args.review_references or auto_ref,
+                                           review_seconds=getattr(args, "review_seconds", 0),
                                            replace_references=args.replace_references or bool(args.ref),
                                            suggest=not args.no_suggest,
                                            library=args.library or None,
@@ -271,16 +272,22 @@ def _cmd_run(args):
             main_volume = monitor.get("volume")
         if main_volume is not None and not getattr(agent, "_output_cleanup_done", False):
             agent.restore_main_when_quiet(main_volume)
-        if completed:
+        if completed and getattr(agent, "_output_quiet", True):
             main_volume = monitoring.finish(live, "runs")
             print("Mix finished. Main fader set to 0 dB.")
+        elif completed:
+            workflow_error = "Mix finished, but the output remains muted because effect tails did not settle. Use Unmute Current when ready."
+            from . import workflow
+            workflow.update(error=workflow_error, output_muted_for_tails=True)
+            print(workflow_error)
         print(f"Loop back to bars {loop['start'] / 4 + 1:.0f}–{(loop['start'] + loop['length']) / 4 + 1:.0f}.")
         set_taps_on(live, False)
         print("Taps switched off until the next run (no processing load).")
         from . import workflow
         current = live.get_set()
         volume = next(p["value"] for t in current["tracks"] if t["key"] == "m" for p in t["mixer"] if p["name"] == "Volume")
-        workflow.update(output_restored=(main_volume is None or abs(volume-main_volume) < 1e-6) and current["loop"] == loop)
+        workflow.update(output_restored=(main_volume is None or abs(volume-main_volume) < 1e-6) and current["loop"] == loop,
+                        preview_recording=False)
     return agent
 
 
@@ -378,6 +385,8 @@ def main(argv=None):
                                     help="continue with the references chosen now instead of the checkpoint's references")
     sub.choices["run"].add_argument("--library", default="~/Music",
                                     help="folder searched for references with --auto-ref (empty to skip)")
+    sub.choices["run"].add_argument("--review-seconds", type=float, default=0,
+                                    help="optional instrument-role review before mixing; continues automatically")
     sub.choices["run"].add_argument("--silent", action="store_true",
                                     help="Main fader down while running (MixMatch measures before it), back at the end")
     sub.choices["run"].add_argument("--no-audit", action="store_true",

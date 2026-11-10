@@ -129,6 +129,38 @@ def test_resume_copies_before_audio_and_never_pairs_it_with_an_older_after(tmp_p
     assert preview.selected_file(str(tmp_path), "before", "../../secrets") is None
 
 
+def test_preview_does_not_reconnect_an_output_muted_before_recording(tmp_path, monkeypatch):
+    from mixmatch import autoref, monitoring, workflow
+
+    song, live, path = prepared(tmp_path)
+    workflow.begin(str(tmp_path))
+    monitoring.begin(str(tmp_path), song.master_track.mixer_device.volume.value, True)
+    monitoring.set_silent(live, str(tmp_path), True)
+    recorded = write_audio(str(tmp_path / 'capture.wav'), seconds=2)
+    monkeypatch.setattr(autoref, 'capture_begin', lambda *a, **kw: 123)
+    def end(*args, **kwargs):
+        # Snapshot gain is audible, but the hardware must stay disconnected.
+        assert song.master_track.mixer_device.volume.value > 0
+        assert monitoring.status(live)['silent']
+        with pytest.raises(ValueError, match='recording silently'):
+            monitoring.set_silent(live, str(tmp_path), False)
+        return recorded
+    monkeypatch.setattr(autoref, 'capture_end', end)
+    try:
+        preview.render(live, path, 64, 4, log=lambda *_: None)
+        assert live.request('preview_output')['muted']
+        # Even a fader write or automation cannot leak the signal while muted.
+        live.set('m', 'mixer', 'Volume', value=.8)
+        assert monitoring.status(live)['silent']
+        del live.cmd._preview_output  # Live connection reloaded while output was muted
+        monitoring.set_silent(live, str(tmp_path), False)
+        assert not live.request('preview_output')['muted']
+        assert song.master_track.output_routing_channel.display_name == '3/4'
+        assert not (tmp_path / 'output-route.json').exists()
+    finally:
+        workflow.end()
+
+
 def test_player_serves_audio_with_seeking_while_run_is_active_and_blind_is_hidden(tmp_path, monkeypatch):
     folder = tmp_path / "runs"
     folder.mkdir()

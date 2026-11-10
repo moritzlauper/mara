@@ -246,7 +246,8 @@ def reference_candidates(workdir: str) -> list[dict]:
         found = json.load(open(paths[-1])) if paths else []
     except (OSError, ValueError):
         found = []
-    shared = os.path.join(project_root(workdir), "references")
+    from .preferences import read as preferences
+    shared = preferences(project_root(workdir))["reference_library"]
     if os.path.realpath(shared) != os.path.realpath(os.path.join(workdir, "references")):
         for folder, dirs, names in os.walk(shared):
             dirs[:] = sorted(d for d in dirs if not d.startswith("."))
@@ -814,24 +815,34 @@ def make_handler(runner: Runner, watcher: "DownloadWatcher | None" = None, live_
             return json.loads(self.rfile.read(n) or b"{}")
 
         def do_GET(self):
-            if urlsplit(self.path).path == "/api/preview-audio":
+            if urlsplit(self.path).path in ("/api/preview-audio", "/api/reference-audio"):
                 q = parse_qs(urlsplit(self.path).query)
                 folder = os.path.join(selected_folder(), "runs")
-                if "token" in q:
-                    trial = dict(preview_trial)
-                    if q["token"][0] != trial.get("token") or folder != trial.get("folder"):
-                        return self._send(404, {"error": "preview expired"})
-                    which, identity = trial["which"], trial["id"]
+                if urlsplit(self.path).path == "/api/reference-audio":
+                    path = next((c["path"] for c in reference_candidates(selected_folder())
+                                 if c["id"] == q.get("id", [""])[0]), None)
+                    if "name" in q:
+                        try:
+                            candidate = safe_reference(selected_folder(), q["name"][0])
+                            path = candidate if os.path.isfile(candidate) else None
+                        except ValueError:
+                            path = None
                 else:
-                    which, identity = q.get("which", [""])[0], q.get("id", [""])[0]
-                path = preview.selected_file(folder, which, identity)
-                if "listen_target" in q and which == "before":
-                    try:
-                        path = preview.listening_file(folder, identity, float(q["listen_target"][0]))
-                    except (ValueError, OSError):
-                        path = None
-                elif q.get("equal", ["0"])[0] == "1":
-                    path = preview.matched_file(folder, which, identity)
+                    if "token" in q:
+                        trial = dict(preview_trial)
+                        if q["token"][0] != trial.get("token") or folder != trial.get("folder"):
+                            return self._send(404, {"error": "preview expired"})
+                        which, identity = trial["which"], trial["id"]
+                    else:
+                        which, identity = q.get("which", [""])[0], q.get("id", [""])[0]
+                    path = preview.selected_file(folder, which, identity)
+                    if "listen_target" in q and which == "before":
+                        try:
+                            path = preview.listening_file(folder, identity, float(q["listen_target"][0]))
+                        except (ValueError, OSError):
+                            path = None
+                    elif q.get("equal", ["0"])[0] == "1":
+                        path = preview.matched_file(folder, which, identity)
                 if path is None:
                     return self._send(404, {"error": "preview not ready"})
                 size = os.path.getsize(path)
@@ -849,7 +860,8 @@ def make_handler(runner: Runner, watcher: "DownloadWatcher | None" = None, live_
                         return self._send(416, {"error": "audio range outside file"})
                     status = 206
                 self.send_response(status)
-                self.send_header("Content-Type", "audio/wav")
+                import mimetypes
+                self.send_header("Content-Type", "audio/wav" if path.lower().endswith(".wav") else mimetypes.guess_type(path)[0] or "application/octet-stream")
                 self.send_header("Accept-Ranges", "bytes")
                 self.send_header("Cache-Control", "no-store")
                 self.send_header("Content-Length", str(end - start + 1))
@@ -870,7 +882,8 @@ def make_handler(runner: Runner, watcher: "DownloadWatcher | None" = None, live_
                     pass
                 return
             if self.path == "/api/health":
-                return self._send(200, {"app": "MARA", "schema": 1, "workspace": runner.root})
+                from .platforms import engine_build
+                return self._send(200, {"app": "MARA", "schema": 1, "workspace": runner.root, "build": engine_build()})
             if self.path == "/workflow":
                 from pathlib import Path
                 return self._send(200, Path(__file__).with_name("static").joinpath("app.html").read_text(), "text/html")
@@ -884,6 +897,9 @@ def make_handler(runner: Runner, watcher: "DownloadWatcher | None" = None, live_
                     return self._send(404, {"error": "not found"})
                 return self._send(200, Path(__file__).with_name("static").joinpath(name).read_text(),
                                   "text/javascript" if name.endswith(".js") else "text/css")
+            if self.path == "/api/preferences":
+                from .preferences import read
+                return self._send(200, read(runner.root))
             if self.path == "/api/setup":
                 from .platforms import library_default
                 from .credentials import status
@@ -929,6 +945,7 @@ def make_handler(runner: Runner, watcher: "DownloadWatcher | None" = None, live_
                 wf = workflow.presentation(folder, state, active=state['active'], previews=versions, checkpoint=ck)
                 family = os.path.basename(log_chain(path)[0]) if path else wf.get('id', 'idle')
                 display = progress_display.presentation(folder, family, history, finished=wf.get('status') == 'finished')
+                engine['workflow'] = workflow.read(os.path.join(runner.workdir, 'runs'))
                 if pinned_project and engine_path:
                     engine_chain = log_chain(engine_path)
                     engine['display_progress'] = progress_display.presentation(os.path.join(runner.workdir, 'runs'),
@@ -1012,8 +1029,17 @@ def make_handler(runner: Runner, watcher: "DownloadWatcher | None" = None, live_
             nonlocal pinned_project
             try:
                 body = self._body()
-                if runner.running() and self.path not in ("/api/stop", "/api/output", "/api/project", "/api/setup/planner", "/api/setup/models", "/api/songs/switch", "/api/songs/follow-live", "/api/preview/blind", "/api/preview/reveal"):
+                if runner.running() and self.path not in ("/api/stop", "/api/output", "/api/analysis/review", "/api/roles", "/api/preferences", "/api/project", "/api/setup/planner", "/api/setup/models", "/api/songs/switch", "/api/songs/follow-live", "/api/preview/blind", "/api/preview/reveal"):
                     raise RuntimeError("Pause the current operation safely first.")
+                if self.path == "/api/preferences":
+                    from .preferences import save
+                    return self._send(200, save(runner.root, body.get("reference_library")))
+                if self.path == "/api/analysis/review":
+                    from . import analysis_review
+                    if pinned_project is not None:
+                        raise ValueError("Switch back to the running project to review its roles.")
+                    return self._send(200, analysis_review.request(
+                        os.path.join(runner.workdir, "runs"), body.get("run_id"), body.get("action")))
                 if self.path == "/api/output":
                     from .live_client import LiveClient
                     from .live_identity import document_path
@@ -1131,8 +1157,10 @@ def make_handler(runner: Runner, watcher: "DownloadWatcher | None" = None, live_
                     if mode not in ("selected", "discover"):
                         raise ValueError("choose your references or ask MARA to find suggestions")
                     args = ["run"]
-                    if self.path == "/api/analyse":
+                    if self.path == "/api/analyse" and body.get("auto_mix") is not True:
                         args += ["--review-references"]
+                    elif self.path == "/api/analyse" and mode == "selected":
+                        args += ["--review-seconds", "30"]
                     if mode == "discover":
                         args += ["--auto-ref", "--review-references"]
                     else:
@@ -1276,8 +1304,17 @@ def make_handler(runner: Runner, watcher: "DownloadWatcher | None" = None, live_
                     wf = workflow.read(os.path.join(runner.workdir, "runs"))
                     return self._send(200, {**data, "applies": "next_step" if wf.get("live_goal_updates") else "resume"})
                 if self.path == "/api/roles":
-                    with open(os.path.join(runner.workdir, "roles.json"), "w") as f:
-                        json.dump(body, f, indent=2, ensure_ascii=False)
+                    from . import analysis_review
+                    folder = os.path.join(runner.workdir, "runs")
+                    with analysis_review.locked(folder):
+                        review = analysis_review.read(folder)
+                        from . import workflow
+                        if runner.running() or (workflow.read(folder).get("status") in workflow.ACTIVE and run_process_alive()):
+                            if (pinned_project is not None or review.get("run_id") != workflow.read(folder).get("id")
+                                    or review.get("closed") or not review.get("held")):
+                                raise ValueError("Choose Edit roles during the review window before saving corrections.")
+                        with open(os.path.join(selected_folder(), "roles.json"), "w") as f:
+                            json.dump(body, f, indent=2, ensure_ascii=False)
                     return self._send(200, {"ok": True})
                 self._send(404, {"error": "not found"})
             except Exception as e:

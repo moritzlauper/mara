@@ -7,7 +7,7 @@ def main():
     multiprocessing.freeze_support()
     from mixmatch.cli import main as cli
     if sys.argv[1:2] == ['desktop-service']:
-        from mixmatch.platforms import workspace
+        from mixmatch.platforms import workspace, engine_build
         folder = workspace(); folder.mkdir(parents=True, exist_ok=True)
         os.chdir(folder)
         import json
@@ -20,8 +20,11 @@ def main():
             with urllib.request.urlopen(url + '/api/health', timeout=2) as response:
                 health = json.load(response)
             if health.get('app') == 'MARA' and health.get('workspace') == str(folder):
-                print('MARA is already running: ' + url, flush=True)
-                return
+                with urllib.request.urlopen(url + '/api/state', timeout=2) as response:
+                    state = json.load(response)
+                if health.get('build') == engine_build() or state.get('active') or state.get('running') or state.get('engine', {}).get('active'):
+                    print('MARA is already running: ' + url, flush=True)
+                    return
         except (OSError, ValueError, KeyError):
             pass
         os.environ['MARA_DESKTOP_SERVICE'] = '1'

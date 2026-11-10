@@ -40,6 +40,13 @@ def resources():
     return Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent.parent))
 
 
+def engine_build():
+    try:
+        return (resources() / "engine-build.txt").read_text().strip()
+    except OSError:
+        return "development"
+
+
 def library_default():
     return Path.home() / ("Music" if sys.platform == "darwin" else "Documents") / "Ableton/User Library"
 

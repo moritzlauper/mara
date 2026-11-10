@@ -146,11 +146,14 @@ def render(live, snapshot: str, start: float, length: float, log=print) -> dict:
     activity(log, f"Recording {Path(snapshot).stem.rsplit('-', 1)[-1]} preview · {length / 4:g} bars")
     disconnected = False
     restore_output = None
+    from . import workflow
+    workflow.update(preview_recording=True)
     try:
         live.transport(play=False)
+        already_disconnected = live.request("preview_output").get("muted", False)
         routing = live.request("preview_output", muted=True)
         restore_output = routing.get("restore")
-        disconnected = True
+        disconnected = not already_disconnected
         _apply(live, target)
         aligned = current.get("capabilities", {}).get("aligned_capture", False)
         if aligned:
@@ -192,6 +195,7 @@ def render(live, snapshot: str, start: float, length: float, log=print) -> dict:
                 raise RestoreFailed("Preview stopped: could not restore the hardware output") from e
         if playing:
             live.transport(play=True, time=position)
+        workflow.update(preview_recording=False)
 
 
 def repair(log_dir="runs", log=print):

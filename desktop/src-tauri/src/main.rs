@@ -14,9 +14,19 @@ fn main() {
     let client=reqwest::blocking::Client::builder().timeout(Duration::from_secs(2)).build()?;
     // Reuse this workspace’s running service, including an active run.
     let existing=client.get("http://127.0.0.1:8765/api/health").send().and_then(|r| r.json::<serde_json::Value>());
-    if let Ok(h)=existing { if h["app"]=="MARA" && std::env::var("MARA_WORKSPACE").ok().map(|w| h["workspace"]==w).unwrap_or(true) {return Ok("http://127.0.0.1:8765".into());} }
+    let mut inherited_workspace=None;
+    if let Ok(h)=existing { if h["app"]=="MARA" && std::env::var("MARA_WORKSPACE").ok().map(|w| h["workspace"]==w).unwrap_or(true) {
+     if h["build"]==env!("MARA_BUILD") {return Ok("http://127.0.0.1:8765".into());}
+     let state=client.get("http://127.0.0.1:8765/api/state").send()?.json::<serde_json::Value>()?;
+     if state["active"]==true || state["running"]==true || state["engine"]["active"]==true {
+      if let Some(w)=handle.get_webview_window("main") {let _=w.set_title("MARA · Reopen after this run to activate the update");}
+      return Ok("http://127.0.0.1:8765".into());
+     }
+     inherited_workspace=h["workspace"].as_str().map(str::to_owned);
+    } }
     let exe=std::env::current_exe()?.parent().ok_or("Missing app directory")?.join(if cfg!(windows){"mara-engine.exe"}else{"mara-engine"});
     let mut cmd=Command::new(exe);cmd.args(["desktop-service"]).stdout(Stdio::piped()).stderr(Stdio::inherit());
+    if let Some(workspace)=inherited_workspace {cmd.env("MARA_WORKSPACE",workspace);}
     #[cfg(windows)] {use std::os::windows::process::CommandExt;cmd.creation_flags(0x08000000);}
     let mut child=cmd.spawn()?;let out=child.stdout.take().ok_or("Missing engine output")?;
     boot.lock().unwrap().child=Some(child);

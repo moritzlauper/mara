@@ -12,6 +12,7 @@ import io
 import json
 import mimetypes
 import wave
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
@@ -51,7 +52,9 @@ CHANGES = [
 
 
 def state(scene):
-    active = scene == "mix"
+    active = scene in {"mix", "analysis"}
+    mixing = scene == "mix"
+    measured = scene in {"mix", "result"}
     prepared = scene in {"analysis", "mix", "result"}
     finished = scene == "result"
     components = [{"tonal": t, "width": w, "loudness": 0, "dynamics": 0,
@@ -66,12 +69,14 @@ def state(scene):
         "open_set": {"name": "Night Drive · Demo", "path": "Demo project · illustrative data · no Live connection", "taps": 6, "total": 6},
         "tracks": [], "active": active, "running": active,
         "project": {"description": "Liquid drum & bass. Keep the Rhodes warm and the drums punchy. Give the kick and sub more space; leave room for a future vocal.", "mode": "beat"},
-        "workflow": {"id": "readme-demo", "status": "finished" if finished else "mixing" if active else "ready" if prepared else "idle",
+        "workflow": {"id": "readme-demo", "status": "finished" if finished else "reviewing" if scene == "analysis" else "mixing" if active else "idle",
+                     "started_at": time.time()-72, "analysis_complete": prepared,
+                     "review": {"deadline": time.time()+24, "held": False} if scene == "analysis" else None,
                      "stage": scene, "live_goal_updates": True},
-        "phase": "final check" if finished else "channel Sub Bass" if active else "analysis",
-        "activity": {"text": "Checking kick / sub separation · same 16-bar passage"},
+        "phase": "final check" if finished else "channel Sub Bass" if mixing else "analysis",
+        "activity": {"text": "Analysis complete · review instrument roles" if scene == "analysis" else "Checking kick / sub separation · same 16-bar passage" if mixing else "Demo project · illustrative data"},
         "checkpoint": {"phase": "references" if scene == "analysis" else "channels"} if prepared and not finished else None,
-        "progress": {"step": "Sub Bass"}, "display_progress": {"percent": 100 if finished else 58 if active else 0, "eta_minutes": 4 if active else None},
+        "progress": {"step": "Sub Bass"}, "display_progress": {"percent": 100 if finished else 58 if mixing else 0, "eta_minutes": 4 if mixing else None},
         "output": {"silent": True}, "roles_revision": 1,
         "role_groups": {"Drums": ["kick", "snare"], "Low end": ["sub", "bass"], "Instruments": ["piano", "keys", "pad", "lead_synth"]},
         "reference_files": ["01 — Glass Skyline (demo reference).wav", "02 — Late Train (demo reference).wav"],
@@ -79,19 +84,19 @@ def state(scene):
         "to_get": [], "song": "Liquid drum & bass · 174 BPM · F minor · 96 bars. Focus passage: bars 49–65.",
         "previews": {"before": PREVIEW if prepared else None, "after": {**PREVIEW, "id": "demo-after"} if finished else None},
         "loudness_match": {"ready": finished, "version": "demo", "target_lufs": -12.1},
-        "parts": parts if prepared else {}, "target_lufs": -10.5,
+        "parts": parts if measured else {}, "target_lufs": -10.5,
         "explain": {"loudness": "0.6 LU quieter than the references — remaining gap accepted",
                     "dynamics": "1.0 dB more dynamic (PLR) than the references",
                     "width": "0.6 dB wider than the references",
                     "low_side": "Low-end side energy below the reference target",
                     "clipping": "Measured peaks at −1.0 dBFS",
                     "tonal": "+0.8 dB at 315 Hz; warm Rhodes character retained",
-                    "masking": "Kick ↔ Sub Bass at 63 Hz · reduced, with 36% simultaneous activity"} if prepared else {},
+                    "masking": "Kick ↔ Sub Bass at 63 Hz · reduced, with 36% simultaneous activity"} if measured else {},
         "measurement_groups": [{"run": "demo", "phase": "channels", "scoring": "balance",
                                 "section": "Channel balance · bars 49–65", "values": [round(sum(p.values()), 2) for p in components],
-                                "components": components, "verification": "Retained changes reduced the measured conflict on this passage."}] if prepared else [],
-        "review": {"ready": finished or active, "partial": active, "channels": 3 if finished else 2,
-                   "kept": CHANGES if finished else CHANGES[:2] if active else [],
+                                "components": components, "verification": "Retained changes reduced the measured conflict on this passage."}] if measured else [],
+        "review": {"ready": finished or mixing, "partial": mixing, "channels": 3 if finished else 2,
+                   "kept": CHANGES if finished else CHANGES[:2] if mixing else [],
                    "rejected": [{"section": "Master high shelf", "verification": "No measured improvement in the intended tonal balance; original restored.",
                                  "parameters": [{"track": "Main", "device": "EQ Eight", "param": "High shelf", "old_display": "0.0 dB", "new_display": "+1.0 dB"}]}] if finished else []},
         "events": [{"kind": "kept", "text": "Kept · gentle kick-triggered ducking on Sub Bass; measured conflict reduced."},
@@ -118,7 +123,7 @@ class Handler(BaseHTTPRequestHandler):
         if url.path in {"/", "/workflow"}:
             scene = parse_qs(url.query).get("demo", ["project"])[0]
             Handler.scene = scene if scene in SCENES else "project"
-            html = (STATIC / "app.html").read_text()
+            html = (STATIC / "app.html").read_text().replace("<body>", f'<body data-demo-stage="{Handler.scene}">')
             html = html.replace('<span id="connection"', '<span class="badge">DEMO DATA</span><span id="connection"', 1)
             if Handler.scene == "analysis":
                 html = html.replace('id="roles-details"', 'id="roles-details" open', 1)
@@ -127,6 +132,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(state(Handler.scene))
         if url.path == "/api/setup":
             return self.send({"library": "~/Music/Ableton/User Library", "planner_settings": PLANNER})
+        if url.path == "/api/preferences":
+            return self.send({"workspace": "~/Library/Application Support/MARA", "reference_library": "~/Music/References"})
         if url.path == "/api/roles":
             return self.send(ROLES)
         if url.path == "/api/preview-audio":
