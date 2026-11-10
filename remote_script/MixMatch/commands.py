@@ -241,6 +241,11 @@ class Commands:
             "tracks": tracks,
         }
 
+    def format_values(self, req):
+        """Format saved raw values without changing the live parameter."""
+        p = self._param(self._track(req["track"]), req["device"], req["param"])
+        return {"displays": [_display(p, float(value)) for value in req.get("values", [])[:64]]}
+
     def set(self, req):
         p = self._param(self._track(req["track"]), req["device"], req["param"])
         if "target" in req:

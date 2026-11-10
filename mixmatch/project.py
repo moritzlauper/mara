@@ -18,8 +18,11 @@ def load(path: str = PATH) -> dict:
 
 
 def save(data: dict, path: str = PATH) -> None:
-    with open(path, "w") as f:
+    import uuid
+    temporary = str(path) + "." + uuid.uuid4().hex + ".tmp"
+    with open(temporary, "w") as f:
         json.dump(data, f, indent=2, ensure_ascii=False)
+    os.replace(temporary, path)
 
 
 def description(path: str = PATH) -> str:

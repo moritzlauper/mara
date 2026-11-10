@@ -340,7 +340,7 @@ def test_claude_code_planner_reports_a_missing_login(monkeypatch):
         ClaudeCodePlanner(binary="claude").plan({"objective": 1.0})
 
 
-def test_effect_audit_removes_a_neutral_eq_and_bypasses_a_harmful_one(tmp_path):
+def test_effect_audit_bypasses_neutral_and_harmful_effects_reversibly(tmp_path):
     song, hub, env, live = demo_project()
     from mixmatch.actions import Executor
 
@@ -360,10 +360,10 @@ def test_effect_audit_removes_a_neutral_eq_and_bypasses_a_harmful_one(tmp_path):
                                               roles_file=str(tmp_path / "r.json"), log_dir=str(tmp_path)),
                   env=env, log=logs.append)
     agent.run()
-    assert not any(d.class_name == "Eq8" for d in song.tracks[0].devices)          # removed
+    assert next(d for d in song.tracks[0].devices if d.class_name == "Eq8").p("Device On").value == 0
     bass_eq = next(d for d in song.tracks[1].devices if d.class_name == "Eq8")
     assert bass_eq.p("Device On").value == 0                                       # bypassed, not deleted
-    assert any("removed EQ Eight on Kick" in l for l in logs)
+    assert any("bypassed EQ Eight on Kick" in l for l in logs)
     assert any("bypassed EQ Eight on Bass: the mix is better without it" in l for l in logs)
 
 

@@ -266,7 +266,8 @@ def guess(track: dict, st: Stats | None, notes: list | None = None) -> Role:
     specific_name = name_role if name_role not in {"drums_bus", "bus"} else None
     sources = [("name", specific_name),
                ("drum pads" if rack else "devices", content_role),
-               ("devices", from_devices(detail)),
+               ("devices", from_devices([d for d in detail if not rack or
+                   (d.get("type") != 2 and from_name(d.get("name", "")) not in {"ambience", "fx"})])),
                ("midi", from_midi(notes) if not rack else None),
                ("sound", from_sound(st)),
                ("devices", "percussion" if rack else None),
@@ -314,7 +315,7 @@ def save_template(roles: dict[str, Role], path: str) -> None:
     for r in roles.values():
         old = existing.get(r.name)
         data[r.name] = old if old and _is_users(old) else {"role": r.role, "priority": r.priority, "note": r.note,
-                                                           "source": "auto"}
+                                                           "source": "auto", "evidence": r.source}
     with open(path, "w") as f:
         json.dump(data, f, indent=2, ensure_ascii=False)
 

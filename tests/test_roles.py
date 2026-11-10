@@ -55,7 +55,7 @@ def test_auto_entries_are_guessed_again_but_user_entries_stay(tmp_path):
     assert [roles[k].role for k in "abc"] == ["pad", "kick", "pad"]
     save_template(roles, str(path))
     saved = json.loads(path.read_text())
-    assert saved["18-Serum"] == {"role": "pad", "priority": 2, "note": "", "source": "auto"}
+    assert saved["18-Serum"] == {"role": "pad", "priority": 2, "note": "", "source": "auto", "evidence": "midi"}
     assert saved["Kick"] == {"role": "kick", "priority": 5}
 
 
@@ -127,3 +127,7 @@ def test_drum_buss_effect_is_not_instrument_evidence_and_groups_stay_groups():
     notes = [["t0", 33, i, .3, 100] for i in range(20)]
     assert guess(t, None, notes).role == "bass"
     assert guess({**drum_track({"36": 10}), "is_group": True}, None).role in ("bus", "drums_bus")
+
+
+def test_drum_rack_with_reverb_is_not_classified_as_ambience():
+    assert guess(track("23-DS Drum Rack", "DS Drum Rack", "Reverb"), None).role == "percussion"

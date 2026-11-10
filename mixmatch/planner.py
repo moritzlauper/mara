@@ -325,18 +325,62 @@ class FallbackPlanner:
 
 
 def make_planner(kind: str = "auto"):
-    """auto: the local Claude Code if installed (subscription), falling back to the API with ANTHROPIC_API_KEY
-    (Haiku) at a usage limit; else the API; else rules."""
-    if kind == "rules":
+    from . import planner_settings as settings
+    config = settings.read()
+    provider = config['provider'] if kind == 'auto' else {'api': 'anthropic'}.get(kind, kind)
+    profile = config['profiles'].get(provider, {})
+    model = profile.get('model') or os.environ.get('MIXMATCH_MODEL') or settings.HAIKU
+    if provider == 'rules':
         return RulePlanner()
-    if kind in ("auto", "claude-code") and shutil.which("claude"):
-        if kind == "auto" and os.environ.get("ANTHROPIC_API_KEY"):
-            return FallbackPlanner(ClaudeCodePlanner(), ClaudePlanner())
-        return ClaudeCodePlanner()
-    if kind == "claude-code":
-        raise SystemExit("Claude Code (the claude command) is not installed or not on the PATH.")
-    if kind in ("auto", "api") and os.environ.get("ANTHROPIC_API_KEY"):
-        return ClaudePlanner()
-    if kind == "api":
-        raise SystemExit("--planner api needs ANTHROPIC_API_KEY.")
+    if provider in ('gemini', 'compatible'):
+        profile = settings.validated(provider, profile.get('model', ''), profile.get('base_url', ''))
+        token = settings.key(provider, profile['base_url'])
+        if provider == 'gemini' and not token:
+            raise RuntimeError('Google Gemini needs an API key. Add it in Planner settings.')
+        return CompatiblePlanner(profile['model'], profile['base_url'], token, settings.PROVIDERS[provider])
+    if provider in ('auto', 'claude-code') and shutil.which('claude'):
+        code_model = config['profiles'].get('claude-code', {}).get('model') or settings.HAIKU
+        primary = ClaudeCodePlanner(master_model=code_model, channel_model=code_model)
+        if provider == 'auto' and settings.key('anthropic'):
+            os.environ['ANTHROPIC_API_KEY'] = settings.key('anthropic')
+            return FallbackPlanner(primary, ClaudePlanner(model=config['profiles']['anthropic']['model']))
+        return primary
+    if provider == 'claude-code':
+        raise RuntimeError('Claude Code is not installed or not on the PATH.')
+    if provider in ('auto', 'anthropic') and settings.key('anthropic'):
+        os.environ['ANTHROPIC_API_KEY'] = settings.key('anthropic')
+        return ClaudePlanner(model=config['profiles']['anthropic'].get('model') or model)
+    if provider == 'anthropic':
+        raise RuntimeError('Anthropic needs an API key. Add it in Planner settings.')
     return RulePlanner()
+
+
+class CompatiblePlanner:
+    """Chat Completions providers share MARA's prompt and validated action contract."""
+    def __init__(self, model, base_url, api_key='', provider='Compatible API'):
+        import httpx
+        self.model, self.base_url, self.provider = model, base_url.rstrip('/'), provider
+        self.client = httpx.Client(timeout=180, headers={'Authorization': 'Bearer ' + api_key} if api_key else {})
+
+    def plan(self, context):
+        import httpx
+        from jsonschema import validate, ValidationError
+        request = {'model': self.model, 'response_format': {'type': 'json_object'},
+                   'messages': [{'role': 'system', 'content': SYSTEM + '\nReturn only a JSON object matching this schema: ' + json.dumps(ACTION_SCHEMA)},
+                                {'role': 'user', 'content': json.dumps(context, ensure_ascii=False)}]}
+        try:
+            response = self.client.post(self.base_url + '/chat/completions', json=request)
+            response.raise_for_status()
+        except httpx.HTTPStatusError as e:
+            raise RuntimeError(f'{self.provider} request failed (HTTP {e.response.status_code}). Check the model, key and provider limits.') from None
+        except httpx.RequestError:
+            raise RuntimeError(f'{self.provider} could not be reached. Check the API URL and connection.') from None
+        try:
+            choice = response.json()['choices'][0]
+            if choice.get('finish_reason') not in (None, 'stop'):
+                raise ValueError('incomplete response')
+            plan = json.loads(choice['message']['content'], parse_constant=lambda value: (_ for _ in ()).throw(ValueError(value)))
+            validate(plan, ACTION_SCHEMA)
+            return plan
+        except (ValueError, KeyError, IndexError, TypeError, ValidationError):
+            raise RuntimeError(f'{self.provider} returned an incomplete or invalid mixing plan. No actions from this response were applied.') from None

@@ -195,6 +195,36 @@ def cmd_check(args):
 
 
 def cmd_run(args):
+    from . import workflow, preview
+    from .preview import RestoreFailed
+
+    workflow.begin(kind="analysis" if args.review_references else "mix", resume=bool(args.cont or args.resume))
+    try:
+        agent = _cmd_run(args)
+        current = workflow.read("runs")
+        ready = all(preview.available("runs").values())
+        if current.get("status") == "failed" or getattr(agent, "_failure", None):
+            workflow.update(status="failed", error=getattr(agent, "_failure", None) or current.get("error"))
+            return
+        if getattr(agent, "_awaiting_references", False):
+            workflow.update(status="ready", phase="review", error=None)
+        elif getattr(agent, "_mix_complete", False):
+            workflow.update(status="finished" if ready and current.get("output_restored") else "preview_failed",
+                            mix_complete=True, previews_ready=ready)
+        else:
+            workflow.update(status="paused")
+    except KeyboardInterrupt:
+        workflow.update(status="paused")
+        raise
+    except BaseException as e:
+        current = workflow.read("runs")
+        workflow.update(status="preview_failed" if current.get("mix_complete") else "failed", error=str(e))
+        raise
+    finally:
+        workflow.end()
+
+
+def _cmd_run(args):
     from .activity import report as activity
 
     activity(print, "Connecting to Ableton Live")
@@ -203,7 +233,10 @@ def cmd_run(args):
     print(f"Planner: {getattr(planner, 'model', None) or 'rules (no Claude Code, no ANTHROPIC_API_KEY, or --rules)'}")
     refset = _refset(args)
     auto_ref = args.auto_ref or (not args.ref and not args.no_auto_ref)
-    loop = live.get_set()["loop"]
+    from . import monitoring
+    initial_state = live.get_set()
+    loop = initial_state["loop"]
+    monitoring.begin("runs", monitoring.main_volume(initial_state)["value"], args.silent)
     agent = Agent(live, hub, planner, Settings(minutes=args.minutes, assist=args.assist, roles_file=args.roles,
                                            mode=args.mode, loudness_from=args.loudness_from,
                                            focus=args.focus, focus_bars=args.focus_bars, complete=not args.quick,
@@ -231,11 +264,19 @@ def cmd_run(args):
         # The loop brace back where the user had it (MixMatch moved it from part to part), playhead at its start.
         live.transport(play=False, loop_start=loop["start"], loop_length=loop["length"], loop=loop["on"],
                        time=loop["start"])
+        monitor = monitoring.read("runs")
+        if main_volume is None and monitor.get("managed"):
+            main_volume = monitor.get("volume")
         if main_volume is not None and not getattr(agent, "_output_cleanup_done", False):
             agent.restore_main_when_quiet(main_volume)
         print(f"Loop back to bars {loop['start'] / 4 + 1:.0f}–{(loop['start'] + loop['length']) / 4 + 1:.0f}.")
         set_taps_on(live, False)
         print("Taps switched off until the next run (no processing load).")
+        from . import workflow
+        current = live.get_set()
+        volume = next(p["value"] for t in current["tracks"] if t["key"] == "m" for p in t["mixer"] if p["name"] == "Volume")
+        workflow.update(output_restored=(main_volume is None or abs(volume-main_volume) < 1e-6) and current["loop"] == loop)
+    return agent
 
 
 def cmd_demo(args):
@@ -292,6 +333,8 @@ def _enter_track() -> None:
 
 def main(argv=None):
     load_env()
+    from .credentials import load as load_credentials
+    load_credentials()
     _stoppable()
     p = argparse.ArgumentParser(prog="mixmatch", description="Mixing agent for Ableton Live")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -350,6 +393,8 @@ def main(argv=None):
     abp = sub.add_parser("ab", help="switch the set to the state before or after the last run")
     abp.add_argument("which", choices=["before", "after"])
     abp.set_defaults(fn=cmd_ab)
+    repair = sub.add_parser("repair-preview", help="rebuild missing previews from saved snapshots")
+    repair.set_defaults(fn=lambda a: __import__("mixmatch.preview", fromlist=["repair"]).repair())
     ui = sub.add_parser("ui", help="local web interface: start and follow runs, references, effects, roles")
     ui.set_defaults(fn=lambda a: __import__("mixmatch.ui", fromlist=["serve"]).serve(".", a.port, not a.no_browser))
     ui.add_argument("--port", type=int, default=8765)

@@ -187,3 +187,66 @@ def render(live, snapshot: str, start: float, length: float, log=print) -> dict:
                 raise RestoreFailed("Preview stopped: could not restore the hardware output") from e
         if playing:
             live.transport(play=True, time=position)
+
+
+def repair(log_dir="runs", log=print):
+    """Finish only missing audio previews; never rerun planning or mixing."""
+    from . import workflow
+    from .live_client import LiveClient
+    pair = ab.latest_pair(log_dir)
+    if not pair:
+        raise ValueError("No saved result is available to record a preview.")
+    state = workflow.read(log_dir)
+    if (Path(log_dir) / "checkpoint.json").exists() and not state.get("mix_complete"):
+        raise ValueError("Resume the mixing pass before repairing the final preview.")
+    meta = None
+    for path in pair:
+        try:
+            meta = json.loads(Path(metadata_path(path)).read_text())
+            break
+        except (OSError, ValueError):
+            pass
+    if not meta:
+        try:
+            ck = json.loads((Path(log_dir) / "checkpoint.json").read_text())
+            meta = {"start_bar": ck["main"][1] / 4 + 1, "bars": min(ck["main"][2], 64) / 4}
+        except (OSError, ValueError, KeyError):
+            raise ValueError("The original preview passage is missing. Analyse the mix again.")
+    workflow.begin(log_dir, kind="repair", resume=True)
+    workflow.update(status="repairing", mix_complete=True, before=Path(pair[0]).name, after=Path(pair[1]).name)
+    live = LiveClient()
+    try:
+        live.connect()
+        for which, snapshot in zip(("before", "after"), pair):
+            if not available(log_dir)[which]:
+                render(live, snapshot, (meta["start_bar"]-1)*4, meta["bars"]*4, log)
+        if not matching(log_dir)["ready"]:
+            raise RuntimeError("These previews cannot be loudness matched together.")
+        workflow.update(status="finished", phase="result", output_restored=True, previews_ready=True, error=None)
+        log("Done. Audio previews repaired; mix unchanged.")
+    except BaseException as e:
+        workflow.update(status="preview_failed", error=str(e))
+        raise
+    finally:
+        live.close()
+        workflow.end()
+
+
+def listening_file(folder, identity, target):
+    """A constant, attenuation-only gain for the live comparison player."""
+    path=selected_file(folder,"before",identity)
+    if not path or not math.isfinite(target):
+        return None
+    st=os.stat(path)
+    level=_loudness(path,st.st_mtime_ns,st.st_size)
+    if level is None or target > level + .01 or target < -80:
+        return None
+    gain=min(0.0,target-level)
+    dest=os.path.splitext(path)[0]+f"-listen-{target:.4f}.wav"
+    with _MATCH_LOCK:
+        if not os.path.isfile(dest):
+            import soundfile as sf
+            data,rate=sf.read(path,always_2d=True)
+            sf.write(dest+".part",data*10**(gain/20),rate,format="WAV",subtype="PCM_24")
+            os.replace(dest+".part",dest)
+    return dest

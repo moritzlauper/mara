@@ -28,7 +28,7 @@ from .taps import is_reference_name
 from .display import parse_display
 from .planner import device_summary
 from .activity import report as activity
-from . import mix_quality
+from . import mix_quality, workflow
 
 VOCAL_ROLES = {"lead_vocal", "backing_vocal", "vocal_fx", "vocal_chop", "choir"}
 
@@ -96,6 +96,7 @@ class Round:
     applied: list = field(default_factory=list)
     skipped: list = field(default_factory=list)
     undone: bool = False
+    parameters: list = field(default_factory=list)
 
 
 TAP = "MixMatch Tap"
@@ -137,6 +138,7 @@ class Agent:
         self.description = project.description()        # the user's own words for the track
         self.beat = False
         self.logfile = None
+        self._before_time = None
 
     # ── 1. understand the set ───────────────────────────────────────────────
     def window_seconds(self) -> float:
@@ -218,6 +220,7 @@ class Agent:
             role_context = self.live.request("role_context")["tracks"]
         except Exception:
             role_context = {}  # older script: names, MIDI and sound still work
+            self.log("Warning: drum-pad details unavailable. Update the Live connection; drum roles may be approximate.")
         try:
             with open(self.s.roles_file) as f:
                 previous_roles = json.load(f)
@@ -291,7 +294,7 @@ class Agent:
               "spectral", "resonator", "corpus", "vocoder", "roar", "shaperbox", "kickstart", "duck")
 
     def audit_effects(self, main: tuple[str, float, float], deadline: float) -> None:
-        """Removes EQ Eights and Utilities that change nothing; listens to every other audio effect on and off
+        """Bypasses EQ Eights and Utilities that change nothing; listens to every other audio effect on and off
         and bypasses those that change nothing or (mixing tools only) make the mix worse."""
         self.log("\n━━ Effects: what does nothing or harms")
         self.ex.refresh()
@@ -300,10 +303,15 @@ class Agent:
                 continue
             for d in sorted(t["devices"], key=lambda d: -d["index"]):
                 if neutral_device(d) and not any(p.get("automated") for p in d["params"]):
-                    count = len(t["devices"])
-                    self.live.delete_device(t["key"], d["index"])
-                    self.ex._deleted(t["key"], d["index"], count)
-                    self.log(f"  − removed {d['name']} on {t['name']}: its settings change nothing")
+                    workflow.check_pause()
+                    rr = RoundResult()
+                    self.ex._set(rr, t["key"], d["index"], "Device On", value=0.0)
+                    reason = "Its settings change nothing; bypassed so the original can be restored."
+                    if self._before_time:
+                        workflow.event(self.s.log_dir, {"before_time": self._before_time, "status": "kept",
+                            "section": "Neutral effect check", "parameters": self.journal_parameters(rr),
+                            "reason": reason, "verification": "Neutral settings verified; no automation."})
+                    self.log(f"  − bypassed {d['name']} on {t['name']}: its settings change nothing")
             self.ex.refresh()
 
         candidates = []
@@ -338,6 +346,16 @@ class Agent:
             self.s.bars = bars
 
     def audit_one(self, region, key, track_name, dev_name, cls) -> None:
+        workflow.check_pause()
+        from . import ab, preview
+        saved = ab.snapshot(self.live.get_set())
+        try:
+            return self._audit_one(region, key, track_name, dev_name, cls)
+        except BaseException:
+            preview._apply(self.live, saved)
+            raise
+
+    def _audit_one(self, region, key, track_name, dev_name, cls) -> None:
         if self.loop != region:
             self.play_loop(*region)
         self.ex.refresh()
@@ -391,7 +409,8 @@ class Agent:
             verdict = f"  ✓ kept {dev_name} on {track_name} ({what})"
         self.log(verdict)
         self._record(Round(f"effects {track_name}", 1, on["objective"], off["objective"],
-                           {"assessment": verdict.strip()}, rr.applied, [], undone=not (nothing or harmful)))
+                           {"assessment": verdict.strip()}, rr.applied, [], undone=not (nothing or harmful),
+                           parameters=self.journal_parameters(rr)))
 
     def read_harmony(self, sections: list[tuple[str, float, float]]) -> None:
         """Key and chords of the song from its MIDI clips (exact); quietly skipped if there are none."""
@@ -483,6 +502,7 @@ class Agent:
         activity(self.log, "Listening to the whole song", started=started, current=0, total=round(total / 4))
         deadline = t0 + total * 60 / tempo + 10
         while self.env.now() < deadline:
+            workflow.check_pause()
             pos = self.live.transport()["song_time"]
             if marks and pos < last - 1:      # wrapped around: one pass is done
                 break
@@ -565,6 +585,7 @@ class Agent:
             self.log(f"\n━━ Channel pass: {len(order)} channels")
         self.pending_channels = [r.key for r in order]
         for r in order:
+            workflow.check_pause()
             if self.env.now() >= deadline:
                 self.log("  time is up")
                 return
@@ -750,6 +771,8 @@ class Agent:
 
     # ── 3. decide ───────────────────────────────────────────────────────────
     def context(self, section: str, m: dict, focus: str | None = None) -> dict:
+        from . import project
+        self.description = project.description()
         cmp: Comparison | None = m["cmp"]
         channels = []
         for key, r in self.roles.items():
@@ -893,13 +916,20 @@ class Agent:
         if self.s.silent:
             with open(os.path.join(self.s.log_dir, self._before_file)) as f:
                 comparison_volume = json.load(f)["tracks"]["m"]["mixer"]["Volume"]
+        with open(os.path.join(self.s.log_dir, self._before_file)) as f:
+            self._before_time = json.load(f).get("time")
+        workflow.update(before=self._before_file)
         if self.s.silent and main_volume is None:
             main_volume = self.mute_main()
         try:
             self._run(deadline)
         except PlannerFailed as e:
+            self._failure = str(e)
+            workflow.update(status="failed", error=str(e))
             self.log(f"\nStopped: the planner failed ({e}). Everything kept so far stays in the set.")
         except MasterSilent:
+            self._failure = "No audio on Main. Check the audio connection."
+            workflow.update(status="failed", error="No audio on Main. Check the audio connection.")
             self.log("\nStopped: the master stayed silent for over a minute, so nothing could be measured. "
                      "Everything kept so far stays in the set; continue with --resume once Live plays again.")
         finally:
@@ -908,6 +938,7 @@ class Agent:
         try:
             self.ex.refresh()
             ab.save(self.snapshot_state(comparison_volume), self.s.log_dir, stamp, "after")
+            workflow.update(after=f"{stamp}-after.json")
             self.log("Before/after saved: switch with «mixmatch ab before» / «mixmatch ab after» or in mixmatch ui.")
         except Exception:
             pass
@@ -920,23 +951,34 @@ class Agent:
         self.logfile.close()
         return self.history
 
-    def record_preview(self, path: str, start: float, length: float) -> None:
+    def record_preview(self, path: str, start: float, length: float) -> bool:
         from . import preview
 
         # Simulators have no real audio recorder. Old scripts may lack silent routing.
         if not isinstance(self.env, RealEnv) or os.path.isfile(preview.metadata_path(path)):
-            return
+            return True
+        if path.endswith("-after.json"):
+            workflow.update(status="finalizing", phase="preview", mix_complete=getattr(self, "_mix_complete", False))
         try:
             preview.render(self.live, path, start, length, self.log)
             self.log(f"Audio preview ready: {os.path.basename(path)}")
+            return True
         except preview.RestoreFailed:
             raise
         except Exception as e:
             self.log(f"Audio preview unavailable: {e}")
+            workflow.update(error=str(e))
+            return False
 
     def snapshot_state(self, main_volume: float | None) -> dict:
         """Temporary output muting is not a mix change in the before/after snapshots."""
         from copy import deepcopy
+        from . import monitoring
+
+        if main_volume is None:
+            monitor = monitoring.read(self.s.log_dir)
+            if monitor.get("managed"):
+                main_volume = monitor.get("volume")
 
         state = deepcopy(self.ex.set_state)
         if main_volume is not None:
@@ -1001,9 +1043,11 @@ class Agent:
                     "role_reviews": sorted(getattr(self, "role_reviews", set())),
                     "pending_channels": self.pending_channels,
                     "done": round(getattr(self, "_done", 0.0), 2), "total": round(getattr(self, "_total", 0.0), 2)}
+        workflow.update(phase=self._ck.get("phase"), channel=self._ck.get("next_channel"))
         try:
-            with open(os.path.join(self.s.log_dir, self.CHECKPOINT), "w") as f:
+            with open(os.path.join(self.s.log_dir, self.CHECKPOINT) + ".tmp", "w") as f:
                 json.dump(self._ck, f)
+            os.replace(os.path.join(self.s.log_dir, self.CHECKPOINT) + ".tmp", os.path.join(self.s.log_dir, self.CHECKPOINT))
         except OSError:
             pass
 
@@ -1027,6 +1071,7 @@ class Agent:
         return sorted(self.roles.values(), key=lambda r: (-r.priority, r.name))
 
     def _run(self, deadline: float) -> None:
+        workflow.check_pause()
         sections = self.sections()
         ck = self.load_checkpoint() if self.s.resume else None
         if self.s.resume == "auto" and ck is None:
@@ -1047,6 +1092,9 @@ class Agent:
                 self.save_checkpoint(phase=phase, next_channel=start_at)
             if self.s.review_references:
                 self.save_checkpoint(phase="references", next_channel=None)
+                self._preview_region = (main[0][1], min(main[0][2], 64.0))
+                if not self.record_preview(os.path.join(self.s.log_dir, self._before_file), *self._preview_region):
+                    raise RuntimeError("The original preview is missing. Check the audio connection and analyse again.")
                 self._awaiting_references = True
                 return
         if phase == "references":
@@ -1056,7 +1104,9 @@ class Agent:
             phase = "master"
             self.save_checkpoint(phase=phase, next_channel=None)
         self._preview_region = (main[0][1], min(main[0][2], 64.0))
-        self.record_preview(os.path.join(self.s.log_dir, self._before_file), *self._preview_region)
+        if not self.record_preview(os.path.join(self.s.log_dir, self._before_file), *self._preview_region):
+            raise RuntimeError("The original preview is missing. A playable recording is required before mixing.")
+        workflow.update(status="mixing")
         if phase == "master":
             if self.s.complete:
                 self.log(f"\n━━ Master against the reference")
@@ -1071,6 +1121,7 @@ class Agent:
                     self.finish_step("master")
             if not self.s.complete:
                 self.clear_checkpoint()
+                self._mix_complete = True
                 return
             phase = "channels"
             self.save_checkpoint(phase=phase, next_channel=None)
@@ -1095,10 +1146,12 @@ class Agent:
             self.section("final check", deadline, max_rounds=self.s.final_rounds)
             self.finish_step("done")
             self.clear_checkpoint()               # the run is complete: nothing left to continue
+            self._mix_complete = True
 
     def _prepare(self, sections, deadline) -> list:
         """Key, one pass through the whole song, beat mode, the loudest part, references; then every
         channel's region. Returns the master sections."""
+        workflow.update(status="analysing", phase="analysis")
         if self.s.complete:
             channels = len(self.roles)
             if self.s.resume:
@@ -1200,6 +1253,7 @@ class Agent:
         interface can show how far the run is and estimate the time left."""
         self._done = getattr(self, "_done", 0.0) + add
         self._total = max(getattr(self, "_total", 0.0) + total_add, self._done)
+        workflow.update(progress={"done": self._done, "total": self._total, "step": step})
         self.log("  progress " + json.dumps({"done": round(self._done, 2), "total": round(self._total, 2),
                                              "t": round(time.time(), 1), "step": step}, ensure_ascii=False))
 
@@ -1239,6 +1293,8 @@ class Agent:
 
     def section(self, name: str, deadline: float, focus: str | None = None, max_rounds: int | None = None,
                 scoring: str = "full") -> None:
+        workflow.check_pause()
+        workflow.update(section=name)
         m = self.measure_fine(scoring, focus or "m")
         # Same passage retains its baseline across channel passes and resumes.
         anchor_key = json.dumps([self.loop, scoring, self.beat,
@@ -1250,11 +1306,13 @@ class Agent:
         self.log(f"  distance {best:.2f}   ({_parts(m['parts'])})")
         self.explain(m)
         for n in range(1, (max_rounds or self.s.max_rounds_per_section) + 1):
+            workflow.check_pause()
             if self.env.now() >= deadline:
                 self.log("  time is up")
                 return
             self.ex.refresh()
             plan = self.plan_with_retries(self.context(name, m, focus))
+            workflow.check_pause()
             self.log(f"  round {n}: {plan.get('assessment', '')}")
             intent = plan.get("mix_intent") or {}
             if intent:
@@ -1273,7 +1331,8 @@ class Agent:
                 elif plan.get("done"):
                     self.log("  targets reached for this section")
                 return
-            if self.s.silent:
+            from . import monitoring
+            if self.s.silent or monitoring.read(self.s.log_dir).get("managed"):
                 actions = [a for a in actions if not (a.get("type") == "volume" and a.get("track") in (None, "m"))]
             # A duck must be grounded in a measured, repeated collision; never let
             # a planner invent a sidechain source or its detector calibration.
@@ -1300,11 +1359,16 @@ class Agent:
                 if stall >= self.s.stall_rounds:
                     return
                 continue
-            self.env.wait(self.s.settle)
-            after = self.measure(scoring)
+            try:
+                self.env.wait(self.s.settle)
+                after = self.measure(scoring)
+            except BaseException:
+                self.ex.undo(rr)
+                raise
             accepted, verification = mix_quality.evaluate(m, after, baseline, intent.get("priority"), self.s.min_gain)
             plan["verification"] = verification
-            rnd = Round(name, n, best, after["objective"], plan, rr.applied, rr.skipped)
+            rnd = Round(name, n, best, after["objective"], plan, rr.applied, rr.skipped,
+                        parameters=self.journal_parameters(rr))
             observed_pairs = [":".join(sorted((x["track_a"], x["track_b"]))) for x in m.get("masking", [])]
             lost_observation = any(after.get("masking_coverage", {}).get(pair, 0) < max(
                 0.6, m.get("masking_coverage", {}).get(pair, 0) * 0.8) for pair in observed_pairs)
@@ -1359,8 +1423,25 @@ class Agent:
                 activity(self.log, f"AI connection interrupted · retrying in {wait} seconds")
                 self.env.wait(wait)
 
+    def journal_parameters(self, rr):
+        from .ab import _device_ids
+        result = []
+        for change in rr.changes:
+            track = self.ex.track(change.track)
+            ids = _device_ids(track["devices"])
+            device = "Mixer" if change.device == "mixer" else ids[change.device] if change.device < len(ids) else "Unknown device"
+            result.append({"track": change.track, "device": device, "param": change.param,
+                           "old_display": change.old_display, "new_display": change.new.get("display"),
+                           "old_value": change.old_value, "new_value": change.new.get("value")})
+        return result
+
     def _record(self, rnd: Round) -> None:
         self.history.append(rnd)
+        if self._before_time and rnd.parameters:
+            workflow.event(self.s.log_dir, {"before_time": self._before_time,
+                "status": "rejected" if rnd.undone else "kept", "section": rnd.section,
+                "region": self.loop, "parameters": rnd.parameters, "reason": rnd.plan.get("assessment"),
+                "verification": rnd.plan.get("verification")})
         if self.logfile:
             self.logfile.write(json.dumps(rnd.__dict__, default=str, ensure_ascii=False) + "\n")
             self.logfile.flush()

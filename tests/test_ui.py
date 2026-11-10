@@ -351,6 +351,7 @@ def test_reference_choice_is_required_and_search_only_prepares(tmp_path, monkeyp
     from mixmatch import songs
 
     monkeypatch.setattr(ui, "project_references", lambda: [])
+    monkeypatch.setattr(ui, "run_process_alive", lambda: False)
     songs.create(str(tmp_path), "Song")
     workdir = tmp_path / "songs" / "Song"
     shared = tmp_path / "references"
@@ -358,7 +359,8 @@ def test_reference_choice_is_required_and_search_only_prepares(tmp_path, monkeyp
     (shared / "chosen.wav").write_bytes(b"test audio")
     runner, starts = Runner(str(tmp_path)), []
     monkeypatch.setattr(runner, "start", lambda args: starts.append(args) or "test.log")
-    server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(runner, live_set_fn=lambda: None))
+    server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(runner, live_set_fn=lambda: {
+        "name": "Song", "channels": ["Kick"], "taps": 1, "total": 1, "missing": [], "playing": False}))
     threading.Thread(target=server.serve_forever, daemon=True).start()
 
     def call(path, body=None):

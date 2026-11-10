@@ -4,5 +4,7 @@ import time
 
 
 def report(log, text: str, *, started: float | None = None, current=None, total=None) -> None:
+    from . import workflow
+    workflow.update(activity={"text": text, "started": started or time.time(), "current": current, "total": total})
     log("activity " + json.dumps({"text": text, "started": started if started is not None else time.time(),
                                   "current": current, "total": total}, ensure_ascii=False))

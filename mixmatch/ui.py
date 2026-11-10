@@ -33,7 +33,8 @@ def to_wav(path: str) -> str:
     import subprocess
 
     out = os.path.splitext(path)[0] + ".wav"
-    r = subprocess.run(["afconvert", "-f", "WAVE", "-d", "LEI16", path, out], capture_output=True, text=True)
+    import imageio_ffmpeg
+    r = subprocess.run([imageio_ffmpeg.get_ffmpeg_exe(), "-y", "-i", path, "-c:a", "pcm_s24le", out], capture_output=True, text=True)
     if r.returncode != 0 or not os.path.exists(out):
         raise ValueError(f"could not convert {os.path.basename(path)}: {(r.stderr or '').strip()[:120]}")
     os.remove(path)
@@ -72,12 +73,23 @@ class _AttachedProcess:
 
     @staticmethod
     def identify(pid: int) -> str:
-        result = subprocess.run(["ps", "-p", str(pid), "-o", "lstart=", "-o", "command="],
-                                capture_output=True, text=True, timeout=3)
-        return result.stdout.strip() if result.returncode == 0 else ""
+        from .platforms import process_identity
+        return process_identity(pid)
 
     def poll(self):
-        return None if self.identity and self.identify(self.pid) == self.identity else 0
+        actual = self.identify(self.pid)
+        if self.identity and actual == self.identity:
+            return None
+        # macOS replaces the venv launcher with the framework executable after
+        # startup. The same process retains its creation time and all arguments.
+        try:
+            saved_time, saved_args = json.loads(self.identity)
+            live_time, live_args = json.loads(actual)
+            if saved_time == live_time and saved_args[1:] == live_args[1:]:
+                return None
+        except (ValueError, TypeError, IndexError):
+            pass
+        return 0
 
     def send_signal(self, sig):
         if self.poll() is None:
@@ -127,7 +139,19 @@ class Runner:
         return songs.current_dir(self.root)
 
     def running(self) -> bool:
-        return self.proc is not None and self.proc.poll() is None
+        if self.proc is not None and self.proc.poll() is None:
+            return True
+        # Reattach when another MARA window resumed this project after this UI opened.
+        try:
+            with open(self.process_file) as f:
+                saved = json.load(f)
+            proc = _AttachedProcess(int(saved["pid"]), saved["identity"])
+            if proc.poll() is None:
+                self.proc, self.log_path = proc, saved["log_path"]
+                return True
+        except (OSError, ValueError, KeyError, TypeError):
+            pass
+        return False
 
     def start(self, args: list[str]) -> str:
         with self.lock:
@@ -138,8 +162,14 @@ class Runner:
             prefix = "ui-" if args[:1] == ["run"] else f"tool-{args[0]}-"
             self.log_path = os.path.join(self.workdir, "runs", time.strftime(prefix + "%Y%m%d-%H%M%S.log"))
             log = open(self.log_path, "w")
+            if "--continue" in args or "--resume" in args:
+                log.write("↻ Continuing the run · restoring the saved checkpoint\n")
+                log.flush()
+            if args[:1] == ["run"] and "--planner" not in args:
+                args = [*args, "--planner", "auto"]  # UI uses its saved provider, independently of CLI env defaults.
             env = {**os.environ, "PYTHONUNBUFFERED": "1"}
-            self.proc = subprocess.Popen([sys.executable, "-m", "mixmatch.cli", *args], cwd=self.workdir,
+            from .platforms import engine_command
+            self.proc = subprocess.Popen(engine_command(args), cwd=self.workdir,
                                          stdout=log, stderr=subprocess.STDOUT, env=env)
             try:
                 identity = _AttachedProcess.identify(self.proc.pid)
@@ -151,20 +181,21 @@ class Runner:
             return self.log_path
 
     def stop(self) -> None:
-        """SIGINT, and SIGTERM 15 s later if the run still goes on; both end it in order (see cli._stoppable)."""
+        """Request a pause at a safe boundary; never kill an in-flight change."""
         if self.running():
-            proc = self.proc
-            proc.send_signal(signal.SIGINT)
-
-            def insist():
-                try:
-                    proc.wait(timeout=15)
-                except subprocess.TimeoutExpired:
-                    proc.terminate()
-            threading.Thread(target=insist, daemon=True).start()
+            from pathlib import Path
+            from . import workflow
+            folder = os.path.join(self.workdir, "runs")
+            state = workflow.read(folder)
+            if state:
+                Path(folder, "pause.request").touch()
+                # The worker acknowledges at a safe boundary. No forced process kill.
+            else:
+                self.proc.send_signal(signal.SIGINT)  # legacy run already in progress
 
     def latest_log(self) -> str | None:
-        if self.log_path and (self.running() or os.path.basename(self.log_path).startswith("ui-")):
+        if self.log_path and (self.running() or (os.path.basename(self.log_path).startswith("ui-")
+                and os.path.dirname(self.log_path) == os.path.join(self.workdir, "runs"))):
             return self.log_path   # a tool (installing taps) is shown while it works, then the last run again
         logs = sorted(glob.glob(os.path.join(self.workdir, "runs", "ui-*.log")))
         return logs[-1] if logs else None
@@ -205,6 +236,11 @@ def reference_candidates(workdir: str) -> list[dict]:
     import hashlib
     from .songs import project_root
 
+    try:
+        hidden = json.load(open(os.path.join(project_root(workdir), "hidden-references.json")))
+    except (OSError, ValueError):
+        hidden = []
+
     paths = sorted(glob.glob(os.path.join(workdir, "runs", "*-references.json")))
     try:
         found = json.load(open(paths[-1])) if paths else []
@@ -227,9 +263,34 @@ def reference_candidates(workdir: str) -> list[dict]:
         if path in seen or not path.lower().endswith(AUDIO) or not os.path.isfile(path):
             continue
         seen.add(path)
-        out.append({"id": hashlib.sha256(path.encode()).hexdigest()[:20], "name": os.path.basename(path),
-                    "source": item.get("source", "search"), "path": path})
+        identity = hashlib.sha256(path.encode()).hexdigest()[:20]
+        location = os.path.dirname(path)
+        home = os.path.expanduser("~")
+        if location.startswith(home + os.sep):
+            location = "~" + location[len(home):]
+        out.append({"id": identity, "name": os.path.basename(path), "hidden": identity in hidden,
+                    "location": location, "source": item.get("source", "search"), "path": path})
     return out
+
+
+def hide_reference_candidate(workdir: str, candidate_id: str, hide: bool) -> None:
+    """Hide a suggestion across projects without deleting its source audio."""
+    from .songs import project_root
+
+    if not any(c["id"] == candidate_id for c in reference_candidates(workdir)):
+        raise ValueError("this suggestion is no longer available")
+    path = os.path.join(project_root(workdir), "hidden-references.json")
+    try:
+        hidden = set(json.load(open(path)))
+    except (OSError, ValueError):
+        hidden = set()
+    if hide:
+        hidden.add(candidate_id)
+    else:
+        hidden.discard(candidate_id)
+    with open(path + ".tmp", "w") as f:
+        json.dump(sorted(hidden), f)
+    os.replace(path + ".tmp", path)
 
 
 def choose_reference(workdir: str, candidate_id: str) -> str:
@@ -288,18 +349,17 @@ def live_set() -> dict | None:
 
     need = [t for t in state["tracks"] if not (t["kind"] == "track" and is_reference_name(t["name"]))]
     missing = [t["name"] for t in need if not any(d["name"] == "MixMatch Tap" for d in t["devices"])]
-    name = state.get("name") or os.path.splitext(os.path.basename(state.get("file_path") or ""))[0]
-    return {"name": name, "channels": songs.channel_names(state), "taps": len(need) - len(missing), "total": len(need),
+    from .live_identity import document_path
+
+    path = state.get("file_path") or document_path()
+    name = os.path.splitext(os.path.basename(path))[0] if path else state.get("name", "")
+    return {"name": name, "path": path, "channels": songs.channel_names(state), "taps": len(need) - len(missing), "total": len(need),
             "missing": missing, "playing": bool(state.get("is_playing"))}
 
 
 def run_process_alive() -> bool:
-    """A `mixmatch run` started anywhere (this interface, another window, the command line) is still going."""
-    try:
-        out = subprocess.run(["pgrep", "-f", r"mixmatch(\.cli)? run"], capture_output=True, text=True, timeout=3)
-    except (OSError, subprocess.SubprocessError):
-        return True                      # cannot tell: trust the log
-    return out.returncode == 0
+    from .platforms import run_alive
+    return run_alive()
 
 
 def parse_log(lines: list[str]) -> dict:
@@ -326,6 +386,10 @@ def parse_log(lines: list[str]) -> dict:
             traceback_event = None
             state["progress"] = state["progress_start"] = state["done"] = None
             state["mode"] = None
+        elif s.startswith("Target:"):
+            match = re.search(r"(-?[\d.]+) LUFS", s)
+            if match:
+                state["target_lufs"] = float(match[1])
         elif s.startswith("Mode:"):
             state["mode"] = "beat" if s.startswith("Mode: beat") else "song"
         elif "treating it as a beat (no vocals)" in s:
@@ -382,7 +446,7 @@ def parse_log(lines: list[str]) -> dict:
                 # Every initial measurement starts its own comparison, even when a
                 # resumed run revisits the same channel. Never bridge these baselines.
                 current_group = {"phase": phase, "section": section, "run": run,
-                                 "scoring": scoring, "values": [state["distance"]], "verification": None}
+                                 "scoring": scoring, "values": [state["distance"]], "components": [dict(state["parts"])], "verification": None}
                 state["measurement_groups"].append(current_group)
         elif s.startswith("✓") and "→" in s:
             m = re.search(r"→ ([\d.]+)", s)
@@ -391,6 +455,7 @@ def parse_log(lines: list[str]) -> dict:
                 point(state["distance"])
                 if current_group is not None:
                     current_group["values"].append(state["distance"])
+                    current_group["components"].append(dict(state["parts"]))
             state["events"].append({"kind": "kept", "text": s})
         elif s.startswith("verified:") and current_group is not None:
             current_group["verification"] = s[len("verified:"):].strip()
@@ -472,13 +537,12 @@ _PREVIEW_ASKED: set = set()
 
 def trash(path: str) -> str:
     """Moves a file to the macOS Trash (MIXMATCH_TRASH overrides), so a removed reference can be put back."""
-    folder = os.environ.get("MIXMATCH_TRASH") or os.path.expanduser("~/.Trash")
+    from pathlib import Path
+    folder = os.environ.get("MIXMATCH_TRASH") or str(Path(path).parent / ".removed")
     os.makedirs(folder, exist_ok=True)
-    name = os.path.basename(path)
-    target = os.path.join(folder, name)
+    target = os.path.join(folder, os.path.basename(path))
     if os.path.exists(target):
-        stem, ext = os.path.splitext(name)
-        target = os.path.join(folder, f"{stem} {time.strftime('%H.%M.%S')}{ext}")
+        target = os.path.join(folder, f"{time.time_ns()}-{os.path.basename(path)}")
     os.replace(path, target)
     return target
 
@@ -677,19 +741,40 @@ def make_handler(runner: Runner, watcher: "DownloadWatcher | None" = None, live_
 
     project_refs = _Cached(project_references)
     open_set = _Cached(live_set_fn or live_set, seconds=6.0)
+    def read_output():
+        from .live_client import LiveClient
+        from . import monitoring
+        live = None
+        try:
+            live = LiveClient(timeout=2).connect()
+            return monitoring.status(live)
+        except Exception:
+            return None
+        finally:
+            if live:
+                live.close()
+    output = _Cached(read_output, seconds=2.0)
+    # A user may temporarily browse an older project for its comparison audio.
+    # None means the current Live set owns the selection again.
+    pinned_project: str | None = None
+
+    def selected_folder():
+        return os.path.join(runner.root, "songs", pinned_project) if pinned_project else runner.workdir
 
     def track_state(active: bool) -> dict:
-        """The current track, the others, and whether the open Live set is this track and has its taps."""
+        """The connected Live project and whether its taps are ready."""
         # Fetch once even if the interface opens during a run, then reuse the snapshot while busy.
         info = open_set.value if active and open_set.value else open_set.get()
-        if info and open_set.reachable:
-            songs.remember_live_name(runner.root, info.get("name", ""), info["channels"])
-        song = songs.current(runner.root)
-        check = songs.check_set(runner.root, info["channels"]) if info and open_set.reachable and not active \
-            else {"same": True, "other": None}
+        if info and open_set.reachable and not active and pinned_project is None:
+            songs.activate_live_set(runner.root, info.get("name", ""), info["channels"], info.get("path", ""))
+        song = ({**songs.load(runner.root)["songs"][pinned_project], "slug": pinned_project}
+                if pinned_project else songs.current(runner.root))
+        identified = bool(info and open_set.reachable and (info.get("path") or info.get("name")))
         return {"track": song["name"] if song else None, "tracks": songs.listing(runner.root),
+                "project_id": song["slug"] if song else None,
                 "used_references": songs.used_references(runner.root),
-                "set": check, "open_set": info if open_set.reachable else None}
+                "set": {"same": identified and pinned_project is None, "other": None}, "following_live": pinned_project is None,
+                "open_set": info if open_set.reachable else None}
     ab_state = {"which": None, "blind": False}
     blind = ab.BlindComparison()
     ab_lock = threading.Lock()
@@ -707,14 +792,21 @@ def make_handler(runner: Runner, watcher: "DownloadWatcher | None" = None, live_
             self.end_headers()
             self.wfile.write(data)
 
+        def _local_request(self):
+            origin = self.headers.get("Origin")
+            host = self.headers.get("Host")
+            if origin and origin != "http://" + str(host):
+                raise ValueError("Requests must come from this MARA window.")
+
         def _body(self) -> dict:
+            self._local_request()
             n = int(self.headers.get("Content-Length") or 0)
             return json.loads(self.rfile.read(n) or b"{}")
 
         def do_GET(self):
             if urlsplit(self.path).path == "/api/preview-audio":
                 q = parse_qs(urlsplit(self.path).query)
-                folder = os.path.join(runner.workdir, "runs")
+                folder = os.path.join(selected_folder(), "runs")
                 if "token" in q:
                     trial = dict(preview_trial)
                     if q["token"][0] != trial.get("token") or folder != trial.get("folder"):
@@ -723,7 +815,12 @@ def make_handler(runner: Runner, watcher: "DownloadWatcher | None" = None, live_
                 else:
                     which, identity = q.get("which", [""])[0], q.get("id", [""])[0]
                 path = preview.selected_file(folder, which, identity)
-                if q.get("equal", ["0"])[0] == "1":
+                if "listen_target" in q and which == "before":
+                    try:
+                        path = preview.listening_file(folder, identity, float(q["listen_target"][0]))
+                    except (ValueError, OSError):
+                        path = None
+                elif q.get("equal", ["0"])[0] == "1":
                     path = preview.matched_file(folder, which, identity)
                 if path is None:
                     return self._send(404, {"error": "preview not ready"})
@@ -762,8 +859,25 @@ def make_handler(runner: Runner, watcher: "DownloadWatcher | None" = None, live_
                 except (BrokenPipeError, ConnectionResetError):
                     pass
                 return
-            if self.path == "/":
+            if self.path == "/api/health":
+                return self._send(200, {"app": "MARA", "schema": 1, "workspace": runner.root})
+            if self.path == "/workflow":
+                from pathlib import Path
+                return self._send(200, Path(__file__).with_name("static").joinpath("app.html").read_text(), "text/html")
+            # The user explicitly chose the retro dashboard as the default.
+            if self.path in ("/", "/classic"):
                 return self._send(200, PAGE, "text/html")
+            if self.path.startswith("/app/"):
+                from pathlib import Path
+                name = self.path.split("?", 1)[0].removeprefix("/app/")
+                if name not in ("app.js", "app.css", "charts.js"):
+                    return self._send(404, {"error": "not found"})
+                return self._send(200, Path(__file__).with_name("static").joinpath(name).read_text(),
+                                  "text/javascript" if name.endswith(".js") else "text/css")
+            if self.path == "/api/setup":
+                from .platforms import library_default
+                from .credentials import status
+                return self._send(200, {"library": str(library_default()), **status()})
             if self.path.startswith("/fonts/"):   # bundled fonts (OFL), so the page needs no internet
                 name = os.path.basename(self.path.split("?")[0])
                 path = os.path.join(FONTS, name)
@@ -778,7 +892,12 @@ def make_handler(runner: Runner, watcher: "DownloadWatcher | None" = None, live_
                     return self.wfile.write(data)
                 return self._send(404, {"error": "not found"})
             if self.path == "/api/state":
+                ts = track_state(runner.running() or run_process_alive())
                 path = runner.latest_log()
+                engine_path = path
+                if pinned_project:
+                    saved_logs = sorted(glob.glob(os.path.join(selected_folder(), "runs", "ui-*.log")))
+                    path = saved_logs[-1] if saved_logs else None
                 lines = open(path).readlines() if path and os.path.exists(path) else []
                 history = [l for p in log_chain(path) for l in open(p).readlines()] if lines else []
                 state = parse_log(history)
@@ -786,32 +905,53 @@ def make_handler(runner: Runner, watcher: "DownloadWatcher | None" = None, live_
                 # A run counts as going on when this interface started it, or when its log reported progress in the
                 # last minutes (started elsewhere, e.g. from the command line or a second window).
                 # The process must still exist: a run that was stopped or crashed reports no progress either.
-                state["active"] = runner.running() or bool(prog and not state.get("done")
+                state["active"] = (runner.running() or bool(prog and not state.get("done")
                                                            and time.time() - prog.get("t", 0) < 300
-                                                           and run_process_alive())
-                return self._send(200, {**state, **track_state(state["active"]),
-                                        "running": runner.running(), "log": [l.rstrip() for l in lines[-200:]],
-                                        "reference_files": references(runner.workdir), "to_get": buy_list(runner.workdir),
+                                                           and run_process_alive())) and pinned_project is None
+                engine_state = parse_log([l for p in log_chain(engine_path) for l in open(p)]) if engine_path and pinned_project else state
+                engine = {"active": runner.running(), "track": (songs.current(runner.root) or {}).get("name"),
+                          "progress": engine_state.get("progress"), "progress_start": engine_state.get("progress_start"), "phase": engine_state.get("phase")}
+                from . import workflow, review, project
+                folder = os.path.join(selected_folder(), "runs")
+                versions = preview.available(folder)
+                ck = checkpoint(selected_folder())
+                from . import progress as progress_display
+                wf = workflow.presentation(folder, state, active=state['active'], previews=versions, checkpoint=ck)
+                family = os.path.basename(log_chain(path)[0]) if path else wf.get('id', 'idle')
+                display = progress_display.presentation(folder, family, history, finished=wf.get('status') == 'finished')
+                if pinned_project and engine_path:
+                    engine_chain = log_chain(engine_path)
+                    engine['display_progress'] = progress_display.presentation(os.path.join(runner.workdir, 'runs'),
+                        os.path.basename(engine_chain[0]), [line for p in engine_chain for line in open(p)])
+                else:
+                    engine['display_progress'] = display
+                return self._send(200, {**state, **ts,
+                                        "workflow": wf, "display_progress": display,
+                                        "review": review.changes(folder), "project": project.load(os.path.join(selected_folder(), project.PATH)),
+                                        "engine": engine, "running": runner.running() and pinned_project is None, "log": [l.rstrip() for l in lines[-200:]],
+                                        "output": output.get(),
+                                        "reference_files": references(selected_folder()), "to_get": buy_list(selected_folder()),
                                         "reference_candidates": [{k: v for k, v in c.items() if k != "path"}
-                                                                 for c in reference_candidates(runner.workdir)],
+                                                                 for c in reference_candidates(selected_folder())],
                                         "project_references": project_refs.get(), "live": project_refs.reachable,
                                         "ab": ab_state["which"],
-                                        "previews": preview.available(os.path.join(runner.workdir, "runs")),
-                                        "loudness_match": preview.matching(os.path.join(runner.workdir, "runs")),
+                                        "previews": versions,
+                                        "loudness_match": preview.matching(os.path.join(selected_folder(), "runs")),
                                         "ab_blind": ab_state["blind"],
-                                        "ab_blind_ready": ab.BlindComparison.ready(os.path.join(runner.workdir, "runs")),
+                                        "ab_blind_ready": ab.BlindComparison.ready(os.path.join(selected_folder(), "runs")),
                                         "auto_imported": watcher.imported[-10:] if watcher else [],
-                                        "checkpoint": checkpoint(runner.workdir),
-                                        "roles_revision": os.stat(os.path.join(runner.workdir, "roles.json")).st_mtime_ns
-                                            if os.path.exists(os.path.join(runner.workdir, "roles.json")) else None,
+                                        "checkpoint": ck,
+                                        "role_groups": __import__("mixmatch.roles", fromlist=["ROLE_GROUPS"]).ROLE_GROUPS,
+                                        "roles_revision": os.stat(os.path.join(selected_folder(), "roles.json")).st_mtime_ns
+                                            if os.path.exists(os.path.join(selected_folder(), "roles.json")) else None,
                                         "ab_ready": __import__("mixmatch.ab", fromlist=["latest_before"]).latest_before(
-                                            os.path.join(runner.workdir, "runs")) is not None})
+                                            os.path.join(selected_folder(), "runs")) is not None})
             if self.path == "/api/project":
                 from . import project
 
-                return self._send(200, project.load(os.path.join(runner.workdir, project.PATH)))
+                return self._send(200, project.load(os.path.join(selected_folder(), project.PATH)))
             if self.path == "/api/roles":
-                path = os.path.join(runner.workdir, "roles.json")
+                path = os.path.join(selected_folder(), "roles.json")
                 return self._send(200, json.load(open(path)) if os.path.exists(path) else {})
             self._send(404, {"error": "not found"})
 
@@ -819,6 +959,9 @@ def make_handler(runner: Runner, watcher: "DownloadWatcher | None" = None, live_
             """Upload a reference: PUT /api/references/<file name> with the file as body."""
             try:
                 from urllib.parse import unquote
+                self._local_request()
+                if runner.running():
+                    raise ValueError("Pause the run before changing references.")
 
                 if not self.path.startswith("/api/references/"):
                     return self._send(404, {"error": "not found"})
@@ -856,10 +999,98 @@ def make_handler(runner: Runner, watcher: "DownloadWatcher | None" = None, live_
                 self._send(400, {"error": str(e)})
 
         def do_POST(self):
+            nonlocal pinned_project
             try:
                 body = self._body()
+                if runner.running() and self.path not in ("/api/stop", "/api/output", "/api/project", "/api/setup/planner", "/api/setup/models", "/api/songs/switch", "/api/songs/follow-live", "/api/preview/blind", "/api/preview/reveal"):
+                    raise RuntimeError("Pause the current operation safely first.")
+                if self.path == "/api/output":
+                    from .live_client import LiveClient
+                    from .live_identity import document_path
+                    from . import monitoring
+
+                    if pinned_project is not None and body.get("current") is not True:
+                        raise ValueError("Switch back to the connected Live project to change its output.")
+                    if not isinstance(body.get("silent"), bool):
+                        raise ValueError("Choose whether Live output should be silent.")
+                    song = songs.current(runner.root) or {}
+                    live = LiveClient(timeout=4).connect()
+                    try:
+                        from .live_identity import matches_project
+                        if not matches_project(live.get_set(), song):
+                            raise ValueError("Live has a different project open; output was not changed.")
+                        with ab_lock:
+                            folder = os.path.join(runner.workdir, "runs")
+                            match = None
+                            if body.get("equal") is True:
+                                from . import live_match
+                                log = runner.latest_log()
+                                measured = parse_log([line for p in log_chain(log) for line in open(p)]) if log else {}
+                                try:
+                                    match = live_match.calculate(folder, measured, live.get_set(), monitoring.normal_db(live, folder))
+                                except Exception:
+                                    match = {"ready": False, "reason": "Current loudness matching is not available yet."}
+                            result = monitoring.set_silent(live, folder, body["silent"],
+                                match["current_fader_db"] if match and match.get("ready") else None)
+                            result["match"] = match
+                            output.value, output.reachable, output.at = result, True, time.time()
+                        return self._send(200, result)
+                    finally:
+                        live.close()
+                if self.path == "/api/setup/planner":
+                    from .planner_settings import save
+                    return self._send(200, {"settings": save(body.get("provider"), body.get("model", ""), body.get("base_url", ""), body.get("key", "")), "applies": "next_run"})
+                if self.path == "/api/setup/models":
+                    from .planner_settings import models
+                    return self._send(200, {"models": models(body.get("provider"), body.get("base_url", ""), body.get("key", ""))})
+                if self.path == "/api/setup/key":
+                    from .credentials import save
+                    return self._send(200, save(body.get("key")))
+                if self.path == "/api/setup/install":
+                    from .platforms import install_bridge
+                    return self._send(200, install_bridge(body.get("library", "")))
+                if self.path == "/api/preview/repair":
+                    return self._send(200, {"log": runner.start(["repair-preview"])})
+                if self.path in ("/api/restore/plan", "/api/restore"):
+                    from . import review, workflow
+                    from .live_client import LiveClient
+                    if run_process_alive():
+                        raise ValueError("Pause the run before restoring settings.")
+                    live = LiveClient(timeout=10).connect()
+                    try:
+                        current = live.get_set()
+                        from .live_identity import document_path
+                        path = current.get("file_path") or document_path()
+                        saved_path = (songs.current(runner.root) or {}).get("live_path")
+                        if saved_path and (not path or os.path.realpath(path) != saved_path):
+                            raise ValueError("Open this result’s Live project before restoring it.")
+                        folder = os.path.join(runner.workdir, "runs")
+                        plan = review.restore_plan(folder, current)
+                        if self.path.endswith("/plan"):
+                            return self._send(200, {"token": plan["token"], "count": plan["count"]})
+                        if body.get("token") != plan["token"]:
+                            raise ValueError("Live has changed. Review the restore plan again.")
+                        with ab_lock:
+                            if runner.running() or run_process_alive():
+                                raise ValueError("Pause the run before restoring settings.")
+                            latest = live.get_set()
+                            if review.fingerprint(latest) != plan["token"]:
+                                raise ValueError("Live has changed. Review the restore plan again.")
+                            live.transport(play=False)
+                            try:
+                                if live.batch(plan["changes"]).get("errors"):
+                                    raise RuntimeError("Some parameter settings could not be restored.")
+                            except BaseException:
+                                from .preview import _apply
+                                _apply(live, ab.snapshot(latest))
+                                raise
+                        wf = workflow.read(folder)
+                        workflow.write(folder, {**wf, "status": "restored", "output_restored": True})
+                        return self._send(200, {"restored": True})
+                    finally:
+                        live.close()
                 if self.path in ("/api/preview/blind", "/api/preview/reveal"):
-                    folder = os.path.join(runner.workdir, "runs")
+                    folder = os.path.join(selected_folder(), "runs")
                     with ab_lock:
                         if self.path.endswith("/reveal"):
                             if (preview_trial.get("folder") != folder or not preview.selected_file(
@@ -873,17 +1104,25 @@ def make_handler(runner: Runner, watcher: "DownloadWatcher | None" = None, live_
                         token = secrets.token_urlsafe(24)
                         preview_trial.update(folder=folder, which=which, id=versions[which]["id"], token=token)
                         return self._send(200, {"url": f"/api/preview-audio?token={token}"})
-                if self.path == "/api/run":
+                if self.path in ("/api/run", "/api/analyse"):
+                    if runner.running() or run_process_alive():
+                        raise RuntimeError("a run is already going on")
+                    # Re-read Live before starting: Save As may have happened
+                    # since the last periodic status update.
+                    open_set._refresh()
                     ts = track_state(False)
+                    if not ts["following_live"]:
+                        raise RuntimeError("switch back to the connected Live project before starting a run")
                     if not ts["set"]["same"]:
-                        raise RuntimeError(f"Live has another set open than «{ts['track']}»: start a new track "
-                                           "for it or switch to its track first")
+                        raise RuntimeError("The open Ableton project could not be identified. Save the Live set and allow MARA to read its document window.")
                     if ts["open_set"] and ts["open_set"]["taps"] == 0:
                         raise RuntimeError("no MixMatch Tap in this set yet: «Set taps» first")
                     mode = body.get("reference_mode", "discover" if body.get("auto_ref") else "selected")
                     if mode not in ("selected", "discover"):
                         raise ValueError("choose your references or ask MARA to find suggestions")
                     args = ["run"]
+                    if self.path == "/api/analyse":
+                        args += ["--review-references"]
                     if mode == "discover":
                         args += ["--auto-ref", "--review-references"]
                     else:
@@ -896,6 +1135,8 @@ def make_handler(runner: Runner, watcher: "DownloadWatcher | None" = None, live_
                             args += ["--ref", "references/"]
                         args += ["--no-auto-ref", "--no-suggest", "--replace-references"]
                     ck = checkpoint(runner.workdir) if body.get("continue") else None
+                    if body.get("mode") in ("auto", "beat", "song"):
+                        args += ["--mode", body["mode"]]
                     if body.get("quick") or (ck and not ck["complete"]):
                         args += ["--quick"]
                     if body.get("silent"):
@@ -949,15 +1190,25 @@ def make_handler(runner: Runner, watcher: "DownloadWatcher | None" = None, live_
                     if runner.running():
                         raise RuntimeError("pause the run before changing its references")
                     return self._send(200, {"saved": choose_reference(runner.workdir, body.get("id", ""))})
-                if self.path in ("/api/songs/new", "/api/songs/switch", "/api/songs/adopt"):
-                    if runner.running():
+                if self.path == "/api/references/hide":
+                    hide_reference_candidate(runner.workdir, body.get("id", ""), body.get("hidden", True) is True)
+                    return self._send(200, {"ok": True})
+                if self.path in ("/api/songs/new", "/api/songs/switch", "/api/songs/adopt", "/api/songs/follow-live"):
+                    if runner.running() and self.path not in ("/api/songs/switch", "/api/songs/follow-live"):
                         raise RuntimeError("wait until the run is finished")
                     info = open_set.value if open_set.reachable else None
-                    if self.path == "/api/songs/new":
+                    if self.path == "/api/songs/follow-live":
+                        pinned_project = None
+                        if info and not runner.running():
+                            songs.activate_live_set(runner.root, info.get("name", ""), info["channels"], info.get("path", ""))
+                    elif self.path == "/api/songs/new":
                         songs.create(runner.root, body.get("name", ""), body.get("description", ""),
                                      info["channels"] if info else None)
                     elif self.path == "/api/songs/switch":
-                        songs.switch(runner.root, body.get("slug", ""))
+                        slug = body.get("slug", "")
+                        if slug not in songs.load(runner.root)["songs"]:
+                            raise ValueError("No such project.")
+                        pinned_project = slug
                     elif info:   # «it is this track»: the open set's channels belong to the current track now
                         songs.remember_channels(runner.root, info["channels"])
                     ab_state.update(which=None, blind=False)
@@ -984,11 +1235,15 @@ def make_handler(runner: Runner, watcher: "DownloadWatcher | None" = None, live_
                 if self.path == "/api/project":
                     from . import project
 
-                    path = os.path.join(runner.workdir, project.PATH)
+                    path = os.path.join(selected_folder(), project.PATH)
                     data = project.load(path)
                     data["description"] = str(body.get("description", "")).strip()
+                    if not runner.running() and body.get("mode") in ("auto", "beat", "song"):
+                        data["mode"] = body["mode"]
                     project.save(data, path)
-                    return self._send(200, data)
+                    from . import workflow
+                    wf = workflow.read(os.path.join(runner.workdir, "runs"))
+                    return self._send(200, {**data, "applies": "next_step" if wf.get("live_goal_updates") else "resume"})
                 if self.path == "/api/roles":
                     with open(os.path.join(runner.workdir, "roles.json"), "w") as f:
                         json.dump(body, f, indent=2, ensure_ascii=False)
@@ -1032,8 +1287,12 @@ def serve(workdir: str = ".", port: int = PORT, open_browser: bool = True) -> No
                 webbrowser.open(url)
             return
         sys.exit(f"Port {port} is used by another program. Start MARA on another one: mixmatch ui --port {port + 1}")
+    url = f"http://127.0.0.1:{server.server_port}"
     watcher.run()
-    print(f"MARA: {url}  (Ctrl+C to quit)")
+    if os.environ.get("MARA_DESKTOP_SERVICE"):
+        from pathlib import Path
+        Path(runner.root, "desktop-service.json").write_text(json.dumps({"url": url, "pid": os.getpid()}))
+    print(f"MARA: {url}  (Ctrl+C to quit)", flush=True)
     if open_browser:
         threading.Timer(0.5, lambda: webbrowser.open(url)).start()
     try:
@@ -1066,7 +1325,7 @@ PAGE = r"""<!doctype html>
 }
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:14px/1.45 -apple-system,system-ui,sans-serif}
 header{display:flex;align-items:center;gap:12px;padding:14px 20px;border-bottom:1px solid var(--line)}
-header h1{font-size:17px;margin:0}.pill{padding:2px 9px;border-radius:99px;font-size:12px;background:var(--line);color:var(--muted)}
+header h1{font-size:17px;margin:0}.project-switch{max-width:190px;padding:3px 6px;font-size:12px}.pill{padding:2px 9px;border-radius:99px;font-size:12px;background:var(--line);color:var(--muted)}
 .pill.on{background:color-mix(in srgb,var(--good) 22%,transparent);color:var(--good)}
 main{display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:14px;padding:16px 20px;max-width:1500px;margin:auto}
 section{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px 16px;min-width:0}
@@ -1171,6 +1430,7 @@ button.primary{display:block;width:100%;font:400 19px var(--display);letter-spac
 button.danger{background:var(--pink);color:var(--on-bright);border-color:var(--pink-edge);font-size:14px;padding:8px 18px;margin-right:10px}
 #cont+#start.ghost{display:inline-block;width:auto;margin:0 0 6px}
 .hint{color:var(--muted);font-size:12.5px;margin:4px 0 10px}
+#live_project{font-size:17px;line-height:1.3;margin:8px 0 14px;color:var(--text)}
 .now{display:flex;flex-direction:column;gap:2px;margin:2px 0 10px}.now b{font:400 18px var(--display)}
 .now span,#scope{overflow-wrap:anywhere;min-width:0}
 .bigprog{height:22px;background:var(--field);border:2px solid;border-color:var(--lo) var(--hi) var(--hi) var(--lo);margin-bottom:4px}
@@ -1207,6 +1467,14 @@ ul.part-why{padding-left:18px}ul.part-why li{margin:2px 0}
 .reference-choice select{width:100%;min-width:0;margin-bottom:6px}
 .candidate-list{list-style:none;padding:0;margin:8px 0}.candidate-list li{padding:6px 0;border-bottom:1px dotted var(--lo);overflow-wrap:anywhere}
 .candidate-list button{margin:4px 0}
+.reference-selected{border:2px solid var(--good);border-left-width:6px;background:var(--field);padding:12px;margin-bottom:14px}
+.reference-selected h3.sub{margin:0 0 8px;color:var(--good)}
+.reference-selected .reflist{margin:8px 0 0}
+.reference-suggestions{border-top:2px solid var(--lo);margin-top:18px;padding-top:14px}
+.reference-suggestions>h3.sub{margin:0 0 6px}
+.candidate-list li{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;padding:10px 0}
+.candidate-list .candidate-info{flex:1;min-width:180px}
+.candidate-list .candidate-source{display:block;font-size:12px;color:var(--muted);margin-top:3px}
 .banner{border:2px solid var(--warn);background:var(--field);padding:10px;margin:0 0 12px;font-size:13.5px}
 .banner .row{margin-top:8px;flex-wrap:wrap;gap:8px}
 ol.steps{list-style:none;padding:0;margin:0 0 12px;counter-reset:step}
@@ -1221,22 +1489,13 @@ ol.steps button{margin:4px 8px 0 0}
 </style>
 </head>
 <body>
-<header><h1 title="Mix And Reference Assistant">MARA</h1><button id="theme" class="ghost small" title="Auto: light from 07:00 to 19:00 local time, dark at night. Click for light or dark.">Theme: auto</button><span id="status" class="pill">idle</span><span id="live" class="pill">Live …</span><span id="phase" class="muted"></span>
+<header><h1 title="Mix And Reference Assistant">MARA</h1><select id="project_switch" class="project-switch" title="Switch to an earlier project to listen to its results"></select><button id="theme" class="ghost small" title="Auto: light from 07:00 to 19:00 local time, dark at night. Click for light or dark.">Theme: auto</button><span id="status" class="pill">idle</span><span id="live" class="pill">Live …</span><span id="phase" class="muted"></span>
 <span id="prog" class="prog" hidden><i><b id="prog_bar"></b></i><span id="prog_text" class="muted"></span></span></header>
 <main>
 <section>
   <h2>Run</h2>
   <p class="hint" id="mix_mode" hidden></p>
-  <div class="trackbar"><span class="label">Track</span><select id="track_pick" title="Each track has its own references, roles and runs"></select>
-    <button id="new_track" class="ghost small">New track</button></div>
-  <div id="newform" class="newform" hidden>
-    <label>Name of the new track<input id="nt_name" placeholder="e.g. Cleopatra beat" maxlength="60"></label>
-    <label>Describe it (optional)<textarea id="nt_desc" rows="2" placeholder="genre, mood, what it should feel like"></textarea></label>
-    <p class="hint">Starts empty: its own references, roles and runs. The set that is open in Live now belongs to it.
-      References of earlier tracks can be picked again under References → Used before.</p>
-    <div class="row"><button id="nt_create">Create track</button><button id="nt_cancel" class="ghost">Cancel</button></div>
-  </div>
-  <div id="mismatch" class="banner" hidden></div>
+  <p class="hint" id="live_project">Connected Ableton project: waiting for Live …</p>
   <div id="reference_choice" class="reference-choice">
     <label for="reference_mode">Reference tracks</label>
     <select id="reference_mode">
@@ -1263,7 +1522,8 @@ ol.steps button{margin:4px 8px 0 0}
     <span class="hint">Resume later from where you paused.</span>
   </div>
   <details class="opts"><summary>Options</summary>
-    <label title="The Main fader goes down while MARA works and comes back at the end. It measures before the fader, so the results are the same."><input type="checkbox" id="silent" checked> silent: Main fader down while it works</label>
+    <label title="Can be changed during the run. Measurements continue before the Main fader."><input type="checkbox" id="silent" checked> silent: mute Live output while it works</label>
+    <p class="hint" id="output_hint">Switch off to hear Live while MARA works.</p>
     <label><input type="checkbox" id="quick"> master only (quick, about 15 min)</label>
     <label><input type="checkbox" id="no_audit"> keep every effect (no check for useless ones)</label>
   </details>
@@ -1305,17 +1565,25 @@ ol.steps button{margin:4px 8px 0 0}
 </section>
 <section id="references_panel">
   <h2>References</h2>
-  <p class="hint">These are the tracks MARA will mix against. Add the ones you want, then start the mix.</p>
-  <div id="refs_used"></div>
+  <div class="reference-selected">
+    <h3 class="sub">✓ Selected for this project</h3>
+    <p class="hint">These references will be used for the next mix.</p>
+    <div id="refs_used"></div>
+  </div>
   <div class="row"><button id="pick_files" class="ghost">Add audio files</button>
     <input id="reference_upload" type="file" accept=".wav,.aif,.aiff,.flac,.mp3,.m4a,.aac" multiple hidden></div>
-  <div id="found_refs"></div>
+  <div id="drop" class="drop">Drop reference audio files here</div>
+  <div class="reference-suggestions">
+    <h3 class="sub">Suggestions · not selected</h3>
+    <p class="hint">Not used in the mix until you add them to the selection above.</p>
+    <div id="found_refs"></div>
   <div class="row"><button id="used_btn" class="ghost small">Used before</button><span class="muted" id="used_count"></span></div>
   <div id="used" hidden></div>
-  <div id="drop" class="drop">Drop reference audio files here</div><h2 style="margin-top:12px">Suggestions to get</h2><div id="to_get" class="muted">–</div>
+    <h3 class="sub">Suggestions to get</h3><div id="to_get" class="muted">–</div>
+  </div>
 </section>
 <section>
-  <h2>Roles</h2><div id="roles" class="muted">–</div><div class="row"><button id="save_roles" class="ghost">Save roles</button></div>
+  <h2>Track roles · Kick, bass, vocals …</h2><div id="roles" class="muted">–</div><div class="row"><button id="save_roles" class="ghost" disabled>Save roles</button></div>
 </section>
 <section>
   <h2>Effects</h2><div id="effects" class="muted">–</div>
@@ -1344,13 +1612,32 @@ document.addEventListener("visibilitychange", () => { if (!document.hidden) appl
 $("theme").onclick = () => { theme = THEMES[(THEMES.indexOf(theme) + 1) % THEMES.length]; applyTheme(theme);
   try { localStorage.setItem("mm_theme", theme); } catch {} };
 const OPTS = ["silent", "quick", "no_audit"];
+let runActive = false, outputPending = false;
 try { const saved = JSON.parse(localStorage.getItem("mm_opts") || "{}");   // remembered per browser, a convenience
   for (const k of OPTS) if (k in saved) $(k).checked = saved[k]; } catch {}
 for (const k of OPTS) $(k).addEventListener("change", () => {
   try { localStorage.setItem("mm_opts", JSON.stringify(Object.fromEntries(OPTS.map(o => [o, $(o).checked])))); } catch {} });
+$("silent").addEventListener("change", async () => {
+  if (!runActive) return;
+  const requested = $("silent").checked;
+  outputPending = true; $("silent").disabled = true;
+  $("output_hint").textContent = "Changing Live output …";
+  try {
+    const result = await post("/api/output", {silent: requested});
+    $("silent").checked = result.error ? !requested : result.silent;
+    $("output_hint").textContent = result.error || (result.silent ? "Live output is muted." : `Live output is audible · Main ${result.display}`);
+  } catch {
+    $("silent").checked = !requested;
+    $("output_hint").textContent = "Could not change Live output. Check the connection and try again.";
+  } finally { outputPending = false; $("silent").disabled = false; }
+});
 $("start").onclick = () => post("/api/run", {reference_mode: $("reference_mode").value, quick: $("quick").checked,
   no_audit: $("no_audit").checked, silent: $("silent").checked});
-$("stop").onclick = () => post("/api/stop");
+$("stop").onclick = async () => {
+  $("stop").disabled = true; $("stop").textContent = "Pausing …";
+  const result = await post("/api/stop");
+  if (result.error) { $("stop").disabled = false; $("stop").textContent = "Pause"; }
+};
 $("cont").onclick = () => post("/api/run", {continue: true, reference_mode: "selected", silent: $("silent").checked,
   no_audit: $("no_audit").checked});
 $("reference_mode").onchange = () => { referenceModeChosen = true; tick(); };
@@ -1423,7 +1710,8 @@ async function loadRoles() {
   try {
   const roles = await (await fetch("/api/roles")).json(); const names = Object.keys(roles);
   if (rolesEdited) return false;
-  if (!names.length) { $("roles").textContent = "No roles.json yet (written by the first run)."; return true; }
+  $("save_roles").hidden = !names.length;
+  if (!names.length) { $("roles").textContent = "MARA identifies what each track plays (kick, bass, vocals …) during the first analysis. You can review and adjust the assignments here afterwards."; return true; }
   $("roles").innerHTML = "<table>" + names.map(n => `<tr><td>${esc(n)}</td><td><select title="${esc(roles[n].note || '')}" data-n="${esc(n)}">${Object.entries(ROLE_GROUPS).map(([g, rs]) => `<optgroup label="${esc(g)}">` + rs.map(r =>
     `<option ${r===roles[n].role?"selected":""}>${r}</option>`).join("") + "</optgroup>").join("")}</select></td><td><input data-p="${esc(n)}" type="number" min="1" max="5" value="${roles[n].priority}"></td></tr>`).join("") + "</table>";
   const current = () => names.map(n => document.querySelector(`[data-n="${CSS.escape(n)}"]`).value + "|" +
@@ -1577,6 +1865,7 @@ function activityAge() {
   const seconds = Math.max(0, Math.floor(Date.now()/1000 - a.started));
   $("activity_age").textContent = `This step: ${Math.floor(seconds/60)}:${String(seconds%60).padStart(2, "0")}`;
 }
+let displayedProject;
 async function tick() {
   let s; try {
     const response = await fetch("/api/state");
@@ -1588,6 +1877,17 @@ async function tick() {
     $("activity_text").textContent = "Connection to MARA lost · trying again …";
     activityAge();
     return;
+  }
+  if (displayedProject !== undefined && displayedProject !== s.project_id) { location.reload(); return; }
+  displayedProject = s.project_id;
+  runActive = s.active;
+  if (!s.active) { $("stop").disabled = false; $("stop").textContent = "Pause"; }
+  if (!outputPending) {
+    if (s.active && typeof s.output?.silent === "boolean") {
+      $("silent").checked = s.output.silent;
+      $("output_hint").textContent = s.output.silent ? "Live output is muted." : `Live output is audible · Main ${s.output.display}`;
+    }
+    $("silent").disabled = s.active && typeof s.output?.silent !== "boolean";
   }
   currentActivity = s.active && s.activity && Number.isFinite(s.activity.started) ? s.activity : null;
   $("activity_text").textContent = s.activity?.text || "Starting the run · waiting for the first update …";
@@ -1647,15 +1947,22 @@ async function tick() {
   $("events").innerHTML = s.events.slice().reverse().map(e => `<div class="ev ${e.kind}">${esc(e.kind === "phase" ? phaseText(e.text) : e.text)}</div>`).join("");
   const refsKey = JSON.stringify(s.reference_files) + JSON.stringify(s.project_references) + JSON.stringify(s.reference_candidates) + s.active;
   if (refsKey !== lastRefs) { lastRefs = refsKey;
-    $("refs_used").innerHTML = (s.project_references.length ? "<div class='muted'>in the Live set (always used):</div><ul>" +
-      s.project_references.map(r => `<li><b>${esc(r.track)}</b>: ${esc(r.file)}</li>`).join("") + "</ul><div class='muted'>in references/:</div>" : "")
+    $("refs_used").innerHTML = (s.project_references.length ? "<div class='muted'>From the Live set · included automatically:</div><ul>" +
+      s.project_references.map(r => `<li><b>${esc(r.track)}</b>: ${esc(r.file)}</li>`).join("") + "</ul>" : "")
       + (s.reference_files.length ? "<ul class='reflist'>" + s.reference_files.map(f =>
       `<li><span>${esc(f)}</span><button class="ghost small" data-remove="${esc(f)}">remove</button></li>`).join("") + "</ul>"
-      : "<span class='muted'>No reference files selected yet.</span>");
-    $("found_refs").innerHTML = s.reference_candidates?.length ? "<h3 class='sub'>Available references — choose for this song</h3><p class='hint'>The shared references/ folder is detected automatically. Use the tracks you want for this song.</p><ul class='candidate-list'>" +
-      s.reference_candidates.map(c => `<li><span>${esc(c.name)} <span class='muted'>(${esc(c.source)})</span></span>` +
-        (s.reference_files.includes(c.name) ? "<span class='muted'>Selected</span>"
-          : `<button class='small' data-pick-reference='${esc(c.id)}' ${s.active ? "disabled" : ""}>Use this reference</button>`) + "</li>").join("") + "</ul>" : "";
+      : (s.project_references.length ? "" : "<span class='muted'>No references selected yet. Add audio files or choose a suggestion below.</span>"));
+    const candidates = (s.reference_candidates || []).filter(c => !c.hidden && !s.reference_files.includes(c.name));
+    const hiddenCandidates = (s.reference_candidates || []).filter(c => c.hidden);
+    const sourceLabel = {library: "Found in your music library", "shared references": "From your shared reference folder", "previous run": "From an earlier run"};
+    $("found_refs").innerHTML = candidates.length ? "<ul class='candidate-list'>" +
+      candidates.map(c => `<li><span class='candidate-info'>${esc(c.name)}<span class='candidate-source'>${esc(sourceLabel[c.source] || c.source)}</span>` +
+        `<span class='candidate-source'>${esc(c.location || "")}</span></span>` +
+        `<button class='ghost small' data-pick-reference='${esc(c.id)}' ${s.active ? "disabled" : ""}>Add to selection</button>` +
+        `<button class='ghost small' data-hide-reference='${esc(c.id)}' ${s.active ? "disabled" : ""} title='Hide this suggestion; keep the audio file'>Hide</button></li>`).join("") + "</ul>"
+      : "<p class='hint'>No other local suggestions available.</p>";
+    if (hiddenCandidates.length) $("found_refs").innerHTML += `<details><summary>Hidden suggestions (${hiddenCandidates.length})</summary><ul class='candidate-list'>` +
+      hiddenCandidates.map(c => `<li>${esc(c.name)}<button class='ghost small' data-restore-reference='${esc(c.id)}' ${s.active ? "disabled" : ""}>Restore suggestion</button></li>`).join("") + "</ul></details>";
     document.querySelectorAll("[data-remove]").forEach(b => b.onclick = async () => {
       if (!b.classList.contains("danger")) { b.classList.add("danger"); b.textContent = "really? (to Trash)"; return; }
       const j = await post("/api/references/remove", {name: b.dataset.remove});
@@ -1697,25 +2004,16 @@ function step(kind, text, sub, buttons) {
   return `<li class="${kind}"><i>${STEP_ICON[kind]}</i><span>${text}${sub ? `<span class="sub">${sub}</span>` : ""}${buttons || ""}</span></li>`;
 }
 function tracks(s) {
-  // the track picker, the form for a new one, and the warning when Live has another set open
-  const key = JSON.stringify(s.tracks) + s.track;
+  const select = $("project_switch"), key = JSON.stringify(s.tracks) + s.track + s.following_live;
   if (key !== lastTracks) { lastTracks = key;
-    $("track_pick").innerHTML = s.tracks.length ? s.tracks.map(t => `<option value="${esc(t.slug)}" ${t.current ? "selected" : ""}>${esc(t.name)}</option>`).join("")
-      : `<option>this folder (no tracks yet)</option>`;
+    const liveLabel = s.live && s.open_set?.name ? `Live: ${s.open_set.name}` : "Follow connected Live project";
+    select.innerHTML = `<option value="follow" ${s.following_live ? "selected" : ""}>${esc(liveLabel)}</option>` +
+      s.tracks.map(t => `<option value="${esc(t.slug)}" ${!s.following_live && t.current ? "selected" : ""}>${esc(t.name)}</option>`).join("");
   }
-  $("track_pick").disabled = s.active || s.tracks.length < 2; $("new_track").disabled = s.active;
-  const m = s.set || {same: true};
-  $("mismatch").hidden = s.active || m.same;
-  if (!m.same) {
-    const key2 = JSON.stringify(m) + s.track;
-    if ($("mismatch").dataset.key !== key2) { $("mismatch").dataset.key = key2;
-      $("mismatch").innerHTML = `<b>Live has a different set open than «${esc(s.track)}».</b> Its channels do not match this track.` +
-        (m.other ? ` They match «${esc(m.other.name)}».` : " Is it a new track?") +
-        `<div class="row">${m.other ? `<button data-switch="${esc(m.other.slug)}">Switch to «${esc(m.other.name)}»</button>` : ""}` +
-        `<button data-act="newtrack" class="${m.other ? "ghost" : ""}">New track for this set</button>` +
-        `<button data-act="adopt" class="ghost">It is «${esc(s.track)}» (channels renamed)</button></div>`;
-    }
-  }
+  select.disabled = s.active;
+  $("live_project").textContent = !s.following_live ? `${s.track} · saved results · not synced to Live`
+    : s.open_set?.name ? `Connected Ableton project: ${s.open_set.name}`
+    : "Ableton project not identified · waiting for its document name";
 }
 function steps(s) {
   if (s.active) { $("steps").innerHTML = ""; $("taps_state").textContent = ""; return { ready: false }; }
@@ -1739,7 +2037,8 @@ function steps(s) {
     : step("info", "Not described yet (optional)", "A few words under «Describe your track» help MARA pick references and decide."));
   $("steps").innerHTML = out.join("");
   $("taps_state").textContent = o ? `(${o.taps} of ${o.total} channels)` : "";
-  const ready = s.live && (s.set || {same: true}).same && !(o && o.taps === 0) && (refs > 0 || $("reference_mode").value === "discover");
+  if (!s.following_live) out.unshift(step("info", "Browsing another project", "Switch to the connected Live project above before mixing."));
+  const ready = s.following_live && s.live && (s.set || {same: true}).same && !(o && o.taps === 0) && (refs > 0 || $("reference_mode").value === "discover");
   return { ready };
 }
 function usedRefs(s) {
@@ -1754,14 +2053,16 @@ function usedRefs(s) {
       : `<button class="small" data-reuse="${esc(r.file)}" data-slug="${esc(r.slug)}">Use</button>`) + "</li>").join("") + "</ul>").join("");
 }
 async function reload(path, body) { const j = await post(path, body); if (!j.error) location.reload(); }
-$("track_pick").onchange = e => reload("/api/songs/switch", {slug: e.target.value});
-$("new_track").onclick = () => { $("newform").hidden = !$("newform").hidden; if (!$("newform").hidden) $("nt_name").focus(); pack(); };
-$("nt_cancel").onclick = () => { $("newform").hidden = true; pack(); };
-$("nt_create").onclick = () => reload("/api/songs/new", {name: $("nt_name").value, description: $("nt_desc").value});
+$("project_switch").onchange = e => reload(e.target.value === "follow" ? "/api/songs/follow-live" : "/api/songs/switch",
+  e.target.value === "follow" ? {} : {slug: e.target.value});
 $("used_btn").onclick = () => { $("used").hidden = !$("used").hidden; $("used_btn").textContent = $("used").hidden ? "Used before" : "Hide used"; pack(); };
 document.addEventListener("click", async e => {
   const b = e.target.closest("button"); if (!b) return;
-  if (b.dataset.switch) return reload("/api/songs/switch", {slug: b.dataset.switch});
+  if (b.dataset.hideReference || b.dataset.restoreReference) {
+    b.disabled = true;
+    await post("/api/references/hide", {id: b.dataset.hideReference || b.dataset.restoreReference, hidden: !!b.dataset.hideReference});
+    lastRefs = ""; tick(); return;
+  }
   if (b.dataset.pickReference) { b.disabled = true; const j = await post("/api/references/choose", {id: b.dataset.pickReference});
     if (!j.error) { $("msg").textContent = "Selected: " + j.saved; selectedReferences(); }
     lastRefs = ""; tick(); return; }
@@ -1769,8 +2070,6 @@ document.addEventListener("click", async e => {
     if (!j.error) { $("msg").textContent = "Added to this track: " + j.saved; selectedReferences(); lastUsed = ""; tick(); } return; }
   const act = b.dataset.act;
   if (act === "taps") { b.disabled = true; b.textContent = "Setting taps …"; post("/api/taps"); }
-  else if (act === "newtrack") { $("newform").hidden = false; $("nt_name").focus(); pack(); }
-  else if (act === "adopt") reload("/api/songs/adopt");
   else if (act === "references") $("references_panel").scrollIntoView({behavior: "smooth", block: "start"});
   else if (act === "used") { $("used").hidden = false; $("used_btn").textContent = "Hide used";
     document.querySelector("#used").scrollIntoView({behavior: "smooth", block: "center"}); pack(); }

@@ -9,6 +9,12 @@ import pytest
 from mixmatch import songs
 from mixmatch.ui import Runner, make_handler
 
+@pytest.fixture(autouse=True)
+def isolate_live_processes(monkeypatch):
+    # Real mixing on the developer’s machine must not change these isolated project tests.
+    monkeypatch.setattr("mixmatch.ui.run_process_alive", lambda: False)
+
+
 SET_A = ["1-Kick", "2-Bass", "3-Pad", "4-Lead"]
 SET_B = ["1-Drums", "2-Rhodes", "3-Strings", "4-Vox"]
 
@@ -73,6 +79,18 @@ def test_live_name_updates_the_label_without_moving_song_data(tmp_path):
     assert songs.listing(root)[0]["name"] == "Cleopatra v2"
 
 
+def test_connected_live_set_switches_or_creates_a_project(tmp_path):
+    root = str(tmp_path)
+    first = songs.create(root, "Hyperpop", channels=SET_A)
+    songs.create(root, "Other", channels=SET_B)
+
+    assert songs.activate_live_set(root, "Hyperpop", SET_A)["slug"] == first
+    assert songs.activate_live_set(root, "Hyperpop v2", SET_A)["slug"] != first
+    assert songs.load(root)["songs"][first]["name"] == "Hyperpop"
+    assert songs.activate_live_set(root, "New Ableton project", SET_A, "/tmp/new.als")["name"] == "New Ableton project"
+    assert songs.current(root)["slug"] != first
+
+
 def test_interface_uses_the_live_name_on_the_first_completed_refresh(tmp_path):
     root = str(tmp_path)
     songs.create(root, "First track", channels=SET_A)
@@ -88,7 +106,7 @@ def test_interface_uses_the_live_name_on_the_first_completed_refresh(tmp_path):
         assert ready.wait(2)
         state = call("/api/state")
         assert state["track"] == "Cleopatra"
-        assert state["tracks"][0]["name"] == "Cleopatra"
+        assert next(t for t in state["tracks"] if t["current"])["name"] == "Cleopatra"
     finally:
         server.shutdown()
 
@@ -109,22 +127,18 @@ def _serve(root, live_set_fn):
     return server, call
 
 
-def test_interface_shows_the_track_and_its_taps_and_blocks_a_run_on_another_set(tmp_path):
+def test_interface_adopts_the_connected_live_project_and_its_taps(tmp_path):
     root = str(tmp_path)
     songs.create(root, "Hyperpop", channels=SET_A)
-    open_set = {"channels": SET_B, "taps": 0, "total": 4, "missing": SET_B, "playing": False}
+    open_set = {"name": "Cleopatra beat", "path": "/tmp/cleopatra.als", "channels": SET_B,
+                "taps": 0, "total": 4, "missing": SET_B, "playing": False}
     server, call = _serve(root, lambda: open_set)
     try:
         call("/api/state")
         time.sleep(0.3)                                         # Live is asked in the background
         s = call("/api/state")
-        assert s["track"] == "Hyperpop" and s["set"] == {"same": False, "other": None}
+        assert s["track"] == "Cleopatra beat" and s["set"] == {"same": True, "other": None}
         assert s["open_set"]["taps"] == 0
-        assert "another set open" in call("/api/run", {"auto_ref": True})["error"]
-
-        assert call("/api/songs/new", {"name": "Cleopatra beat"})["track"]["name"] == "Cleopatra beat"
-        s = call("/api/state")
-        assert s["track"] == "Cleopatra beat" and s["set"]["same"] and s["reference_files"] == []
         assert "Set taps" in call("/api/run", {"auto_ref": True})["error"]      # no taps in the set yet
         assert [t["name"] for t in s["tracks"]] == ["Hyperpop", "Cleopatra beat"]
     finally:

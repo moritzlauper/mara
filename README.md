@@ -311,3 +311,42 @@ python3 device/build_tap.py  # rebuild the tap device after changing it
 
 `mixmatch/sim.py` contains a small fake Live (tracks, mixer, EQ Eight, Utility,
 Limiter, browser) with a crude sound model, enough to test the loop end to end.
+
+## MARA workflow and desktop app
+
+Open `/workflow` on the UI service for Project & goal → References → Understand
+→ Mix → Result. The classic screen remains at `/` and `/classic`. Runs start
+silently; **Unmute Current** restores the listening level, including after a
+Live restart. **Before** opens the original recording and the same button closes
+it. Live loudness matching uses the latest measurement of the matching passage
+and is approximate. Resume stays in Mix; completed runs open Result.
+
+Planner settings support Anthropic (default model `claude-haiku-5-5`), Claude
+Code, Gemini, compatible Chat Completions servers and built-in rules. Choose a
+model or load the provider's available models. Automatic mode accepts an
+Anthropic key and model for its API fallback. Keys stay in the OS credential
+store; non-secret choices live in `planner-settings.json` in MARA's application
+workspace. Saving changes affects the next start/resume, not an active worker.
+Cost ranges are planning estimates using published rates and explicit token/call
+assumptions; they are not billing caps.
+
+Build a desktop package **on its target OS** with Python, Node and Rust installed:
+
+```bash
+python -m pip install ".[dev]"
+python desktop/build_engine.py
+npm --prefix desktop ci
+npm --prefix desktop run build
+```
+
+The macOS bundle is under `desktop/src-tauri/target/release/bundle/macos/`;
+Windows installers are under `bundle/nsis/` and `bundle/msi/`. The desktop CI
+workflow builds both platforms. Local builds are not notarized or signed with
+a distribution certificate. Windows requires its own build and validation.
+
+The app reuses a running MARA service or starts its bundled engine. New desktop
+workspaces use `~/Library/Application Support/MARA` on macOS or
+`%LOCALAPPDATA%/MARA` on Windows; `MARA_WORKSPACE` overrides that location.
+Closing the window requests a safe pause and waits for the checkpoint. The
+shared engine remains available for reconnecting. Ableton Live and the MARA
+bridge/taps are still required; the app can install them into the User Library.

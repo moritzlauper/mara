@@ -109,6 +109,59 @@ def switch(root: str, slug: str) -> None:
     _save(root, idx)
 
 
+def activate_live_set(root: str, name: str, channels: list[str], live_path: str = "") -> dict | None:
+    """Make the connected Live set the current project.
+
+    A saved Live-set path is its primary identity.  This matters for copies and
+    templates with the same channel layout: they are still new projects.  For
+    older control surfaces, an explicit set name can be used as a fallback.
+    Channel similarity alone cannot distinguish a copy or a Save As.
+    """
+    name = name.strip()
+    idx = load(root)
+    live_path = os.path.realpath(live_path) if live_path else ""
+    if not name and not live_path:
+        return None
+    if idx:
+        if live_path:
+            by_path = next((slug for slug, song in idx["songs"].items()
+                            if song.get("live_path") == live_path), None)
+            if not by_path:
+                # Bind a pre-path project once; never merge an already-bound copy.
+                by_path = next((slug for slug, song in idx["songs"].items()
+                                if not song.get("live_path") and song.get("name") == name
+                                and similarity(song.get("channels"), channels) >= .9), None)
+                if by_path:
+                    idx["songs"][by_path]["live_path"] = live_path
+                    _save(root, idx)
+            if by_path:
+                if idx.get("current") != by_path:
+                    idx["current"] = by_path
+                    _save(root, idx)
+                remember_channels(root, channels)
+                remember_live_name(root, name, channels)
+                return current(root)
+        if name:
+            by_name = next((slug for slug, song in idx["songs"].items()
+                            if song.get("name") == name and not song.get("live_path")), None)
+            if by_name:
+                if idx.get("current") != by_name or live_path:
+                    idx["current"] = by_name
+                    if live_path:
+                        idx["songs"][by_name]["live_path"] = live_path
+                    _save(root, idx)
+                remember_channels(root, channels)
+                return current(root)
+    # An unsaved or otherwise unnamed set is still a usable project.  Give it a
+    # stable, clear label until Live provides a filename.
+    slug = create(root, name or "Untitled Live set", channels=channels)
+    if live_path:
+        idx = load(root)
+        idx["songs"][slug]["live_path"] = live_path
+        _save(root, idx)
+    return current(root)
+
+
 def remember_channels(root: str, channels: list[str]) -> None:
     """The open set belongs to the current track: keep its channel names (tracks get added while mixing)."""
     idx = load(root)

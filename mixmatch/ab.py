@@ -27,6 +27,7 @@ def _device_ids(devices: list[dict]) -> list[str]:
 
 def snapshot(set_state: dict) -> dict:
     tracks = {}
+    displays = {}
     for t in set_state["tracks"]:
         tracks[t["key"]] = {
             "name": t["name"],
@@ -34,7 +35,10 @@ def snapshot(set_state: dict) -> dict:
             "devices": {i: {p["name"]: p["value"] for p in d["params"]}
                         for i, d in zip(_device_ids(t["devices"]), t["devices"])},
         }
-    return {"time": time.strftime("%Y-%m-%d %H:%M:%S"), "tracks": tracks}
+        displays[t["key"]] = {"Mixer": {p["name"]: p.get("display", str(p["value"])) for p in t["mixer"]},
+                              **{i: {p["name"]: p.get("display", str(p["value"])) for p in d["params"]}
+                                 for i, d in zip(_device_ids(t["devices"]), t["devices"])}}
+    return {"time": time.strftime("%Y-%m-%d %H:%M:%S"), "tracks": tracks, "display": displays}
 
 
 def save(set_state: dict, log_dir: str, stamp: str, which: str) -> str:

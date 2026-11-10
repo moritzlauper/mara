@@ -138,6 +138,7 @@ class Change:
     param: object
     old_value: float
     new: dict = field(default_factory=dict)
+    old_display: str = ""
 
 
 @dataclass
@@ -236,7 +237,7 @@ class Executor:
         if p.get("automated"):
             raise PermissionError(f"{key} {device} {name} is automated; MixMatch leaves automation alone")
         res = self.live.set(key, device, name, target=target, value=value)
-        rr.changes.append(Change(key, device, name, p["value"], res))
+        rr.changes.append(Change(key, device, name, p["value"], res, p.get("display", str(p["value"]))))
         self.last_set[(key, device, name)] = res["value"]
         p["value"], p["display"] = res["value"], res["display"]
         return res
