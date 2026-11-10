@@ -7,6 +7,47 @@ from mixmatch.display import parse_display
 from mixmatch.sim import demo_project
 
 
+def test_mara_playback_disables_metronome_even_when_already_playing():
+    song, _, _, live = demo_project()
+    song.metronome = True
+    live.transport()  # polling is read-only
+    assert live.get_set()["metronome"] is True
+    live.transport(play=True)
+    assert song.metronome is False
+    song.metronome = True
+    live.transport(play=True, time=16)
+    assert song.metronome is False
+    assert song.is_playing
+    assert song.current_song_time == 16
+
+
+def test_click_can_be_disabled_without_stopping_or_seeking_playback():
+    from types import SimpleNamespace
+    song, _, _, live = demo_project()
+    song.master_track.mixer_device.cue_volume = SimpleNamespace(value=0.75, min=0)
+    main = song.master_track.mixer_device.volume.value
+    song.is_playing = True
+    song.current_song_time = 32
+    song.metronome = True
+    live.transport(metronome=False)
+    assert song.metronome is False
+    assert live.get_set()["cue_volume"] == 0
+    assert song.master_track.mixer_device.volume.value == main
+    assert song.is_playing
+    assert song.current_song_time == 32
+
+
+def test_capture_disables_click_before_creating_recording_track(monkeypatch):
+    song, _, _, live = demo_project()
+    song.metronome = True
+    def create_track(index):
+        assert song.metronome is False
+        raise RuntimeError("capture boundary reached")
+    monkeypatch.setattr(song, "create_audio_track", create_track, raising=False)
+    with pytest.raises(Exception, match="capture boundary reached"):
+        live.request("capture_start", beats=16)
+
+
 def test_set_reports_ableton_document_name_and_supports_older_live():
     song, _, _, live = demo_project()
     assert live.get_set()["name"] == ""

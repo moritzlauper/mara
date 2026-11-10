@@ -209,8 +209,13 @@ def test_equal_loudness_needs_a_valid_pair_and_uses_perceived_level_not_peaks(tm
 def test_capture_positions_and_launches_atomically_without_global_quantization():
     from MixMatch.commands import Commands
     fired = []
-    song = NS(tracks=[], is_playing=True, current_song_time=123)
-    slot = NS(fire=lambda **kw: fired.append((song.is_playing, song.current_song_time, kw)))
+    cue = NS(value=.85, min=0)
+    song = NS(tracks=[], is_playing=True, current_song_time=123, metronome=True,
+              master_track=NS(mixer_device=NS(cue_volume=cue)))
+    def fire(**kw):
+        assert not song.metronome and cue.value == 0
+        fired.append((song.is_playing, song.current_song_time, kw))
+    slot = NS(fire=fire)
     track = NS(available_input_routing_types=[NS(display_name='Resampling')], clip_slots=[slot])
     song.create_audio_track = lambda index: song.tracks.append(track)
     result = Commands(song).capture_start({'beats': 64, 'start': 392})

@@ -232,6 +232,8 @@ class Commands:
             "file_path": getattr(self.song, "file_path", "") or "",
             "tempo": self.song.tempo,
             "is_playing": self.song.is_playing,
+            "metronome": bool(getattr(self.song, "metronome", False)),
+            "cue_volume": getattr(getattr(self.song.master_track.mixer_device, "cue_volume", None), "value", None),
             "song_time": self.song.current_song_time,
             "loop": {"on": self.song.loop, "start": self.song.loop_start, "length": self.song.loop_length},
             "cue_points": sorted(
@@ -518,6 +520,7 @@ class Commands:
         """New audio track recording the master («Resampling») or, with `source`, one track after its devices,
         into its first clip slot; monitoring off."""
         song = self.song
+        self._silence_click()
         source = self._track(req["source"]) if req.get("source") else None
         song.create_audio_track(-1)
         track = list(song.tracks)[-1]
@@ -592,7 +595,19 @@ class Commands:
         self.song.re_enable_automation()
         return {"ok": True}
 
+    def _silence_click(self):
+        # Cue bypasses Main: count-in and browser/clip previews may remain audible
+        # even with the metronome off. MARA monitors the mix through Main only.
+        self.song.metronome = False
+        cue = getattr(self.song.master_track.mixer_device, "cue_volume", None)
+        if cue is not None:
+            cue.value = cue.min
+
     def transport(self, req):
+        # Disable the click before MARA starts playback, including resumed runs.
+        # Read-only transport polling must not change Live's settings.
+        if req.get("play") is True or req.get("metronome") is False:
+            self._silence_click()
         # Live refuses a loop that reaches past the end of the song, also for a moment in between:
         # shorten first, then move the start, then set the final length.
         if "loop_length" in req:

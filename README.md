@@ -141,6 +141,8 @@ The dashboard displays reference distance and potential masking separately. Hist
 
 Runs started in the UI mute Live's output by default. **Unmute Current** lets you hear the working mix, including changes still being tested. **Before** plays the saved original. The original recording and running Live signal can be approximately loudness matched when the current measured passage matches the preview passage.
 
+MARA disables Live's metronome and turns Cue volume down before playback and recording, so the separate cue output stays silent too. These stay off afterwards; raise Cue volume in Live if you want to use its preview or cue listening again.
+
 **Pause** takes effect at the next safe checkpoint, which may be after a model response or measurement finishes. **Resume** continues from saved progress. Expand **More detail · measurements & decisions** for measurements and decisions, or **Activity & diagnostics** for the log. An updated project goal can guide the next planning step.
 
 ![Mix: channel processing, reference and masking curves, phase progress, listening controls, and Latest changes showing retained edits.](docs/images/04-mix.png)

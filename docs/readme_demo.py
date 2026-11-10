@@ -139,6 +139,11 @@ class Handler(BaseHTTPRequestHandler):
                 audio.writeframes(b"\0\0" * int(PREVIEW["seconds"] * 8000))
             return self.send(output.getvalue(), "audio/wav")
         path = (STATIC / url.path.removeprefix("/app/").lstrip("/")).resolve()
+        if path == STATIC / "app.js":
+            # The documentation links select a scene; the real app opens at Project & goal.
+            script = path.read_text().replace("if(!previous)show('project')",
+                                              "if(!previous)show(" + json.dumps(Handler.scene) + ")")
+            return self.send(script.encode(), "text/javascript")
         if path.is_relative_to(STATIC) and path.is_file():
             return self.send(path.read_bytes(), mimetypes.guess_type(path)[0] or "application/octet-stream")
         self.send({"error": "Not available in the documentation demo."}, code=404)
