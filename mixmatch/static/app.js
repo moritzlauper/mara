@@ -76,7 +76,11 @@ $('start').onclick=()=>action(async()=>{await api('/api/run',runBody({continue:!
 $('resume').onclick=()=>action(async()=>{await api('/api/run',runBody({continue:true}));pausedRequested=false;show('mix');});
 $('pause').onclick=()=>action(async()=>{await api('/api/stop',{});pausedRequested=true;message('Pausing at the next safe checkpoint. Any current test will be restored first.');});
 $('repair').onclick=()=>action(async()=>{await api('/api/preview/repair',{});message('Recording missing previews. The mix stays unchanged.');});
-$('new-run').onclick=()=>{show('project');message('Review your goal and references before starting another run.');};
+$('new-run').onclick=()=>$('new-run-dialog').showModal();
+$('cancel-new-run').onclick=()=>$('new-run-dialog').close();
+$('confirm-new-run').onclick=()=>{$('new-run-dialog').close();$('new-run-final-dialog').showModal();};
+$('cancel-new-run-final').onclick=()=>$('new-run-final-dialog').close();
+$('new-run-final').onclick=()=>{$('new-run-final-dialog').close();show('project');message('Review your goal and references before starting another run.');};
 function markup(id,html){const el=$(id);if(el.dataset.render!==html){el.innerHTML=html;el.dataset.render=html;}}
 function phaseOf(phase=''){phase=phase.toLowerCase();return phase.startsWith('final')?'final':phase.startsWith('channel')?'channels':phase.startsWith('effect')?'effects':phase.startsWith('master')?'master':'setup';}
 function renderReferences(s){
@@ -129,8 +133,11 @@ function renderChanges(s){const r=s.review || {},list=changeTab==='kept'?r.kept 
  markup('changes',[...groups].map(([name,items])=>`<details class="change"><summary>${esc(name)}<small>${items.length} ${items.length===1?'change':'changes'} · ${esc(items.map(x=>x.kind==='added'?`Added device · ${(x.settings || []).length} recorded settings`:x.param).join(', '))}</small></summary><div class="change-body"><div class="diff heading"><span>Parameter</span><span>Before</span><span>After</span></div>${items.map(i=>`<div class="diff"><span>${esc(i.param)}</span><span>${esc(i.before)}</span><span>${esc(i.after)}</span></div>${(i.settings || []).map(p=>`<div class="diff"><span>${esc(p.param)}</span><span>New device</span><span>${esc(p.value)}</span></div>`).join('')}<dl class="proof"><dt>Why</dt><dd>${esc(i.reason)}</dd><dt>Check</dt><dd>${esc(i.verification || 'Saved in the final snapshot. No detailed verification recorded.')}${i.section?'<br>'+esc(i.section):''}</dd></dl>`).join('')}</div></details>`).join('') || `<p class="muted">${r.ready?'No net parameter changes in this selection.':'Changes appear when an end snapshot is saved.'}</p>`);
 }
 $('kept').onclick=()=>{changeTab='kept';$('kept').setAttribute('aria-pressed','true');$('rejected').setAttribute('aria-pressed','false');renderChanges(state);};$('rejected').onclick=()=>{changeTab='rejected';$('kept').setAttribute('aria-pressed','false');$('rejected').setAttribute('aria-pressed','true');renderChanges(state);};$('channel-filter').onchange=()=>renderChanges(state);
-$('restore').onclick=()=>action(async()=>{const r=await api('/api/restore/plan',{});restoreToken=r.token;$('restore-description').textContent=`Restore ${r.count} parameter settings to the original snapshot?`;$('restore-dialog').showModal();});$('cancel-restore').onclick=()=>$('restore-dialog').close();
-$('confirm-restore').onclick=()=>action(async()=>{await api('/api/restore',{token:restoreToken});$('restore-dialog').close();message('Original settings restored in Live.');});
+$('restore').onclick=()=>action(async()=>{const r=await api('/api/restore/plan',{});restoreToken=r.token;$('restore-description').textContent=`Restore ${r.count} parameter settings to the original snapshot?`;$('restore-dialog').showModal();});
+$('cancel-restore').onclick=()=>$('restore-dialog').close();
+$('confirm-restore').onclick=()=>{$('restore-dialog').close();$('restore-final-dialog').showModal();};
+$('cancel-restore-final').onclick=()=>$('restore-final-dialog').close();
+$('restore-final').onclick=()=>action(async()=>{await api('/api/restore',{token:restoreToken});$('restore-final-dialog').close();message('Original settings restored in Live.');});
 function timeLeft(progress,active){if(!active)return '';const minutes=progress?.eta_minutes;if(!minutes)return 'estimating time…';return minutes>=60?`about ${Math.floor(minutes/60)} h ${minutes%60} min left`:`about ${minutes} min left`;}
 
 function isConnectedProject(s){return !!s.open_set && s.following_live!==false;}
