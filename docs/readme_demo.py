@@ -123,7 +123,7 @@ class Handler(BaseHTTPRequestHandler):
         if url.path in {"/", "/workflow"}:
             scene = parse_qs(url.query).get("demo", ["project"])[0]
             Handler.scene = scene if scene in SCENES else "project"
-            html = (STATIC / "app.html").read_text()
+            html = (STATIC / "app.html").read_text().replace("<body>", f'<body data-demo-stage="{Handler.scene}">')
             html = html.replace('<span id="connection"', '<span class="badge">DEMO DATA</span><span id="connection"', 1)
             if Handler.scene == "analysis":
                 html = html.replace('id="roles-details"', 'id="roles-details" open', 1)

@@ -207,7 +207,7 @@ function render(s){const w=s.workflow || {},status=w.status || 'idle',live=s.ope
 let refreshing=false,followingStage;
 async function refresh(){if(refreshing)return;refreshing=true;try{const s=await api('/api/state');state=s;
  if(projectId!==s.project_id){projectId=s.project_id;dirty=false;rolesDirty=false;rolesRevision=undefined;workflowKey=undefined;reviewHash='';audioId='';baseAudio='';hiddenAudio=false;referencePlayer.pause();$('reference-player-box').hidden=true;player.pause();player.removeAttribute('src');player.load();monitorPlayer.pause();monitorPlayer.removeAttribute('src');monitorPlayer.dataset.source='';monitorPlayer.load();$('monitor-preview').hidden=true;}
- const key=[s.project_id,s.workflow?.id,s.workflow?.status].join('|');if(key!==workflowKey){const previous=workflowKey;workflowKey=key;const next=s.workflow?.stage || 'project';if(!previous || stage===followingStage)show(next);followingStage=next;}
+ const key=[s.project_id,s.workflow?.id,s.workflow?.status].join('|');if(key!==workflowKey){const previous=workflowKey;workflowKey=key;const next=s.workflow?.stage || 'project';if(!previous)show(document.body.dataset.demoStage || 'project');else if(stage===followingStage)show(next);followingStage=next;}
  render(s);await loadRoles(s);
  }catch(e){$('connection').textContent='Connection interrupted';$('connection').classList.remove('connected');message(e.message,true);}finally{refreshing=false;}}
 api('/api/setup').then(r=>{$('library-path').value=r.library;setupPlanner(r.planner_settings);}).catch(e=>message(e.message,true));show('project');refresh();setInterval(refresh,1500);

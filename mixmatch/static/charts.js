@@ -25,7 +25,7 @@ export function analysisFeedback(s, now=Date.now()/1000) {
  return {running,review,held,remaining,title,detail:review?(held?'Reviewing instrument roles':remaining===null?'Preparing to continue…':`Mixing starts automatically in ${remaining}s`):text,hint,elapsed:duration,
   progress:measured && !review?Math.max(0,Math.min(100,100*activity.current/activity.total)):null,
   counter:measured && !review?`${activity.current} / ${activity.total} bars`:'',
-  next:w.kind==='analysis'?'Next: choose references, then start the mix.':'Next: review roles for 30 seconds, then mixing continues automatically.'};
+  next:w.resumed?'Next: continue the saved mixing pass.':w.kind==='analysis'?'Next: choose references, then start the mix.':'Next: review roles for 30 seconds, then mixing continues automatically.'};
 }
 
 export function emptyMeasurements(s) {
