@@ -52,7 +52,7 @@ class Settings:
     stall_rounds: int = 4         # stop a section after this many rounds without improvement
     min_gain: float = 0.05        # a round must improve the objective by at least this much
     assist: bool = False          # ask before applying
-    mode: str = "auto"            # beat | song | auto (beat if no vocal channel can be heard)
+    mode: str = "auto"            # beat (future vocals) | instrumental | song | auto
     loudness_from: str = "full"   # kept for old callers; the target always comes from the full references
     roles_file: str = "roles.json"
     log_dir: str = "runs"
@@ -256,7 +256,8 @@ class Agent:
         self.beat = self.s.mode == "beat" or (self.s.mode == "auto" and not has_vocals)
         mode_reason = ("selected explicitly" if self.s.mode != "auto" else
                        "no audible vocals; muted channels do not count" if self.beat else "audible vocals")
-        self.log(f"Mode: {'beat' if self.beat else 'song'} ({mode_reason})")
+        mode_name = "instrumental" if self.s.mode == "instrumental" else "beat" if self.beat else "song"
+        self.log(f"Mode: {mode_name} ({mode_reason})")
         if self.refset:
             self.target = self.refset.target(self.beat, self.s.loudness_from)
             self.log(f"Target: {self.target.description}, {self.target.loudness:.1f} LUFS")
@@ -653,7 +654,7 @@ class Agent:
         if self.target:
             target = self.target
             vocals = [k for k, r in self.roles.items() if r.role in VOCAL_ROLES]
-            if not self.beat and vocals and all(tracks.get(k) is None for k in vocals) and self.refset:
+            if self.s.mode != "instrumental" and not self.beat and vocals and all(tracks.get(k) is None for k in vocals) and self.refset:
                 # No vocals in this part: like a beat, the vocal range only counts where the mix is louder.
                 if self.target_no_vocals is None:
                     self.target_no_vocals = self.refset.target(True, self.s.loudness_from)
@@ -808,7 +809,11 @@ class Agent:
         ctx = {
             "mix_diagnosis": mix_quality.diagnosis(m, channels),
             "section": section,
-            "mode": ("beat without vocals, vocals may be recorded later: the target is the full reference songs. "
+            "mode": ("finished instrumental: no space reserved for future vocals. Use the full reference balance "
+                     "without the beat-mode vocal-range allowance. Let instruments carry the musical foreground; "
+                     "do not carve a vocal pocket or imitate absent reference vocals with boosts. Preserve intentional "
+                     "arrangement differences and change only what improves this mix.") if self.s.mode == "instrumental" else (
+                     "beat without vocals, vocals may be recorded later: the target is the full reference songs. "
                      "Low end, air above 5 kHz, width and dynamics use them as direction, respecting this arrangement; in 200 Hz–5 kHz the beat may sit "
                      "up to 4 dB under the song (room for a vocal), which the tonal numbers already account for. "
                      "The beat must sound complete on its own: remove harshness and resonances where they stick out, "
@@ -1376,7 +1381,7 @@ class Agent:
         return m
 
     def quality_key(self, m: dict, scoring: str) -> str:
-        return json.dumps([self.loop, scoring, self.beat,
+        return json.dumps([self.loop, scoring, "instrumental" if self.s.mode == "instrumental" else self.beat,
                            m["ref"].summary() if m.get("ref") and m.get("cmp") else None], sort_keys=True)
 
     def section(self, name: str, deadline: float, focus: str | None = None, max_rounds: int | None = None,

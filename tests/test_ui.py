@@ -28,6 +28,7 @@ def test_parse_log():
     assert s["key"].startswith("Ebm") and s["effects"] and s["done"].startswith("Done.")
     assert s["explain"]["masking"] == "Kick ↔ Sub at 40 Hz"
     assert [e["kind"] for e in s["events"]][:4] == ["phase", "section", "round", "action"]
+    assert parse_log(['Mode: instrumental (selected explicitly)'])['mode'] == 'instrumental'
 
 
 def test_measurements_do_not_compare_different_channels_or_resumed_baselines():
@@ -401,8 +402,11 @@ def test_reference_choice_is_required_and_search_only_prepares(tmp_path, monkeyp
         assert (shared / "chosen.wav").exists()
         assert (workdir / "references" / "chosen.wav").read_bytes() == b"test audio"
         (workdir / "runs" / "checkpoint.json").write_text(json.dumps({"phase": "references", "complete": False}))
-        call("/api/run", {"reference_mode": "selected", "continue": True})
+        assert call('/api/project', {'mode': 'instrumental', 'description': 'Finished beat'})['mode'] == 'instrumental'
+        assert call('/api/state')['project']['mode'] == 'instrumental'
+        call("/api/run", {"reference_mode": "selected", "continue": True, "mode": "instrumental"})
         args = starts[-1]
+        assert args[args.index('--mode') + 1] == 'instrumental'
         assert all(f in args for f in ("--no-auto-ref", "--no-suggest", "--replace-references", "--continue", "--quick"))
         assert "--auto-ref" not in args and "--review-references" not in args
     finally:

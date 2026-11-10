@@ -392,7 +392,7 @@ def parse_log(lines: list[str]) -> dict:
             if match:
                 state["target_lufs"] = float(match[1])
         elif s.startswith("Mode:"):
-            state["mode"] = "beat" if s.startswith("Mode: beat") else "song"
+            state["mode"] = "instrumental" if s.startswith("Mode: instrumental") else "beat" if s.startswith("Mode: beat") else "song"
         elif "treating it as a beat (no vocals)" in s:
             state["mode"] = "beat"
         elif s == "Traceback (most recent call last):":
@@ -1145,7 +1145,7 @@ def make_handler(runner: Runner, watcher: "DownloadWatcher | None" = None, live_
                             args += ["--ref", "references/"]
                         args += ["--no-auto-ref", "--no-suggest", "--replace-references"]
                     ck = checkpoint(runner.workdir) if body.get("continue") else None
-                    if body.get("mode") in ("auto", "beat", "song"):
+                    if body.get("mode") in ("auto", "beat", "instrumental", "song"):
                         args += ["--mode", body["mode"]]
                     if body.get("quick") or (ck and not ck["complete"]):
                         args += ["--quick"]
@@ -1269,7 +1269,7 @@ def make_handler(runner: Runner, watcher: "DownloadWatcher | None" = None, live_
                     path = os.path.join(selected_folder(), project.PATH)
                     data = project.load(path)
                     data["description"] = str(body.get("description", "")).strip()
-                    if not runner.running() and body.get("mode") in ("auto", "beat", "song"):
+                    if not runner.running() and body.get("mode") in ("auto", "beat", "instrumental", "song"):
                         data["mode"] = body["mode"]
                     project.save(data, path)
                     from . import workflow
@@ -1939,7 +1939,7 @@ async function tick() {
   $("phase").textContent = choosing && !s.active ? "Song scan saved · waiting for your reference choice" : phaseText(s.phase);
   $("mix_mode").hidden = !s.mode;
   $("mix_mode").textContent = s.mode === "beat" ? "Beat mode · muted vocal tracks are excluded."
-    : "Song mode · full reference balance.";
+    : s.mode === "instrumental" ? "Instrumental mode · no space reserved for vocals." : "Song mode · full reference balance.";
   if (s.roles_revision !== lastRolesRevision && !rolesEdited && await loadRoles()) lastRolesRevision = s.roles_revision;
   tracks(s); usedRefs(s); const { ready } = steps(s);
   $("start").disabled = s.active || !ready; $("cont").disabled = s.active || !ready || !refs;

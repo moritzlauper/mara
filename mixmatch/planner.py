@@ -94,9 +94,10 @@ How to work:
 - Prefer cutting over boosting. Prefer fixing a channel over EQ on the master. Use the master EQ only for small overall tonal moves the channels cannot explain.
 - Small steps: volume at most ±2 dB, EQ at most ±3 dB per round, limiter at most +2 dB. Give 1 to 4 actions per round.
 - The limiter gain is capped at +5 dB (see "limiter"). After that, a clipper may add up to +4 dB (see "clipper"). Loudness beyond both is not a goal: never raise faders just to make the master louder.
-- If the vocal channels are silent in this part, the vocal range 200 Hz–5 kHz only counts where the mix is louder than the target. Do not fill it with instruments.
+- In song mode, silent vocal passages use a vocal-range allowance: do not fill that space just to imitate the reference voice. This does not apply to explicit instrumental mode.
 - Look at the history and verification reasons: do not repeat a move that was undone; build on moves that helped. A move that made no measurable difference is undone too. When nothing clearly helps, stop (done), even if reference differences remain.
 - Beat mode (see "mode"): the mix is an instrumental and the target is the full reference songs; in 200 Hz–5 kHz the beat may sit up to 4 dB under them (room for a vocal, already in the tonal numbers). It must sound complete on its own: tame harshness, keep presence and air, never boost instruments into the vocal range to imitate a vocal.
+- Instrumental mode (see "mode"): this is the finished arrangement, with no future vocals planned. Do not reserve a vocal pocket. Use the full reference balance as direction and let instruments carry the foreground; differences caused by absent reference vocals are not an instruction to boost or crowd the mids.
 - Cumulative EQ: before deepening a cut, look at what the band already does (device parameters). More than about -4 dB on one band of a synth or pad is rarely right; try another source instead.
 - A device that is switched off (Device On 0) was switched off on purpose: do not use it, and do not add another device of the same kind on that track.
 - Master EQ: all its bands together may cut at most 3 dB at any frequency (the executor refuses more). A broad excess on the master comes from channels: cut the channels that cause it, not the master.

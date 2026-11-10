@@ -60,7 +60,8 @@ def test_muted_vocals_do_not_select_song_mode_or_get_channel_work(tmp_path, mute
 
 
 @pytest.mark.parametrize("mode,muted,expected", [("auto", True, True), ("auto", False, False),
-                                                ("song", True, False), ("beat", False, True)])
+                                                ("song", True, False), ("beat", False, True),
+                                                ("instrumental", True, False), ("instrumental", False, False)])
 def test_resume_rechecks_vocal_mutes_and_respects_explicit_mode(tmp_path, mode, muted, expected):
     song, hub, env, live = demo_project()
     next(t for t in song.tracks if t.name == "Lead Vox").mute = muted
@@ -70,6 +71,34 @@ def test_resume_rechecks_vocal_mutes_and_respects_explicit_mode(tmp_path, mode, 
     agent.understand()
     agent._resume_from({"regions": {}, "phase": "channels", "beat": True, "silent_vocals": []})
     assert agent.beat is expected
+
+
+def test_instrumental_keeps_full_reference_balance_even_with_silent_vocal_tracks(tmp_path):
+    import numpy as np
+    from mixmatch.analysis import Stats
+    from mixmatch.reference import Reference, ReferenceSet
+    song, hub, env, live = demo_project()
+    next(t for t in song.tracks if t.name == 'Lead Vox').mute = True
+    env.wait(2)
+    refs = ReferenceSet.__new__(ReferenceSet)
+    refs.refs = [Reference('test.wav', full=Stats(80, -12, np.full(31, -30.),
+                            np.full(31, -18.), -2, 10, -10, -30, 1), seconds=200)]
+    logs = []
+    agent = Agent(live, hub, RulePlanner(), Settings(mode='instrumental', settle=1,
+                  roles_file=str(tmp_path / 'roles.json')), references=refs, env=env, log=logs.append)
+    agent.understand()
+    assert not agent.beat and agent.target.offset is None
+    agent.play_loop(0, 16)
+    m = agent.measure()
+    assert agent.target_no_vocals is None
+    assert 'no space reserved for future vocals' in agent.context('master', m)['mode']
+    assert any(line.startswith('Mode: instrumental') for line in logs)
+    key = agent.quality_key(m, 'full')
+    agent.s.mode = 'song'
+    assert agent.quality_key(m, 'full') != key
+    agent.measure()
+    assert agent.target_no_vocals.offset is not None  # song still protects a silent vocal passage
+    assert refs.target(True).offset is not None      # beat still reserves space for future vocals
 
 
 def test_corrected_roles_are_revisited_and_the_queue_survives_another_stop(tmp_path, monkeypatch):

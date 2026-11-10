@@ -99,7 +99,7 @@ The screenshots use **Night Drive**, a fictional instrumental drum-and-bass proj
 
 ### 01 · Project & goal: define the processing objective
 
-Check the Live connection and tap count. Under **Project mode**, choose automatic detection, **Beat**, or **Song with vocals**.
+Check the Live connection and tap count. Under **Project mode**, choose automatic detection, **Beat · leave room for vocals**, **Instrumental · no space reserved for vocals**, or **Song with vocals**. Choose Instrumental for a finished beat without planned vocals: MARA uses the full reference balance without reserving a vocal pocket. Reference vocals still do not need to be imitated by boosting instruments.
 
 Use **What matters to you?** to specify the desired changes and properties to preserve. For example: “Reduce kick/sub overlap; preserve the Rhodes tonal balance and drum transients; reserve space for later vocals.” This description becomes part of the planner context. Click **Save & choose references →**.
 

@@ -61,7 +61,7 @@ def cmd_refs(args):
     refset = _refset(args)
     if not refset:
         sys.exit("Give reference files: mixmatch refs a.wav b.mp3")
-    for beat in ([True] if args.mode == "beat" else [False] if args.mode == "song" else [False, True]):
+    for beat in ([True] if args.mode == "beat" else [False] if args.mode in ("song", "instrumental") else [False, True]):
         t = refset.target(beat, args.loudness_from)
         print(f"\n{'Beat' if beat else 'Song'} target: {t.description}")
         print(f"  loudness {t.loudness:.1f} LUFS, PLR {t.stats.plr:.1f} dB, width {t.stats.width_db:.1f} dB")
@@ -349,8 +349,8 @@ def main(argv=None):
         s.set_defaults(fn=fn)
         s.add_argument("ref_files", nargs="*", help=argparse.SUPPRESS)
         s.add_argument("--ref", action="append", default=[], help="reference file or folder, repeatable")
-        s.add_argument("--mode", choices=["auto", "beat", "song"], default="auto",
-                       help="beat: no vocals in your mix, references are compared without theirs")
+        s.add_argument("--mode", choices=["auto", "beat", "instrumental", "song"], default="auto",
+                       help="beat: reserve room for future vocals; instrumental: finished mix without reserved vocal space; song: with vocals")
         s.add_argument("--loudness-from", choices=["full", "instrumental"], default="full",
                        help="beat mode: loudness target from the full songs (default) or their instrumentals")
         s.add_argument("--roles", default="roles.json", help="file with channel roles (written on first start)")
