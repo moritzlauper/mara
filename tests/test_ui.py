@@ -30,6 +30,43 @@ def test_parse_log():
     assert [e["kind"] for e in s["events"]][:4] == ["phase", "section", "round", "action"]
 
 
+def test_restarted_ui_can_pause_its_existing_run(tmp_path):
+    import subprocess
+    import sys
+    from mixmatch.ui import _AttachedProcess
+
+    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"],
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        folder = tmp_path / "runs"
+        folder.mkdir()
+        log_path = str(folder / "ui-test.log")
+        (folder / "ui-process.json").write_text(json.dumps({
+            "pid": child.pid, "identity": _AttachedProcess.identify(child.pid), "log_path": log_path}))
+        runner = Runner(str(tmp_path))
+        assert runner.running()
+        assert runner.latest_log() == log_path
+        runner.stop()
+        child.wait(timeout=5)
+        assert not runner.running()
+    finally:
+        if child.poll() is None:
+            child.kill()
+        child.wait()
+
+
+def test_ui_does_not_signal_a_reused_pid(tmp_path, monkeypatch):
+    from mixmatch.ui import _AttachedProcess
+
+    monkeypatch.setattr(_AttachedProcess, "identify", staticmethod(lambda pid: "different process"))
+    signals = []
+    monkeypatch.setattr("mixmatch.ui.os.kill", lambda *args: signals.append(args))
+    proc = _AttachedProcess(123, "old MARA process")
+    proc.terminate()
+    assert proc.poll() == 0
+    assert signals == []
+
+
 def test_ui_mode_follows_the_resumed_run_and_whole_song_silence():
     lines = ["Taps: 34 channels", "Mode: song with vocals", "Taps: 34 channels"]
     assert parse_log(lines)["mode"] is None

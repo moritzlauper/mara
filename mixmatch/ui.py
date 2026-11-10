@@ -64,14 +64,60 @@ def duration_s(path: str) -> float:
     return info.frames / info.samplerate
 
 
+class _AttachedProcess:
+    """Control our existing run after the UI restarts, checking against PID reuse."""
+
+    def __init__(self, pid: int, identity: str):
+        self.pid, self.identity = pid, identity
+
+    @staticmethod
+    def identify(pid: int) -> str:
+        result = subprocess.run(["ps", "-p", str(pid), "-o", "lstart=", "-o", "command="],
+                                capture_output=True, text=True, timeout=3)
+        return result.stdout.strip() if result.returncode == 0 else ""
+
+    def poll(self):
+        return None if self.identity and self.identify(self.pid) == self.identity else 0
+
+    def send_signal(self, sig):
+        if self.poll() is None:
+            try:
+                os.kill(self.pid, sig)
+            except ProcessLookupError:
+                pass
+
+    def terminate(self):
+        self.send_signal(signal.SIGTERM)
+
+    def wait(self, timeout):
+        deadline = time.monotonic() + timeout
+        while self.poll() is None:
+            if time.monotonic() >= deadline:
+                raise subprocess.TimeoutExpired("attached MARA run", timeout)
+            time.sleep(0.1)
+        return 0
+
+
 class Runner:
     """The one `mixmatch` child process the interface may start, and its log file."""
 
     def __init__(self, root: str):
         self.root = root
-        self.proc: subprocess.Popen | None = None
+        self.proc: subprocess.Popen | _AttachedProcess | None = None
         self.log_path: str | None = None
         self.lock = threading.Lock()
+        try:
+            with open(self.process_file) as f:
+                saved = json.load(f)
+            proc = _AttachedProcess(int(saved["pid"]), saved["identity"])
+            if proc.poll() is None:
+                self.proc, self.log_path = proc, saved["log_path"]
+        except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError):
+            pass
+
+    @property
+    def process_file(self) -> str:
+        return os.path.join(self.workdir, "runs", "ui-process.json")
 
     @property
     def workdir(self) -> str:
@@ -95,6 +141,13 @@ class Runner:
             env = {**os.environ, "PYTHONUNBUFFERED": "1"}
             self.proc = subprocess.Popen([sys.executable, "-m", "mixmatch.cli", *args], cwd=self.workdir,
                                          stdout=log, stderr=subprocess.STDOUT, env=env)
+            try:
+                identity = _AttachedProcess.identify(self.proc.pid)
+                with open(self.process_file + ".tmp", "w") as f:
+                    json.dump({"pid": self.proc.pid, "identity": identity, "log_path": self.log_path}, f)
+                os.replace(self.process_file + ".tmp", self.process_file)
+            except (OSError, subprocess.SubprocessError):
+                pass  # The original UI still owns and controls the child.
             return self.log_path
 
     def stop(self) -> None:
