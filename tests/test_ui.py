@@ -457,3 +457,56 @@ def test_a_stopped_or_crashed_run_is_not_running_any_more():
     crashed = parse_log(["Taps: 3 channels, 0 reference(s)", 'progress {"done": 0, "total": 19, "t": 1, "step": "scan"}',
                          "Traceback (most recent call last):", "KeyError: 'x'"])
     assert crashed["done"]
+
+
+def test_remove_mara_devices_preserves_result_and_checks_live_project(tmp_path, monkeypatch):
+    import pytest
+    import mixmatch.ui as ui
+    from mixmatch import songs, workflow, live_client
+    from mixmatch.cli import TAP
+    from mixmatch.sim import demo_project
+
+    song, hub, env, live = demo_project()
+    slug = songs.create(str(tmp_path), 'Song')
+    path = str(tmp_path / 'Song.als')
+    idx = songs.load(str(tmp_path))
+    idx['songs'][slug]['live_path'] = path
+    songs._save(str(tmp_path), idx)
+    folder = str(tmp_path / 'songs' / slug / 'runs')
+    original = workflow.write(folder, {'status': 'finished', 'mix_complete': True, 'quality_check': {'schema': 1}})
+    live.load_device('t0', TAP, source='user_library')
+    live.load_device('m', TAP, source='user_library')
+    get_set = live.get_set
+    opened = [str(tmp_path / 'Other.als')]
+    monkeypatch.setattr(live, 'get_set', lambda: {**get_set(), 'file_path': opened[0]})
+    monkeypatch.setattr(live, 'connect', lambda: live, raising=False)
+    monkeypatch.setattr(live, 'close', lambda: None, raising=False)
+    monkeypatch.setattr(live_client, 'LiveClient', lambda **kw: live)
+    busy = [False]
+    monkeypatch.setattr(ui, 'run_process_alive', lambda: busy[0])
+    runner = Runner(str(tmp_path))
+    monkeypatch.setattr(runner, 'start', lambda *_: pytest.fail('Cleanup must not launch a new run'))
+    server = ThreadingHTTPServer(('127.0.0.1', 0), make_handler(runner, live_set_fn=lambda: None))
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    def remove(project=slug):
+        req = urllib.request.Request(f'http://127.0.0.1:{server.server_address[1]}/api/taps/remove',
+                                     data=json.dumps({'project_id': project}).encode(),
+                                     headers={'Content-Type': 'application/json'})
+        try:
+            return json.load(urllib.request.urlopen(req))
+        except urllib.error.HTTPError as e:
+            return json.load(e)
+    taps = lambda: sum(d['name'] == TAP for t in get_set()['tracks'] for d in t['devices'])
+    try:
+        assert 'error' in remove() and taps() == 2
+        opened[0] = path
+        assert 'error' in remove('stale-project') and taps() == 2
+        busy[0] = True
+        assert 'error' in remove() and taps() == 2
+        busy[0] = False
+        assert remove() == {'removed': 2} and taps() == 0
+        assert remove() == {'removed': 0}
+        assert workflow.read(folder) == original
+        assert runner.log_path is None
+    finally:
+        server.shutdown()

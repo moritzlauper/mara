@@ -1227,7 +1227,28 @@ def make_handler(runner: Runner, watcher: "DownloadWatcher | None" = None, live_
                 if self.path == "/api/taps":
                     return self._send(200, {"log": runner.start(["taps"])})
                 if self.path == "/api/taps/remove":
-                    return self._send(200, {"log": runner.start(["taps", "--remove"])})
+                    from .cli import TAP, remove_taps
+                    from .live_client import LiveClient
+                    from .live_identity import matches_project
+                    if pinned_project is not None:
+                        raise ValueError("Switch to the current Live project before removing MARA devices.")
+                    with runner.lock, ab_lock:
+                        if runner.running() or run_process_alive():
+                            raise ValueError("Wait until the current operation has finished before removing MARA devices.")
+                        project = songs.current(runner.root) or {}
+                        if body.get("project_id") is not None and body["project_id"] != project.get("slug"):
+                            raise ValueError("The selected project changed. Try again in the current project.")
+                        live = LiveClient(timeout=10).connect()
+                        try:
+                            if not matches_project(live.get_set(), project):
+                                raise ValueError("Open this project's Live set before removing MARA devices.")
+                            removed = remove_taps(live, log=lambda *_: None)
+                            if any(d["name"] == TAP for t in live.get_set()["tracks"] for d in t["devices"]):
+                                raise RuntimeError("Some MARA measurement devices remain. Try removing them again.")
+                            open_set.at = 0
+                            return self._send(200, {"removed": removed})
+                        finally:
+                            live.close()
                 if self.path == "/api/stop":
                     runner.stop()
                     return self._send(200, {"ok": True})

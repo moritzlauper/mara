@@ -93,7 +93,7 @@ def add_taps(live, log=print, replace: bool = False) -> int:
 
 
 def remove_taps(live, log=print) -> int:
-    """Takes every MixMatch tap out of the set (the set is as it was before MixMatch)."""
+    """Remove measurement taps only; preserve mix processing and parameter changes."""
     removed = 0
     for t in live.get_set()["tracks"]:
         for d in sorted((d for d in t["devices"] if d["name"] == TAP), key=lambda d: -d["index"]):

@@ -225,12 +225,17 @@ def test_taps_sleep_between_runs_and_can_be_removed():
     song, hub, env, live = demo_project()
     live.load_device("t0", TAP, source="user_library")
     live.load_device("t1", TAP, source="user_library")
+    processing = lambda: [(t['key'], d) for t in live.get_set()['tracks'] for d in t['devices']
+                          if d['name'] != TAP]
+    before = processing()
     taps = lambda: [d for t in live.get_set()["tracks"] for d in t["devices"] if d["name"] == TAP]
     on = lambda: [next(p["value"] for p in d["params"] if p["name"] == "Device On") for d in taps()]
     assert set_taps_on(live, False) == 2 and on() == [0.0, 0.0]
     assert set_taps_on(live, False) == 0                     # already asleep: nothing to do
     assert set_taps_on(live, True) == 2 and on() == [1.0, 1.0]
     assert remove_taps(live, log=lambda *_: None) == 2 and not taps()
+    assert processing() == before
+    assert remove_taps(live, log=lambda *_: None) == 0
 
 
 def test_a_run_started_with_sigint_ignored_still_stops_in_order(tmp_path):
