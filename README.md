@@ -1,5 +1,13 @@
 # MARA · Reference-guided mixing for Ableton Live
 
+## Download & install
+
+**[Download MARA from GitHub Releases](https://github.com/moritzlauper/mara/releases)** — this is the recommended way to install MARA.
+
+Choose the release download for your operating system, install it, and open **MARA**. The desktop app starts the local engine and opens the guided workflow. Then follow [Configure the Ableton connection](#2-configure-the-ableton-connection) to connect your Live set. Ableton Live with **Max for Live** is required.
+
+Running from source is an alternative for developers; most users should use the release download.
+
 **MARA is a measurement-driven mixing assistant for Ableton Live.** It combines per-channel audio measurements, reference profiles, and project metadata to plan and execute incremental changes to an open Live set. Each round is evaluated against its stated objective and passage-specific constraints; rejected parameter changes are rolled back.
 
 **MARA directly edits effect parameters across the Live set:** audio and MIDI tracks, groups, returns, and Main. It operates existing devices and can load additional native effects or installed plugins through Live's browser. Control extends to the parameters Live exposes; the current addressing model covers top-level devices and rack macros. Accepted changes remain editable in Live. See [Device and parameter actions](#device-and-parameter-actions) for the integration boundaries.
@@ -40,9 +48,12 @@ The **graphical interface is the primary workflow**. It provides connection setu
 
 ### 1. Open MARA
 
-If you already have a built MARA desktop app, open it. It starts the local engine and opens the guided workflow.
+**Download and install MARA from [GitHub Releases](https://github.com/moritzlauper/mara/releases), then open the app.** This is the recommended installation path. MARA starts the local engine and opens the guided workflow; continue with [the Ableton connection](#2-configure-the-ableton-connection).
 
-To run from this repository, you need Python 3.10 or newer and Ableton Live with **Max for Live**. From the project directory:
+<details>
+<summary>For developers: run from source</summary>
+
+To run from this repository instead, you need Python 3.10 or newer and Ableton Live with **Max for Live**. From the project directory:
 
 ```bash
 python3 -m venv .venv
@@ -54,6 +65,8 @@ mixmatch ui
 On Windows, activate the environment in PowerShell with `.venv\Scripts\Activate.ps1`.
 
 Then open **[http://127.0.0.1:8765/workflow](http://127.0.0.1:8765/workflow)**. This is the five-step interface documented below. Currently, `mixmatch ui` initially opens the older overview at `/`; the desktop app opens `/workflow` directly.
+
+</details>
 
 ### 2. Configure the Ableton connection
 
