@@ -80,17 +80,19 @@ def changes(folder: str) -> dict:
             if a is None or b is None:
                 settings = []
                 meta = {}
+                changed_at = None
                 if a is None:
                     for param, value in (b or {}).items():
                         proof = evidence.get((key, device, param))
                         if proof:
                             meta = proof
+                            changed_at = max(changed_at or 0, proof.get("at") or 0)
                             settings.append({'param': param, 'value': after.get('display', {}).get(key, {}).get(device, {}).get(param)
                                              or proof.get('new_display') or f'{value:.5g} (Live value)'})
                 kept.append({"track": key, "channel": old["name"], "device": device, "param": "Device",
                              "before": "Present" if a is not None else "Not present", "after": "Present" if b is not None else "Removed",
                              "kind": "added" if a is None else "removed", "reason": meta.get('reason') or "The device chain changed.",
-                             "verification": meta.get('verification'), 'section': meta.get('section'), 'settings': settings})
+                             "verification": meta.get('verification'), 'section': meta.get('section'), 'settings': settings, 'at': changed_at})
                 continue
             for param in sorted(set(a) & set(b)):
                 if abs(a[param] - b[param]) < 1e-6:
@@ -103,7 +105,7 @@ def changes(folder: str) -> dict:
                              "after": display_after or meta.get("new_display") or f"{b[param]:.5g} (Live value)",
                              "raw_before": a[param], "raw_after": b[param], "kind": "parameter",
                              "reason": meta.get("reason") or "Changed in the saved result. This earlier run has no detailed decision journal for this parameter.",
-                             "verification": meta.get("verification"), "section": meta.get("section")})
+                             "verification": meta.get("verification"), "section": meta.get("section"), "at": meta.get("at")})
     rejected = [r for r in records if r.get("status") == "rejected"]
     return {"ready": True, "kept": kept, "rejected": rejected, "before": Path(before_path).name, "after": Path(pair[1]).name if pair else None, "partial": partial,
             "channels": len({item["channel"] for item in kept}), "legacy": not bool(records)}

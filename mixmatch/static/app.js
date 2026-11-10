@@ -89,6 +89,13 @@ function renderAudio(s){const versions=s.previews || {},both=versions.before && 
  const p=versions[selected];$('audio-context').textContent=p?`${hiddenAudio?'Blind preview':selected==='before'?'Before':'After'} · ${p.bars} bars from bar ${p.start_bar}. `+(both?(s.loudness_match?.ready && $('equal').checked?'Matched listening level · original dynamics preserved.':'Original listening levels.'):'After is available when the run finishes.'):'No audio preview yet. Analyse your mix to record the original.';
  player.hidden=!p;
 }
+function renderLatestChanges(s){
+ const grouped=new Map();
+ for(const item of s.review?.kept || []){if(!Number.isFinite(item.at))continue;const key=item.track+'|'+item.device;if(!grouped.has(key))grouped.set(key,{channel:item.channel,device:item.device,at:0,items:[]});const row=grouped.get(key);row.at=Math.max(row.at,item.at);row.items.push(item);}
+ const latest=[...grouped.values()].sort((a,b)=>b.at-a.at).slice(0,3);
+ const describe=item=>{if(item.kind==='added'){const settings=item.settings || [],gains=settings.filter(p=>/Gain/.test(p.param));const bands=gains.map(g=>{const frequency=settings.find(p=>p.param===g.param.replace('Gain','Frequency'));return frequency?`${frequency.value}: ${g.value}`:`${g.param}: ${g.value}`;});return 'Added'+(bands.length?' · '+bands.join(' · '):' device');}if(item.kind==='removed')return 'Removed device';if(item.param==='Device On')return Number(item.raw_after)===0?'Bypassed':'Enabled';return `${item.param}: ${item.before} → ${item.after}`;};
+ markup('latest-changes',`<div class="latest-changes-heading"><h2>Latest changes</h2><span class="muted">Kept in the mix</span></div>${latest.length?`<ul>${latest.map(row=>{const descriptions=row.items.map(describe);return `<li><strong>${esc(row.channel)} <span>· ${esc(row.device.replace(/#1$/,''))}</span></strong><span class="latest-change-detail">${esc(descriptions.slice(0,3).join(' · '))}${descriptions.length>3?` · +${descriptions.length-3} settings`:''}</span></li>`;}).join('')}</ul>`:'<p class="muted">No kept changes recorded yet.</p>'}`);
+}
 function renderChanges(s){const r=s.review || {},list=changeTab==='kept'?r.kept || []:r.rejected || [];
  $('change-count').textContent=r.ready?`${(r.kept || []).length} ${r.partial?'verified changes so far':'changes'} across ${r.channels || 0} channels`:'No saved result yet';
  $('legacy-note').hidden=!r.legacy;$('legacy-note').textContent='This earlier run has saved settings but no detailed decision journal. Values marked “Live value” are the stored parameter values.';
@@ -120,7 +127,7 @@ function render(s){const w=s.workflow || {},status=w.status || 'idle',live=s.ope
  const refs=(s.reference_files?.length || 0)+(s.project_references?.length || 0),taps=live && live.taps>0,connected=!!live && s.following_live!==false;
  $('analyse').disabled=active || !connected || !taps || !refs;
  $('start').disabled=active || !connected || !refs || !s.previews?.before || status!=='ready';
- renderReferences(s);renderAudio(s);renderChanges(s);renderCharts(s);updatePlannerCost();
+ renderReferences(s);renderAudio(s);renderChanges(s);renderLatestChanges(s);renderCharts(s);updatePlannerCost();
  $('unmute-current').textContent=s.output?.silent===false?'Mute Current':'Unmute Current';
  $('unmute-current').disabled=!connected || ['finalizing','repairing'].includes(status);
  $('monitor-before').textContent=$('monitor-preview').hidden?'Before':'Close Before';
