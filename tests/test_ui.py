@@ -234,3 +234,12 @@ def test_an_apple_preview_is_named_after_its_track(tmp_path, monkeypatch):
     (tmp_path / "runs" / "20261109-1-buy.md").write_text("## To get\n\n- **SOPHIE – Immaterial**: bright.\n")
     assert preview_name(str(tmp_path), "mzaf_161.plus.aac.p.wav") == "SOPHIE – Immaterial (Apple preview)"
     assert preview_name(str(tmp_path), "my song.wav") is None
+
+
+def test_a_stopped_or_crashed_run_is_not_running_any_more():
+    stopped = parse_log(["Taps: 3 channels, 0 reference(s)", 'progress {"done": 0, "total": 19, "t": 1, "step": "scan"}',
+                         "Stopped: by you. Everything kept so far stays in the set."])
+    assert stopped["done"].startswith("Stopped")
+    crashed = parse_log(["Taps: 3 channels, 0 reference(s)", 'progress {"done": 0, "total": 19, "t": 1, "step": "scan"}',
+                         "Traceback (most recent call last):", "KeyError: 'x'"])
+    assert crashed["done"]

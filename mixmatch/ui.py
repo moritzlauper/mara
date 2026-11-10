@@ -154,6 +154,15 @@ def log_chain(path: str) -> list[str]:
     return chain
 
 
+def run_process_alive() -> bool:
+    """A `mixmatch run` started anywhere (this interface, another window, the command line) is still going."""
+    try:
+        out = subprocess.run(["pgrep", "-f", r"mixmatch(\.cli)? run"], capture_output=True, text=True, timeout=3)
+    except (OSError, subprocess.SubprocessError):
+        return True                      # cannot tell: trust the log
+    return out.returncode == 0
+
+
 def parse_log(lines: list[str]) -> dict:
     """Phase, current channel, distance history, decisions, song info and effects from a run's log."""
     state = {"phase": None, "section": None, "distance": None, "parts": {}, "history": [], "events": [],
@@ -224,6 +233,8 @@ def parse_log(lines: list[str]) -> dict:
             state["done"] = s
         elif "Traceback" in s or s.startswith("⚠"):
             state["events"].append({"kind": "warning", "text": s})
+            if "Traceback" in s:                 # an uncaught error ends the process
+                state["done"] = "Stopped: an error, see the log"
     state["events"] = state["events"][-150:]
     return state
 
@@ -507,8 +518,10 @@ def make_handler(runner: Runner, watcher: "DownloadWatcher | None" = None):
                 prog = state.get("progress")
                 # A run counts as going on when this interface started it, or when its log reported progress in the
                 # last minutes (started elsewhere, e.g. from the command line or a second window).
+                # The process must still exist: a run that was stopped or crashed reports no progress either.
                 state["active"] = runner.running() or bool(prog and not state.get("done")
-                                                           and time.time() - prog.get("t", 0) < 300)
+                                                           and time.time() - prog.get("t", 0) < 300
+                                                           and run_process_alive())
                 return self._send(200, {**state, "running": runner.running(), "log": [l.rstrip() for l in lines[-200:]],
                                         "reference_files": references(workdir), "to_get": buy_list(workdir),
                                         "project_references": project_refs.get(), "live": project_refs.reachable,

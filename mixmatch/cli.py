@@ -329,7 +329,11 @@ def main(argv=None):
     args = p.parse_args(argv)
     if hasattr(args, "ref_files"):
         args.ref = args.ref + args.ref_files
-    args.fn(args)
+    try:
+        args.fn(args)
+    except KeyboardInterrupt:   # «Stop» or Ctrl-C: the run has put the Main fader, loop and taps back on its way out
+        print("\nStopped: by you. Everything kept so far stays in the set.", flush=True)
+        sys.exit(130)
 
 
 if __name__ == "__main__":

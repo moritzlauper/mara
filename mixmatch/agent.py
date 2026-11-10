@@ -753,6 +753,11 @@ class Agent:
         self.logfile = open(os.path.join(self.s.log_dir, time.strftime("%Y%m%d-%H%M%S") + ".jsonl"), "w")
         deadline = self.env.now() + self.s.minutes * 60 if self.s.minutes else math.inf
         self.understand()
+        if not self.tap_of:
+            self.log("\nStopped: no channel reports through a MixMatch Tap, so there is nothing to measure. "
+                     "Put the taps in («Set taps» in the interface, or mixmatch taps) and start again.")
+            self.logfile.close()
+            return self.history
         if not self.references and not self.target:
             self.log("No reference found. Name the reference tracks «REF …» and put a tap on them; "
                      "until then only the balance between channels is worked on.")

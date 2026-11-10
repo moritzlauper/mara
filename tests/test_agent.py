@@ -518,3 +518,16 @@ def test_effect_audit_leaves_moving_effects_alone(tmp_path):
                   env=env, log=logs.append)
     agent.run()
     assert not any("Phaser-Flanger" in l and ("bypassed" in l or "kept" in l) for l in logs)
+
+
+def test_a_run_without_taps_stops_at_once(tmp_path):
+    song, hub, env, live = demo_project()
+    env.wait(5)
+    hub.by_name = lambda: {}
+    lines = []
+    agent = Agent(live, hub, RulePlanner(), Settings(minutes=None, complete=True, settle=1.0, log_dir=str(tmp_path),
+                                                     roles_file=str(tmp_path / "r.json")), env=env, log=lines.append)
+    start = env.now()
+    assert agent.run() == []
+    assert any("Stopped: no channel reports through a MixMatch Tap" in l for l in lines)
+    assert env.now() - start < 30                      # no listening to the whole song first
