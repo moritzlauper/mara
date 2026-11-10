@@ -43,6 +43,78 @@ def test_output_toggle_restores_saved_level_and_tracks_actual_fader(tmp_path):
         workflow.end()
 
 
+def test_finished_run_sets_unity_and_remembers_it_for_listening(tmp_path):
+    from mixmatch.display import parse_display
+
+    song, hub, env, live = demo_project()
+    folder = str(tmp_path)
+    workflow.begin(folder)
+    try:
+        monitoring.begin(folder, 0.4, True)
+        live.set("m", "mixer", "Volume", value=0)
+        raw = monitoring.finish(live, folder)
+        assert raw > 0  # 0 dB is not the raw value zero, which mutes Live.
+        assert parse_display(monitoring.main_volume(live.get_set())["display"]) == 0
+        assert monitoring.read(folder)["volume"] == raw
+        monitoring.set_silent(live, folder, True)
+        monitoring.set_silent(live, folder, False)
+        assert monitoring.main_volume(live.get_set())["value"] == raw
+    finally:
+        workflow.end()
+
+
+@pytest.mark.parametrize("outcome", ["finished", "paused", "failed"])
+def test_run_cleanup_resets_main_only_after_success(tmp_path, monkeypatch, outcome):
+    from types import SimpleNamespace
+    from mixmatch import cli
+    from mixmatch.display import parse_display
+
+    song, hub, env, live = demo_project()
+    live.set("m", "mixer", "Volume", target=-6)
+    original = monitoring.main_volume(live.get_set())["value"]
+
+    class FakeAgent:
+        _mix_complete = outcome != "paused"
+        _failure = "planner failed" if outcome == "failed" else None
+
+        def __init__(self, *args, **kwargs):
+            self.ex = SimpleNamespace(refresh=lambda: None)
+
+        def mute_main(self):
+            live.set("m", "mixer", "Volume", value=0)
+            return original
+
+        def restore_main_when_quiet(self, value):
+            live.set("m", "mixer", "Volume", value=value)
+
+        def run(self, **kwargs):
+            if outcome == "paused":
+                raise KeyboardInterrupt()
+
+    args = SimpleNamespace(**dict.fromkeys([
+        "rules", "planner", "auto_ref", "ref", "minutes", "assist", "roles", "mode", "loudness_from",
+        "focus", "focus_bars", "quick", "cont", "resume", "review_references", "replace_references",
+        "no_suggest", "library", "jamendo", "no_audit"], False), silent=True, wait=0, no_auto_ref=True)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cli, "_connect", lambda: (live, hub))
+    monkeypatch.setattr(cli, "make_planner", lambda *_: RulePlanner())
+    monkeypatch.setattr(cli, "_refset", lambda *_: None)
+    monkeypatch.setattr(cli, "set_taps_on", lambda *_: False)
+    monkeypatch.setattr(cli, "Agent", FakeAgent)
+    workflow.begin("runs")
+    try:
+        if outcome == "paused":
+            with pytest.raises(KeyboardInterrupt):
+                cli._cmd_run(args)
+        else:
+            cli._cmd_run(args)
+        level = parse_display(monitoring.main_volume(live.get_set())["display"])
+        assert level == (0 if outcome == "finished" else -6)
+        assert workflow.read("runs")["output_restored"]
+    finally:
+        workflow.end()
+
+
 def test_scan_acknowledges_pause_during_first_second(tmp_path):
     song, hub, env, live = demo_project()
     agent = Agent(live, hub, RulePlanner(), Settings(), env=env, log=lambda *_: None)

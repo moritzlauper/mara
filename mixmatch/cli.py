@@ -250,6 +250,7 @@ def _cmd_run(args):
                                            silent=args.silent),
                   references=refset)
     main_volume = None
+    completed = False
     try:
         if args.silent:
             agent.ex.refresh()
@@ -260,6 +261,7 @@ def _cmd_run(args):
         activity(print, "Waiting for the audio measurements to arrive")
         time.sleep(args.wait)
         agent.run(main_volume=main_volume)
+        completed = bool(getattr(agent, "_mix_complete", False)) and not getattr(agent, "_failure", None)
     finally:
         # The loop brace back where the user had it (MixMatch moved it from part to part), playhead at its start.
         live.transport(play=False, loop_start=loop["start"], loop_length=loop["length"], loop=loop["on"],
@@ -269,6 +271,9 @@ def _cmd_run(args):
             main_volume = monitor.get("volume")
         if main_volume is not None and not getattr(agent, "_output_cleanup_done", False):
             agent.restore_main_when_quiet(main_volume)
+        if completed:
+            main_volume = monitoring.finish(live, "runs")
+            print("Mix finished. Main fader set to 0 dB.")
         print(f"Loop back to bars {loop['start'] / 4 + 1:.0f}–{(loop['start'] + loop['length']) / 4 + 1:.0f}.")
         set_taps_on(live, False)
         print("Taps switched off until the next run (no processing load).")

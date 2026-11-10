@@ -109,3 +109,17 @@ def normal_db(live, folder):
     if value is None or not math.isfinite(value):
         raise ValueError("No saved audible Main level for loudness matching.")
     return value
+
+
+def finish(live, folder: str) -> float:
+    """Leave a completed run ready to listen at unity, never raw zero (mute)."""
+    from .display import parse_display
+
+    result = live.set("m", "mixer", "Volume", target=0.0)
+    level = parse_display(result.get("display", ""))
+    if level is None or not math.isfinite(level) or abs(level) > 0.05:
+        raise RuntimeError("Live did not set the Main fader to 0 dB.")
+    raw = result["value"]
+    _write(folder, {"run_id": workflow.read(folder).get("id"),
+                    "volume": raw, "applied_raw": raw, "managed": False})
+    return raw
