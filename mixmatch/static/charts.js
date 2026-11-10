@@ -1,3 +1,41 @@
+export function analysisFeedback(s, now=Date.now()/1000) {
+ const w=s.workflow || {},status=w.status;
+ const running=!!(s.active || s.running) && ['preparing','analysing','reviewing'].includes(status);
+ const activity=[w.activity,s.activity].filter(Boolean).sort((a,b)=>(b.started || 0)-(a.started || 0))[0] || {};
+ const text=activity.text || 'Connecting to Live and preparing the analysis';
+ const elapsed=Math.max(0,Math.floor(now-(w.started_at || activity.started || now)));
+ const duration=elapsed>=60?`${Math.floor(elapsed/60)}m ${elapsed%60}s`:`${elapsed}s`;
+ let title='Preparing your mix',hint='MARA checks the arrangement and records an original preview before changing the mix.';
+ if (/waiting.*audio|master.*silent/i.test(text)) {
+  title='Waiting for audio from Live';
+  hint=now-(activity.started || now)>=30?'Still waiting? Check that Live’s audio engine is on and the MixMatch Tap devices are enabled on Main and the tracks. MARA continues when measurements arrive.':'MARA has started playback and is waiting for the measurement devices. Keep Live open; the next step starts automatically.';
+ } else if (/reference/i.test(text)) {
+  title='Analysing reference audio';hint='MARA is measuring the selected reference files. Large files can take longer; no action is needed.';
+ } else if (/whole song|arrangement/i.test(text)) {
+  title='Scanning the arrangement';hint='This pass follows the song in real time to find active instruments and useful comparison passages.';
+ } else if (/recording before/i.test(text)) {
+  title='Recording the original mix';hint='This becomes your Before preview. Mix comparisons and the history begin after this recording is complete.';
+ } else if (/listening|measuring/i.test(text)) {
+  title='Listening and measuring';hint='MARA is collecting audio measurements before the first comparison. No mix changes have been made yet.';
+ }
+ const review=status==='reviewing',held=!!w.review?.held;
+ const remaining=review && !held && Number.isFinite(w.review?.deadline)?Math.max(0,Math.ceil(w.review.deadline-now)):null;
+ if(review){title='Analysis complete';hint=held?'Automatic continuation is on hold. Save your corrections, then choose Continue now.':'Review the instrument roles below. Choose Edit roles to hold the countdown, or Continue now to start immediately.';}
+ const measured=Number.isFinite(activity.current) && Number.isFinite(activity.total) && activity.total>0;
+ return {running,review,held,remaining,title,detail:review?(held?'Reviewing instrument roles':remaining===null?'Preparing to continue…':`Mixing starts automatically in ${remaining}s`):text,hint,elapsed:duration,
+  progress:measured && !review?Math.max(0,Math.min(100,100*activity.current/activity.total)):null,
+  counter:measured && !review?`${activity.current} / ${activity.total} bars`:'',
+  next:w.kind==='analysis'?'Next: choose references, then start the mix.':'Next: review roles for 30 seconds, then mixing continues automatically.'};
+}
+
+export function emptyMeasurements(s) {
+ const w=s.workflow || {},activity=w.activity?.text || s.activity?.text || '';
+ if(/recording before/i.test(activity))return {title:'Recording the original mix',text:'The Before preview is being recorded. The first reference comparison follows automatically; its measured values will start this history.'};
+ if(['preparing','analysing','reviewing'].includes(w.status))return {title:'Analysis comes first',text:'MARA is preparing the original recording and instrument roles. The mix history starts with the first comparison after analysis.'};
+ if(s.active || s.running)return {title:'Collecting the first comparison',text:'MARA needs a complete measurement of the selected passage. The first point appears when that check finishes; later checks build the curve.'};
+ return {title:'No comparisons recorded yet',text:w.error || 'Start or resume a mix run to collect reference comparisons. Analysis alone does not create a mix history.'};
+}
+
 const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const names={master:'Master comparison',channels:'Channel balance',effects:'Effect checks',final:'Final master check'};
 const labels={tonal:'Tone balance',masking:'Masking',loudness:'Loudness',dynamics:'Punch',width:'Stereo width',low_side:'Low-end stereo',clipping:'Peak level'};
@@ -59,11 +97,12 @@ export function renderCharts(s){
  const comparison=latestReference(groups),referenceParts=comparison?.parts || ((!phase.startsWith('effect') && latest?.scoring!=='local')?parts:{}),hasReference=Number.isFinite(referenceParts.tonal);
  const ref=referenceDistance(referenceParts) ?? 0;
  const inspection=currentInspection(s),referenceSource=comparison?.section || 'Latest measured passage';
+ const empty=emptyMeasurements(s);
  const verdict=!hasReference?'Comparison pending':ref<1?'Very close':ref<2.5?'Close':ref<4?'Audible differences':'Large differences';
- write('mix-closeness',`<h2 class="window-title">Tone & stereo balance</h2><div class="closeness-word">${verdict}</div><div class="score-value" title="${esc(referenceSource)}">${hasReference?ref.toFixed(2)+' points · latest comparison':'No reference comparison in this passage'}</div><div class="reference-scale" role="img" aria-label="${esc(verdict)}"><i style="left:${Math.min(100,ref/6*100)}%" ${!hasReference?'hidden':''}></i></div><div class="scale-labels"><span>Like the reference</span><span>Large differences</span></div><p class="comparison-scope">Compared with the reference · same criteria in every phase.</p><p class="current-inspection"><strong>${s.active || s.running?'Now checking':'Status'}</strong> · ${esc(inspection)}</p><div class="masking-summary"><span>Simultaneous masking</span><strong>${Number.isFinite(referenceParts.masking)?(referenceParts.masking<1?'Small':referenceParts.masking<2.5?'Noticeable':'Strong')+' · '+referenceParts.masking.toFixed(2):'Pending'}</strong></div><dl class="reference-levels">${['loudness','dynamics'].map(key=>`<div><dt>${key==='loudness'?'Loudness':'Dynamics'}</dt><dd>${esc(s.explain?.[key] || 'Not measured yet')}</dd></div>`).join('')}</dl>`);
- write('mix-curve',`<h2 class="window-title">Mix history</h2>${current?`<select id="measurement-select" class="measure-select" aria-label="Choose comparable measurement history">${series.map(g=>`<option value="${esc(g.key)}" ${g.key===current.key?'selected':''}>${esc(scoring[g.scoring])} · ${esc(g.passage?.includes('–')?'bars '+g.passage:g.passage)} · ${g.points.length} measurements</option>`).join('')}</select>${plot(current)}<p class="muted">Same passage and scoring throughout this curve. Lower values mean less measured difference; small fluctuations are normal.</p>`:'<p class="muted">Measurements appear here as MARA listens.</p>'}`);
+ write('mix-closeness',`<h2 class="window-title">Tone & stereo balance</h2><div class="closeness-word">${verdict}</div><div class="score-value" title="${esc(referenceSource)}">${hasReference?ref.toFixed(2)+' points · latest comparison':empty.title}</div><div class="reference-scale" ${!hasReference?'hidden':''} role="img" aria-label="${esc(verdict)}"><i style="left:${Math.min(100,ref/6*100)}%" ${!hasReference?'hidden':''}></i></div><div class="scale-labels" ${!hasReference?'hidden':''}><span>Like the reference</span><span>Large differences</span></div><p class="comparison-scope">Compared with the reference · same criteria in every phase.</p><p class="current-inspection"><strong>${s.active || s.running?'Now checking':'Status'}</strong> · ${esc(inspection)}</p><div class="masking-summary"><span>Simultaneous masking</span><strong>${Number.isFinite(referenceParts.masking)?(referenceParts.masking<1?'Small':referenceParts.masking<2.5?'Noticeable':'Strong')+' · '+referenceParts.masking.toFixed(2):'Pending'}</strong></div><dl class="reference-levels">${['loudness','dynamics'].map(key=>`<div><dt>${key==='loudness'?'Loudness':'Dynamics'}</dt><dd>${esc(s.explain?.[key] || 'Not measured yet')}</dd></div>`).join('')}</dl>`);
+ write('mix-curve',`<h2 class="window-title">Mix history</h2>${current?`<select id="measurement-select" class="measure-select" aria-label="Choose comparable measurement history">${series.map(g=>`<option value="${esc(g.key)}" ${g.key===current.key?'selected':''}>${esc(scoring[g.scoring])} · ${esc(g.passage?.includes('–')?'bars '+g.passage:g.passage)} · ${g.points.length} measurements</option>`).join('')}</select>${plot(current)}<p class="muted">Same passage and scoring throughout this curve. Lower values mean less measured difference; small fluctuations are normal.</p>`:`<div class="measurement-empty"><h3>${esc(empty.title)}</h3><p>${esc(empty.text)}</p></div>`}`);
  const select=document.getElementById('measurement-select');if(select)select.onchange=()=>{selection=select.value;renderCharts(latestState);};
- write('mix-metrics',`<h2 class="window-title">Measurements</h2><table class="metric-table"><tbody>${Object.entries(labels).map(([key,name])=>`<tr><td>${name}</td><td>${Number.isFinite(parts[key])?parts[key].toFixed(2):'—'}</td><td>${esc(s.explain?.[key] || 'Not measured in this check')}</td></tr>`).join('')}</tbody></table><p class="muted">Numbers are score contributions. Loudness and punch are excluded during channel balance checks.</p>`);
+ write('mix-metrics',`<h2 class="window-title">Measurements</h2><p class="muted">Score points rate the difference; they are not audio levels. LU describes a loudness difference. Live tap loudness is a short-term estimate, not an integrated LUFS reading.</p><table class="metric-table"><thead><tr><th>Check</th><th>Score points</th><th>Measured difference from reference</th></tr></thead><tbody>${Object.entries(labels).map(([key,name])=>`<tr><td>${name}</td><td>${Number.isFinite(parts[key])?parts[key].toFixed(2):'—'}</td><td>${esc(s.explain?.[key] || 'Not measured in this check')}</td></tr>`).join('')}</tbody></table><p class="muted">Numbers are score contributions. Loudness and punch are excluded during channel balance checks.</p>`);
  write('mix-history',`<p class="muted">Use the Mix history selector to inspect earlier phases and passages. Each uses its own measurement scale.</p>`);
  const decisions=[...new Map((s.events || []).filter(e=>['kept','undone','action'].includes(e.kind)).map(e=>[e.text,e])).values()].slice(-4);
  write('mix-decisions',`<h2 class="window-title">Latest decisions</h2>${decisions.map(e=>`<div class="decision ${e.kind}">${esc(e.text)}</div>`).join('') || '<p class="muted">No changes tested yet.</p>'}`);

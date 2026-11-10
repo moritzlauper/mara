@@ -8,7 +8,7 @@ import time
 import uuid
 from pathlib import Path
 
-ACTIVE = {"preparing", "analysing", "mixing", "pausing", "finalizing", "repairing"}
+ACTIVE = {"preparing", "analysing", "reviewing", "mixing", "pausing", "finalizing", "repairing"}
 _local = threading.local()
 
 
@@ -34,7 +34,7 @@ def begin(folder="runs", *, kind="mix", resume=False):
     _local.folder = folder
     previous = read(folder) if resume else {}
     data = {"schema": 1, "id": uuid.uuid4().hex, "started_at": time.time(), "kind": kind,
-            "status": "analysing" if kind == "analysis" else "preparing", "phase": "preparation",
+            "status": "analysing" if kind == "analysis" else "preparing", "resumed": resume, "phase": "preparation",
             "mix_complete": False, "output_restored": False, "previews_ready": False, "live_goal_updates": True,
             "before": previous.get("before"), "after": None, "error": None}
     (Path(folder) / "pause.request").unlink(missing_ok=True)
@@ -84,9 +84,14 @@ def presentation(folder: str, legacy: dict, *, active: bool, previews: dict, che
         state = {"schema": 0, "status": status, "phase": legacy.get("phase"), "mix_complete": complete,
                  "previews_ready": all(previews.values()), "output_restored": complete,
                  "error": done if status == "failed" else None, "legacy": True}
+    if state.get("status") == "reviewing":
+        from .analysis_review import read as read_review
+        review = read_review(folder)
+        if review.get("run_id") == state.get("id"):
+            state["review"] = review
     status = state["status"]
     state["stage"] = ("result" if status in {"finished", "preview_failed", "restored"} else
-                      "analysis" if status in {"preparing", "analysing"} and state.get("kind") == "analysis" else
+                      "analysis" if status == "reviewing" or status in {"preparing", "analysing"} and not state.get("resumed") else
                       "mix" if status in ACTIVE | {"paused", "interrupted", "failed"} else
                       "analysis" if status == "ready" else "project")
     return state

@@ -63,7 +63,7 @@ def test_finished_run_sets_unity_and_remembers_it_for_listening(tmp_path):
         workflow.end()
 
 
-@pytest.mark.parametrize("outcome", ["finished", "paused", "failed"])
+@pytest.mark.parametrize("outcome", ["finished", "paused", "failed", "tail"])
 def test_run_cleanup_resets_main_only_after_success(tmp_path, monkeypatch, outcome):
     from types import SimpleNamespace
     from mixmatch import cli
@@ -85,6 +85,9 @@ def test_run_cleanup_resets_main_only_after_success(tmp_path, monkeypatch, outco
             return original
 
         def restore_main_when_quiet(self, value):
+            if outcome == "tail":
+                self._output_quiet = False
+                return False
             live.set("m", "mixer", "Volume", value=value)
 
         def run(self, **kwargs):
@@ -109,8 +112,12 @@ def test_run_cleanup_resets_main_only_after_success(tmp_path, monkeypatch, outco
         else:
             cli._cmd_run(args)
         level = parse_display(monitoring.main_volume(live.get_set())["display"])
-        assert level == (0 if outcome == "finished" else -6)
-        assert workflow.read("runs")["output_restored"]
+        if outcome == 'tail':
+            assert monitoring.main_volume(live.get_set())['value'] == 0
+            assert not workflow.read('runs')['output_restored']
+        else:
+            assert level == (0 if outcome == "finished" else -6)
+            assert workflow.read("runs")["output_restored"]
     finally:
         workflow.end()
 

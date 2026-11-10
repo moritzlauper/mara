@@ -65,6 +65,7 @@ class Settings:
     resume: str | None = None     # track name: skip the master phase and start the channel pass there
     silent: bool = False          # Main fader down while running (the taps measure before it), put back at the end
     auto_ref: bool = False        # find references by listening to the project (library and Jamendo)
+    review_seconds: float = 0     # optional UI review window; continues automatically
     review_references: bool = False  # prepare and find suggestions, then wait for the user's choice
     replace_references: bool = False # a resumed run uses the user's new choice instead of saved references
     library: str | None = "~/Music"
@@ -1017,6 +1018,8 @@ class Agent:
         vol = next((p for p in master["mixer"] if p["name"] == "Volume"), None) if master else None
         if vol is None:
             raise RuntimeError("cannot mute the Main output: volume control is unavailable")
+        from . import monitoring
+        monitoring.disconnect(self.live, self.s.log_dir)
         result = self.live.set("m", "mixer", "Volume", value=0.0)
         if result.get("value") != 0.0:
             raise RuntimeError("cannot mute the Main output: volume did not reach zero")
@@ -1026,6 +1029,9 @@ class Agent:
     def restore_main_when_quiet(self, volume: float) -> bool:
         """Keep effect tails inaudible after Stop; only restore once fresh master frames stay quiet."""
         self.live.transport(play=False)
+        from . import monitoring
+        monitoring.disconnect(self.live, self.s.log_dir)
+        self.live.set("m", "mixer", "Volume", value=0.0)
         started = self.env.now()
         quiet_since = None
         activity(self.log, "Stopping · keeping output muted while effects fade out")
@@ -1040,12 +1046,15 @@ class Agent:
                     quiet_since = now
                 if now - quiet_since >= 0.8:
                     self.live.set("m", "mixer", "Volume", value=volume)
+                    monitoring.reconnect(self.live, self.s.log_dir)
                     self._output_cleanup_done = True
+                    self._output_quiet = True
                     self.log("Playback stopped and effects quiet. Main fader back where it was.")
                     return True
             else:
                 quiet_since = None
         self._output_cleanup_done = True
+        self._output_quiet = False
         self.log("⚠ Main stays muted: effects are still sounding or audio measurements stopped. "
                  "Raise Main manually when you are ready to listen.")
         return False
@@ -1127,7 +1136,24 @@ class Agent:
         self._preview_region = (main[0][1], min(main[0][2], 64.0))
         if not self.record_preview(os.path.join(self.s.log_dir, self._before_file), *self._preview_region):
             raise RuntimeError("The original preview is missing. A playable recording is required before mixing.")
-        workflow.update(status="mixing")
+        if self.s.review_seconds and phase == "master":
+            from . import analysis_review
+            self.live.transport(play=False)
+            activity(self.log, "Analysis complete · review instrument roles")
+            analysis_review.wait(self.s.log_dir, workflow.read(self.s.log_dir).get("id"),
+                                 self.s.review_seconds, self.env)
+            previous = {k: r.role for k, r in self.roles.items()}
+            roles_mod.apply_overrides(self.roles, self.s.roles_file)
+            changed = {k for k, r in self.roles.items() if previous[k] != r.role}
+            self.role_reviews.update(changed)
+            if changed and self.s.mode == "auto":
+                vocals = set(self.audible_vocals())
+                self.beat = not vocals or vocals <= self.silent_vocals
+                if self.refset:
+                    self.target = self.refset.target(self.beat, self.s.loudness_from)
+                    self.target_no_vocals = None
+            self.save_checkpoint(phase=phase, next_channel=None)
+        workflow.update(status="mixing", analysis_complete=True)
         if phase == "master":
             if self.s.complete:
                 self.log(f"\n━━ Master against the reference")
@@ -1319,10 +1345,10 @@ class Agent:
         cmp, out = m.get("cmp"), {}
         if cmp is not None:
             ld, plr, width = cmp.loudness_diff, cmp.plr_diff, cmp.width_diff
-            out["loudness"] = f"{abs(ld):.1f} LU {'quieter' if ld < 0 else 'louder'} than the reference"
+            out["loudness"] = f"Estimated difference: {abs(ld):.1f} LU {'quieter' if ld < 0 else 'louder'} than the reference"
             out["dynamics"] = f"{abs(plr):.1f} dB {'more' if plr > 0 else 'less'} dynamic (PLR) than the reference"
             out["width"] = f"{abs(width):.1f} dB {'wider' if width > 0 else 'narrower'} than the reference"
-            out["low_side"] = f"bass {cmp.low_side_diff:+.1f} dB more stereo than the reference"
+            out["low_side"] = f"bass {abs(cmp.low_side_diff):.1f} dB {'more' if cmp.low_side_diff >= 0 else 'less'} stereo than the reference"
             out["clipping"] = f"peaks at {cmp.peak_db:.1f} dBFS"
             worst = sorted(TONAL_BANDS, key=lambda i: -abs(cmp.tonal_excess[i]))[:3]
             tones = [f"{cmp.tonal_excess[i]:+.1f} dB at {band_label(i)} Hz" for i in worst if abs(cmp.tonal_excess[i]) >= 0.3]

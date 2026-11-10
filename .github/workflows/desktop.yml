@@ -46,6 +46,7 @@ jobs:
           workspaces: desktop/src-tauri -> target
       - run: python -m pip install ".[dev]"
       - run: python -m pytest -q
+      - run: node --test tests/*.mjs
       - run: python desktop/build_engine.py
       - name: Check bundled engine startup
         shell: python

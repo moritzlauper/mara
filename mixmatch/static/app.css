@@ -140,3 +140,16 @@ section[data-panel=mix]>.mix-dashboard{margin-top:18px}
 
 .comparison-scope{font:11px/1.5 var(--sans);color:var(--muted);margin:8px 0 12px}
 .reference-levels{font:12px/1.5 var(--sans);margin:10px 0 0}.reference-levels>div{display:flex;justify-content:space-between;gap:16px;margin:5px 0}.reference-levels dt{flex-shrink:0}.reference-levels dd{margin:0;text-align:right;color:var(--muted)}
+
+.analysis-status{border-left:4px solid var(--accent)}.analysis-status h2{font:600 18px var(--sans);margin:0}.analysis-status .progress{margin:12px 0}.analysis-status p:last-child{margin-bottom:0}
+#role-fields{border:0;padding:0;margin:12px 0}#role-fields:disabled{opacity:1}
+.indeterminate{overflow:hidden}.indeterminate>div,.indeterminate>i{animation:working 1.8s ease-in-out infinite alternate}
+@keyframes working{from{transform:translateX(0)}to{transform:translateX(230%)}}
+@media(prefers-reduced-motion:reduce){.indeterminate>div,.indeterminate>i{animation:none}}
+#header-progress-label{max-width:330px}.measurement-empty{border-left:3px solid var(--accent);padding:4px 14px;font-size:13px}.measurement-empty h3{margin:0 0 8px}.measurement-empty p{margin:0}
+#change-review{margin:24px 0;padding-top:14px;border-top:1px solid var(--line)}.latest-changes-details{margin-top:18px}.latest-changes-details .latest-changes{margin-top:8px;border-top:0;padding-top:0}
+.metric-table th{text-align:left;padding:8px;border-bottom:1px solid var(--line);font:600 11px var(--sans)}.metric-table th:first-child{padding-left:0}.metric-table th:nth-child(2){text-align:right}
+#reference-player{display:block;width:100%;margin-top:12px}#reference-search{width:100%;margin:8px 0 14px}#references-context{margin:12px 0}#change-references{margin-bottom:14px}
+#settings-dialog{width:min(650px,90vw);max-height:90vh;overflow:auto}#settings-dialog input{width:100%}#settings-dialog .actions{flex-wrap:wrap}#settings-message{color:var(--muted);font-size:13px}
+
+#header-progress{flex:1 1 260px;min-width:180px;justify-content:center}.header-meter{width:140px;flex-shrink:1}#project-switch{width:260px;min-width:180px;max-width:25vw}#settings{flex-shrink:0}#header-progress-label{max-width:240px;white-space:normal}@media(max-width:750px){#project-switch{width:100%;max-width:100%;min-width:0}}

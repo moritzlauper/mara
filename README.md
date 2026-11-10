@@ -93,6 +93,8 @@ In **Automatic** mode, the API cost estimate assumes the **entire mix is planned
 
 API keys are stored through the operating system's credential store. The UI displays a rough cost estimate for models with configured pricing; actual API usage depends on channel count, rounds, model, and retries. Automatic reference discovery has additional requirements; see [Finding references](#finding-references).
 
+Open **Settings** with **⌘,** on macOS or **Ctrl+,** on Windows to see the actual data folder and set a reference library folder. The default desktop data folder on macOS is `~/Library/Application Support/MARA`; an existing service can use a different workspace. **Connection & planner** opens the Live connection and planner settings. A packaged update starts its bundled engine when an older service is idle; an active run is kept on its current engine until you reopen the app after it stops.
+
 ## UI workflow
 
 The screenshots use **Night Drive**, a fictional instrumental drum-and-bass project at 174 BPM. The fixture includes drums, sub bass, Rhodes, atmospheric layers, and an intended later vocal recording. Project metadata, references, measurements, and edits are synthetic. The **DEMO DATA** badge identifies the documentation fixture.
@@ -109,9 +111,9 @@ Use **What matters to you?** to specify the desired changes and properties to pr
 
 Use **Add audio files** or drag and drop reference files. The UI accepts WAV, AIFF, FLAC, MP3, M4A, and AAC, converting imports when required. Complete tracks are preferred because short previews may omit representative sections and contain fades.
 
-Expand **Library & suggestions** to see additional candidates from the shared library or earlier discovery runs. **Find reference suggestions** starts the optional discovery workflow. MARA also recognizes audio clips on Live tracks containing a separate `REF` or `Reference` word in their name, such as `REF Glass Skyline`. These tracks can remain muted because MARA reads the clip files directly.
+Use **Browse & listen** to search and audition references, including during an active mix. **Pause to change references** stops at a safe checkpoint before changing the selected target. You can return to any workflow step without leaving the run. Expand **Library & suggestions** to see additional candidates from the shared library or earlier discovery runs. **Find reference suggestions** starts the optional discovery workflow. MARA also recognizes audio clips on Live tracks containing a separate `REF` or `Reference` word in their name, such as `REF Glass Skyline`. These tracks can remain muted because MARA reads the clip files directly.
 
-Select references with relevant instrumentation and production characteristics. Multiple references form a weighted target profile with frequency-dependent tolerances. Adding a file does not start processing. Click **Analyse mix →** to continue.
+Select references with relevant instrumentation and production characteristics. Multiple references form a weighted target profile with frequency-dependent tolerances. Adding a file does not start processing. Click **Analyse & mix →** to start one continuous run.
 
 ![References: two selected demo files, file import, a drop zone, and access to the reference library.](docs/images/02-references.png)
 
@@ -119,11 +121,11 @@ Select references with relevant instrumentation and production characteristics. 
 
 MARA plays through the selected song range, examines channel activity, finds the loudest passage, and records the original preview. Preparation does not apply mixing corrections, although Live's transport and recording state are temporarily controlled for analysis and capture.
 
-Expand **Review and correct instrument roles** to validate each channel's inferred role and priority. Role assignments distinguish functions that spectral measurements alone cannot resolve, such as a bass, lead, or pad using the same synthesizer. Priorities range from 1 to 5 and inform foreground/background relationships. Corrections apply when the run starts or resumes.
+**Review and correct instrument roles** opens automatically after analysis. Validate each channel's inferred role and priority. Role assignments distinguish functions that spectral measurements alone cannot resolve, such as a bass, lead, or pad using the same synthesizer. Priorities range from 1 to 5 and inform foreground/background relationships. Choose **Edit roles** to hold the countdown. Saved corrections apply to the upcoming mixing pass.
 
-Once the original recording and references are ready, click **Start mixing →**.
+Once analysis and the original recording are ready, mixing starts automatically after **30 seconds**. **Continue now →** skips the wait. Editing roles holds the review window until you continue. Reference discovery remains a separate preparation step so you can choose suitable references before processing.
 
-![Understand the mix: original preview, selected references, song information, and editable instrument roles.](docs/images/03-analysis.png)
+![Understand the mix: automatic continuation countdown, original preview, and an expanded instrument-role review.](docs/images/03-analysis.png)
 
 ### 04 · Mix: monitor execution and retained changes
 
@@ -137,9 +139,9 @@ A complete run works through five phases:
 
 The dashboard displays reference distance and potential masking separately. History series group measurements by passage and scoring method so that different evaluation contexts remain distinguishable. Lower values indicate reduced measured cost within that context; the values do not constitute a perceptual quality score.
 
-**Latest changes** shows recently retained edits directly in the Mix view, including the channel, device, and relevant setting changes. **Review changes so far** opens the fuller result view while work continues.
+**Kept changes** and **Reverted attempts** are available directly in the Mix view, with channel filters and parameter details. The compact **Latest changes** section below them is collapsed by default. **Review changes so far** opens the result view.
 
-Runs started in the UI mute Live's output by default. **Unmute Current** lets you hear the working mix, including changes still being tested. **Before** plays the saved original. The original recording and running Live signal can be approximately loudness matched when the current measured passage matches the preview passage.
+Runs started in the UI mute Live's output by default. On bridges exposing output routing, MARA also disconnects the Main hardware route while muted; measurements continue upstream. Preview recording preserves an existing mute, and failed tail checks never automatically reopen the output. **Unmute Current** lets you hear the working mix, including changes still being tested. **Before** plays the saved original. The original recording and running Live signal can be approximately loudness matched when the current measured passage matches the preview passage.
 
 **Pause** takes effect at the next safe checkpoint, which may be after a model response or measurement finishes. **Resume** continues from saved progress. Expand **More detail · measurements & decisions** for measurements and decisions, or **Activity & diagnostics** for the log. An updated project goal can guide the next planning step.
 

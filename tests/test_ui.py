@@ -401,6 +401,24 @@ def test_reference_choice_is_required_and_search_only_prepares(tmp_path, monkeyp
         assert call("/api/references/choose", {"id": candidate["id"]}) == {"saved": "chosen.wav"}
         assert (shared / "chosen.wav").exists()
         assert (workdir / "references" / "chosen.wav").read_bytes() == b"test audio"
+        call('/api/analyse', {'reference_mode': 'selected', 'auto_mix': True})
+        assert '--review-references' not in starts[-1]
+        assert starts[-1][starts[-1].index('--review-seconds') + 1] == '30'
+        # Browsing and range playback are read-only, even with an active worker.
+        monkeypatch.setattr(runner, 'running', lambda: True)
+        audio = f'http://127.0.0.1:{server.server_port}/api/reference-audio?id={candidate["id"]}'
+        with urllib.request.urlopen(urllib.request.Request(audio, headers={'Range': 'bytes=0-3'})) as response:
+            assert response.status == 206 and response.read() == b'test'
+        assert 'error' in call('/api/reference-audio?id=../../secret')
+        assert 'error' in call('/api/roles', {'Kick': {'role': 'bass', 'priority': 4}})
+        from mixmatch import analysis_review, workflow
+        run = workflow.begin(str(workdir / 'runs'))
+        analysis_review.write(workdir / 'runs', {'run_id': run['id'], 'held': False, 'closed': False})
+        assert call('/api/analysis/review', {'run_id': run['id'], 'action': 'hold'})['held']
+        assert call('/api/roles', {'Kick': {'role': 'bass', 'priority': 4}})['ok']
+        assert call('/api/analysis/review', {'run_id': run['id'], 'action': 'continue'})['proceed']
+        workflow.end()
+        monkeypatch.setattr(runner, 'running', lambda: False)
         (workdir / "runs" / "checkpoint.json").write_text(json.dumps({"phase": "references", "complete": False}))
         assert call('/api/project', {'mode': 'instrumental', 'description': 'Finished beat'})['mode'] == 'instrumental'
         assert call('/api/state')['project']['mode'] == 'instrumental'
