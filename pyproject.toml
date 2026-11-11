@@ -10,7 +10,6 @@ requires-python = ">=3.10"
 dependencies = ["numpy", "scipy", "soundfile", "pyloudnorm>=0.1.1,<0.2", "python-osc", "anthropic>=0.80", "psutil>=6,<8", "imageio-ffmpeg>=0.6,<1", "keyring>=25,<26", "httpx>=0.27,<1", "jsonschema>=4,<5"]
 
 [project.optional-dependencies]
-stems = ["demucs"]          # removes vocals from references for beat mode
 style = ["transformers", "torch"]   # CLAP: style of a track, similar songs in a library (suggest-refs)
 dev = ["pytest", "pyinstaller>=6,<7"]
 

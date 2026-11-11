@@ -1,4 +1,4 @@
-"""Reference tracks as audio files: analysis, vocal removal, and the combined target.
+"""Reference tracks as audio files: analysis and the combined target.
 
 The references are files you already have (WAV, AIFF, FLAC, MP3), so nothing
 from your project has to be exported. Each one is measured the way the taps
@@ -6,9 +6,7 @@ measure your mix (third-octave bands, mid/side, 100 ms frames), using its
 loudest part (drop or chorus), not the intro.
 
 Beat mode: your beat has no vocals, the references do. The target is still the
-full song, the real master: a vocal split (Demucs) changes the rest of the song
-too (darker highs, narrower, heavier bass) and the mix would chase those
-artefacts. Instead the comparison is anchored where the voice does not sit
+full song, the real master. The comparison is anchored where the voice does not sit
 (below 200 Hz, above 5 kHz: the same instruments in song and beat), and in the
 vocal range 200 Hz–5 kHz the beat may sit up to 4 dB under the song. That is the
 room for a vocal; louder than the song, or hollower than that, counts.
@@ -20,11 +18,8 @@ the sound.
 from __future__ import annotations
 
 import hashlib
-import importlib.util
 import json
 import os
-import subprocess
-import sys
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -143,36 +138,11 @@ def profile(path: str) -> Stats:
     return st
 
 
-# ── vocal removal ──────────────────────────────────────────────────────────
-def demucs_available() -> bool:
-    return importlib.util.find_spec("demucs") is not None
-
-
-def instrumental(path: str, log=print) -> str | None:
-    """Path of the reference without vocals (Demucs, two stems), made once and cached."""
-    if not demucs_available():
-        return None
-    out = os.path.join(CACHE, "stems")
-    name = os.path.splitext(os.path.basename(path))[0]
-    target = os.path.join(out, "htdemucs", name, "no_vocals.wav")
-    if not os.path.exists(target):
-        log(f"  separating vocals from {os.path.basename(path)} (once, takes a minute) …")
-        cmd = [sys.executable, "-m", "demucs", "--two-stems", "vocals", "-n", "htdemucs", "-o", out, path]
-        try:
-            subprocess.run(cmd, check=True, capture_output=True)
-        except subprocess.CalledProcessError:
-            # The GPU backend can crash (e.g. MPS on older macOS); the CPU is slower but works everywhere.
-            log("  GPU separation failed, separating on the CPU (a minute or two) …")
-            subprocess.run(cmd[:3] + ["-d", "cpu"] + cmd[3:], check=True, capture_output=True)
-    return target if os.path.exists(target) else None
-
-
 # ── the combined target ────────────────────────────────────────────────────
 @dataclass
 class Reference:
     path: str
     full: Stats
-    inst: Stats | None = None
     seconds: float = 300.0   # length of the file; short clips weigh less
 
     @property
@@ -216,16 +186,6 @@ class ReferenceSet:
             r = self.refs[-1]
             note = f" ({r.seconds:.0f} s clip: half weight, not used for loudness)" if r.short else ""
             self.log(f"  reference {os.path.basename(p)}: {r.full.loudness:.1f} LUFS{note}")
-
-    def separate(self) -> bool:
-        """Add the instrumental version of every reference. False if Demucs is missing."""
-        if not demucs_available():
-            return False
-        for r in self.refs:
-            if r.inst is None:
-                path = instrumental(r.path, self.log)
-                r.inst = profile(path) if path else None
-        return all(r.inst for r in self.refs)
 
     def target(self, beat: bool, loudness_from: str = "full") -> Target:
         """The combined target. `loudness_from` is kept for old callers: everything comes from the full songs."""

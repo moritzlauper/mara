@@ -208,7 +208,7 @@ In **Beat mode**, MARA compares the instrumental against complete reference song
 
 Automatic mode accounts for muted vocal tracks and muted parent groups. If the scan finds all vocal tracks silent throughout the scanned range, it can switch to Beat mode. Explicit Beat or Song selections take precedence.
 
-Demucs-based vocal separation is implemented as an optional facility. The current Beat-mode target uses complete reference files and does not require separated stems.
+Beat mode uses complete reference files; it does not separate stems.
 
 ### Device and parameter actions
 

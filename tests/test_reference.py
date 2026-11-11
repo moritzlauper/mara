@@ -36,8 +36,7 @@ def _beat_case(vocal_db):
     beat[VOCAL_RANGE] += vocal_db
     rs = ReferenceSet.__new__(ReferenceSet)
     rs.log = lambda *_: None
-    rs.refs = [Reference("song.wav", full=st(song, -7.5), inst=None)]
-    rs.separate = lambda: (_ for _ in ()).throw(AssertionError("no vocal split any more"))
+    rs.refs = [Reference("song.wav", full=st(song, -7.5))]
     t = rs.target(beat=True)
     # the beat is quieter without the vocal energy: its shape relative to loudness shifts
     return t, compare(st(beat, -7.5 + min(0.0, vocal_db) * 0.8), t.stats, t.loudness, t.tolerance, t.one_sided,
