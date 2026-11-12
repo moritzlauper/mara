@@ -61,7 +61,7 @@ MARA scans the chosen song range, finds a useful passage, and asks you to review
 
 ### 4. Follow the mix pass
 
-The app works in small phases: overall balance, channels and groups, effect checks, then a final check. It measures the affected passage after an adjustment. An attempt that does not pass the checks is reverted; accepted changes remain normal editable Live parameters.
+The app works in three phases. First it compares the full mix with your references and calculates, from every channel's measured spectrum, which channels cause each difference; the planner reviews that draft once against your goal and roles, and the whole package is applied and measured together. Then it treats the strongest collisions between channels, each fix simulated on the recorded audio frames first and kept only if its own pair measurably improves. Finally it sets limiter and clipper towards the references' loudness, no denser than they are, and checks the result against the original passage. A package that does not pass the checks is reverted; accepted changes remain normal editable Live parameters. The older flow with one planner proposal per round is still available with `mixmatch run --engine rounds`.
 
 You can pause at a safe checkpoint, alter the goal for subsequent work, or unmute the current signal to listen. The UI starts with Live output muted to avoid unexpected playback while it analyses and records.
 
@@ -135,7 +135,7 @@ The desktop interface is **MARA**. The Python package, CLI, and Ableton control 
 
 | Area | Starting point |
 | --- | --- |
-| Mixing loop and checks | [agent.py](mixmatch/agent.py), [mix_quality.py](mixmatch/mix_quality.py) |
+| Mixing flow and checks | [engine.py](mixmatch/engine.py), [solver.py](mixmatch/solver.py), [agent.py](mixmatch/agent.py), [mix_quality.py](mixmatch/mix_quality.py) |
 | Reference analysis | [reference.py](mixmatch/reference.py) |
 | Ableton connection and measurement tap | [Remote script](remote_script/MixMatch/commands.py), [Tap](device/MixMatch%20Tap.maxpat) |
 | Interface | [app.html](mixmatch/static/app.html), [app.js](mixmatch/static/app.js) |

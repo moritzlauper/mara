@@ -1,6 +1,6 @@
 """Command line.
 
-    mixmatch run --ref a.wav --ref b.mp3 [--mode beat] [--planner auto|claude-code|api|rules] [--minutes 10] [--assist]
+    mixmatch run --ref a.wav --ref b.mp3 [--mode beat] [--planner auto|claude-code|api|rules] [--engine solver|rounds] [--minutes 10] [--assist]
     mixmatch refs a.wav b.mp3 [--mode beat]        analyse references (and split vocals) ahead of time
     mixmatch taps                                   put the «MixMatch Tap» on every channel and the master
     mixmatch check                                  connection, taps, roles
@@ -249,6 +249,7 @@ def _cmd_run(args):
                                            library=args.library or None,
                                            jamendo=args.jamendo, audit=getattr(args, "audit", False) and not args.no_audit,
                                            finish_early=getattr(args, "finish", False),
+                                           engine=getattr(args, "engine", "solver"),
                                            silent=args.silent),
                   references=refset)
     main_volume = None
@@ -299,7 +300,8 @@ def cmd_demo(args):
     env.wait(5)
     planner = ClaudePlanner() if args.claude else RulePlanner()
     agent = Agent(live, hub, planner, Settings(minutes=args.minutes, roles_file=args.roles, settle=1.0,
-                                               mode=args.mode, loudness_from=args.loudness_from),
+                                               mode=args.mode, loudness_from=args.loudness_from,
+                                               engine=args.engine),
                   env=env, references=_refset(args))
     agent.run()
 
@@ -365,6 +367,9 @@ def main(argv=None):
         s.add_argument("--minutes", type=float, default=None,
                        help="upper time limit; without it a run goes through every channel until it is complete")
         s.add_argument("--wait", type=float, default=6.0, help="seconds of playback before starting")
+        s.add_argument("--engine", choices=["solver", "rounds"], default=os.environ.get("MIXMATCH_ENGINE", "solver"),
+                       help="solver: calculate packages of changes from the measurements and verify them (default); "
+                            "rounds: the older flow with one planner proposal per round")
     sub.choices["taps"].add_argument("--remove", action="store_true",
                                      help="take every MixMatch tap out of the set")
     sub.choices["taps"].add_argument("--replace", action="store_true",

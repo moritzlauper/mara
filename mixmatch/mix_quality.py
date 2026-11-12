@@ -12,6 +12,9 @@ import numpy as np
 from .bands import bands_between
 
 VERSION = "mix-first-v2"
+# Loudness may make the master denser than the original mix, but not more than this much denser (lower PLR)
+# than the references: loud like them, while still holding together.
+DENSER_THAN_REFERENCE_DB = 1.0
 METRICS = ("masking", "tonal", "dynamics", "width", "loudness", "low_side", "clipping")
 REGIONS = (("sub", 30, 80), ("bass", 80, 200), ("low mids", 200, 500),
            ("mids", 500, 2000), ("presence", 2000, 6000), ("air", 6000, 16000))
@@ -50,6 +53,13 @@ def combine(samples: list[dict]) -> dict:
             if key not in collisions or pair.get("severity", 0) > collisions[key].get("severity", 0):
                 collisions[key] = pair
     result["masking"] = list(collisions.values())
+    # Per pair: mean severity and its spread over the repeated windows (a pair missing in a window counts 0),
+    # so a collision fix can be judged on its own pair instead of on the sum over every pair.
+    per_sample = [{":".join(sorted((p["track_a"], p["track_b"]))): p.get("severity", 0.0)
+                   for p in sample.get("masking", [])} for sample in samples]
+    severities = {k: [here.get(k, 0.0) for here in per_sample] for k in set().union(*per_sample)}
+    result["pair_severity"] = {k: float(np.mean(v)) for k, v in severities.items()}
+    result["pair_noise"] = {k: float(np.ptp(v)) for k, v in severities.items()}
     result["masking_coverage"] = {k: min(m.get("masking_coverage", {}).get(k, 0) for m in samples) for k in pairs}
     comparisons = [m.get("cmp") for m in samples]
     result["reference_consistent"] = len({c is None for c in comparisons}) == 1
@@ -60,6 +70,35 @@ def combine(samples: list[dict]) -> dict:
     else:
         result["cmp"] = None
     return result
+
+
+def reference_plr(m: dict) -> float | None:
+    """PLR of the references when this measurement is compared with them, else None."""
+    ref = m.get("ref")
+    if m.get("cmp") is None or ref is None:
+        return None
+    try:
+        value = float(ref.plr)
+    except (AttributeError, TypeError, ValueError):
+        return None
+    return value if math.isfinite(value) else None
+
+
+def layer_level(levels: dict, key: str, fallback: float) -> float:
+    """A channel's level against the median of the other active channels (`levels`: key → (loudness, active)).
+
+    Not against the master: a limiter or master EQ changes the master but no channel, and must not look like
+    every layer getting quieter. Falls back to `fallback` (the master) when there are no other channels."""
+    others = [loud for k, (loud, active) in levels.items() if k != key and active >= 0.25 and math.isfinite(loud)]
+    return levels[key][0] - (float(np.median(others)) if others else fallback)
+
+
+def _levels_of(tracks: dict) -> dict:
+    return {k: (float(st.loudness), float(st.active)) for k, st in tracks.items() if st is not None}
+
+
+def _levels_of_anchor(tracks: dict) -> dict:
+    return {k: (float(v["loudness"]), float(v.get("active", 1.0))) for k, v in tracks.items()}
 
 
 def uncertainty(before: dict, after: dict, metric: str) -> float:
@@ -185,15 +224,21 @@ def final_assessment(m: dict, baseline: dict | None) -> dict:
                           for k in ("plr", "loudness")))
     if comparable:
         loss = baseline["master"]["plr"] - master.plr
-        dynamics_risk = loss > 3 or (loss > 1.5 and master.loudness > baseline["master"]["loudness"] + .5)
+        ref_plr = reference_plr(m)
+        if ref_plr is not None:
+            dynamics_risk = master.plr < ref_plr - DENSER_THAN_REFERENCE_DB - .3
+        else:
+            dynamics_risk = loss > 3 or (loss > 1.5 and master.loudness > baseline["master"]["loudness"] + .5)
         check("Dynamics", "attention" if dynamics_risk else "clear",
-              f"PLR {baseline['master']['plr']:.1f} → {master.plr:.1f} dB. "
+              f"PLR {baseline['master']['plr']:.1f} → {master.plr:.1f} dB"
+              + (f" (references {ref_plr:.1f} dB). " if ref_plr is not None else ". ")
               + ("Substantial dynamics loss compared with Before." if dynamics_risk else "No substantial dynamics loss detected.")
               + " PLR is a proxy for punch.")
+        now_levels, base_levels = _levels_of(m.get("tracks", {})), _levels_of_anchor(baseline.get("tracks", {}))
         lost = [k for k, st in baseline.get("tracks", {}).items() if st.get("active", 0) >= .5
                 and (m.get("tracks", {}).get(k) is None or m["tracks"][k].active < st["active"] * .7
-                     or m["tracks"][k].loudness - master.loudness
-                     < st["loudness"] - baseline["master"]["loudness"] - 4)]
+                     or layer_level(now_levels, k, master.loudness)
+                     < layer_level(base_levels, k, baseline["master"]["loudness"]) - 4)]
         check("Layers", "attention" if lost else "clear",
               "Reduced or missing layers: " + ", ".join(lost) if lost else "No lost active layers detected against Before.")
     else:
@@ -269,18 +314,28 @@ def evaluate(before: dict, after: dict, baseline: dict, priority: str | None, mi
     # PLR is only a proxy: removing a bass collision can reduce peaks without
     # flattening transients. Be stricter when loudness is being pushed upwards.
     plr_loss = original["plr"] - a.plr
-    if plr_loss > 3.0 or (plr_loss > 1.5 and a.loudness > original["loudness"] + 0.5):
+    pushed = a.loudness > original["loudness"] + 0.5
+    ref_plr = reference_plr(after)
+    if ref_plr is not None and pushed:
+        # Louder towards the references: allowed down to their density, a little beyond, never further.
+        if a.plr < ref_plr - DENSER_THAN_REFERENCE_DB and a.plr < b.plr - 0.2:
+            return False, f"denser than the references allow (PLR {a.plr:.1f}, references {ref_plr:.1f} dB)"
+    elif plr_loss > 3.0 or (plr_loss > 1.5 and pushed):
         return False, "cumulative dynamics loss against the passage baseline"
+    now_levels = _levels_of(after.get("tracks", {}))
+    base_levels = _levels_of_anchor(baseline.get("tracks", {}))
     for k, st in before.get("tracks", {}).items():
         if st is None or st.active < 0.25:
             continue
         now = after.get("tracks", {}).get(k)
-        start = baseline.get("tracks", {}).get(k, {"loudness": st.loudness})
         if now is None or now.active < st.active * 0.7:
             return False, f"active layer {k} disappeared"
         # Relative balance, so an overall gain change does not look like lost layers.
-        initial_relative = start["loudness"] - original["loudness"]
-        if now.loudness - a.loudness < initial_relative - 4.0:
+        if k in base_levels:
+            initial_relative = layer_level(base_levels, k, original["loudness"])
+        else:
+            initial_relative = layer_level({**now_levels, k: (st.loudness, st.active)}, k, b.loudness)
+        if layer_level(now_levels, k, a.loudness) < initial_relative - 4.0:
             return False, f"cumulative level loss on {k}"
     # An already-drifted baseline must not veto an otherwise improving move.
     # Keep the cumulative allowance, but allow recovery without requiring a single

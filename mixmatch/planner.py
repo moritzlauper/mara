@@ -125,6 +125,56 @@ Actions (unused fields null):
 Track keys: "t0", "t1", … normal tracks, "r0" … returns, "m" master."""
 
 
+REVIEW_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "assessment": {"type": "string"},
+        "edits": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "id": {"type": "integer"},
+                    "decision": {"type": "string", "enum": ["keep", "scale", "drop"]},
+                    "factor": {"type": ["number", "null"]},
+                    "reason": {"type": "string"},
+                },
+                "required": ["id", "decision", "factor", "reason"],
+                "additionalProperties": False,
+            },
+        },
+        "protect": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {"track": {"type": "string"}, "reason": {"type": "string"}},
+                "required": ["track", "reason"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    "required": ["assessment", "edits", "protect"],
+    "additionalProperties": False,
+}
+
+REVIEW_SYSTEM = """You review a mixing plan for an Ableton Live project before MARA applies it.
+MARA measured every channel and the master in the song's loudest part and calculated these moves from the
+channels' spectra: which channel carries how much of each band where the master differs from the references.
+The calculation knows spectra only. You know the musical context: the user's description of the track, channel
+names, roles, priorities and notes, the mode (beat for later vocals, finished instrumental, or song).
+
+Keep a move unless there is a concrete musical reason against it. Reasons can be: the user's words or a
+channel note ask to keep that sound (e.g. "keep the Rhodes warm" speaks against cutting its low mids); a cut
+would remove what defines the instrument in this arrangement; a boost fills the vocal range in beat mode; the
+move contradicts the channel's role. A difference from the references alone is not a reason to drop a move,
+and a user wish is not a reason to drop moves on other channels.
+
+Decisions per move id: keep, scale (factor 0.25-0.75, keeps the direction but less), drop. Unlisted moves are
+kept. "protect" lists channels (track keys) that must not be changed at all in this run, only when the user's
+words or notes clearly ask for that. MARA recalculates with your decisions and measures the result; moves
+that do not measurably help are undone anyway. Reasons: one short sentence each."""
+
+
 def device_summary(track: dict) -> list[dict]:
     """Only what helps a decision: device names and their (non-default looking) parameters, compact."""
     out = []
@@ -206,11 +256,19 @@ class ClaudePlanner:
         self.effort = effort
 
     def plan(self, context: dict) -> dict:
+        return self._request(context, SYSTEM, ACTION_SCHEMA,
+                             {"assessment": "Claude declined this round.", "done": False, "actions": []})
+
+    def review(self, context: dict) -> dict:
+        return self._request(context, REVIEW_SYSTEM, REVIEW_SCHEMA,
+                             {"assessment": "Claude declined the review.", "edits": [], "protect": []})
+
+    def _request(self, context: dict, system: str, schema: dict, declined: dict) -> dict:
         request = dict(
             model=self.model,
             max_tokens=16000,
-            system=SYSTEM,
-            output_config={"effort": self.effort, "format": {"type": "json_schema", "schema": ACTION_SCHEMA}},
+            system=system,
+            output_config={"effort": self.effort, "format": {"type": "json_schema", "schema": schema}},
             messages=[{"role": "user", "content": json.dumps(context, ensure_ascii=False)}],
         )
         if self.model in FALLBACK_MODELS:
@@ -219,7 +277,7 @@ class ClaudePlanner:
         else:
             response = self.client.messages.create(**request)
         if response.stop_reason == "refusal":
-            return {"assessment": "Claude declined this round.", "done": False, "actions": []}
+            return declined
         text = next(b.text for b in response.content if b.type == "text")
         return json.loads(text)
 
@@ -253,6 +311,9 @@ class RulePlanner:
             notes.append("Nothing above the thresholds.")
         return {"assessment": " ".join(notes) or "Rule-based round.", "done": not actions, "actions": actions}
 
+    def review(self, context: dict) -> dict:
+        return {"assessment": "Built-in rules keep the calculated plan.", "edits": [], "protect": []}
+
 
 class ClaudeCodePlanner:
     """Plans through the local Claude Code (`claude -p`), on the user's subscription instead of an API key.
@@ -269,16 +330,23 @@ class ClaudeCodePlanner:
         self.model = f"Claude Code: {master_model} for the master, {channel_model} for channels"
         self.timeout, self.retries = timeout, retries
 
-    def command(self, context: dict) -> tuple[list[str], str]:
-        model = self.channel_model if "task" in context else self.master_model
+    def command(self, context: dict, system: str = SYSTEM, schema: dict = ACTION_SCHEMA,
+                model: str | None = None) -> tuple[list[str], str]:
+        model = model or (self.channel_model if "task" in context else self.master_model)
         cmd = [self.binary, "-p", json.dumps(context, ensure_ascii=False), "--model", model,
                "--output-format", "json", "--no-session-persistence", "--strict-mcp-config", "--tools", "",
                "--setting-sources", "", "--exclude-dynamic-system-prompt-sections",
-               "--system-prompt", SYSTEM, "--json-schema", json.dumps(ACTION_SCHEMA)]
+               "--system-prompt", system, "--json-schema", json.dumps(schema)]
         return cmd, model
 
     def plan(self, context: dict) -> dict:
-        cmd, model = self.command(context)
+        return self._run(*self.command(context))
+
+    def review(self, context: dict) -> dict:
+        """The one consequential look at the calculated plan: the master model."""
+        return self._run(*self.command(context, REVIEW_SYSTEM, REVIEW_SCHEMA, self.master_model))
+
+    def _run(self, cmd: list[str], model: str) -> dict:
         # Without these, Claude Code would bill an API key instead of the subscription.
         env = {k: v for k, v in os.environ.items() if k not in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN")}
         error = ""
@@ -316,15 +384,21 @@ class FallbackPlanner:
         self.model = f"{primary.model}; API ({secondary.model}) if the subscription hits a limit"
 
     def plan(self, context: dict) -> dict:
+        return self._call("plan", context)
+
+    def review(self, context: dict) -> dict:
+        return self._call("review", context)
+
+    def _call(self, name: str, context: dict) -> dict:
         if self.using is self.primary:
             try:
-                return self.primary.plan(context)
+                return getattr(self.primary, name)(context)
             except RuntimeError as e:
                 if not any(w in str(e).lower() for w in LIMIT_WORDS):
                     raise
                 self.log(f"  ⚠ Claude Code: {str(e)[:120]}; continuing with the API ({self.secondary.model})")
                 self.using = self.secondary
-        return self.secondary.plan(context)
+        return getattr(self.secondary, name)(context)
 
 
 def make_planner(kind: str = "auto"):
@@ -366,10 +440,16 @@ class CompatiblePlanner:
         self.client = httpx.Client(timeout=180, headers={'Authorization': 'Bearer ' + api_key} if api_key else {})
 
     def plan(self, context):
+        return self._request(context, SYSTEM, ACTION_SCHEMA)
+
+    def review(self, context):
+        return self._request(context, REVIEW_SYSTEM, REVIEW_SCHEMA)
+
+    def _request(self, context, system, schema):
         import httpx
         from jsonschema import validate, ValidationError
         request = {'model': self.model, 'response_format': {'type': 'json_object'},
-                   'messages': [{'role': 'system', 'content': SYSTEM + '\nReturn only a JSON object matching this schema: ' + json.dumps(ACTION_SCHEMA)},
+                   'messages': [{'role': 'system', 'content': system + '\nReturn only a JSON object matching this schema: ' + json.dumps(schema)},
                                 {'role': 'user', 'content': json.dumps(context, ensure_ascii=False)}]}
         try:
             response = self.client.post(self.base_url + '/chat/completions', json=request)
@@ -383,7 +463,7 @@ class CompatiblePlanner:
             if choice.get('finish_reason') not in (None, 'stop'):
                 raise ValueError('incomplete response')
             plan = json.loads(choice['message']['content'], parse_constant=lambda value: (_ for _ in ()).throw(ValueError(value)))
-            validate(plan, ACTION_SCHEMA)
+            validate(plan, schema)
             return plan
         except (ValueError, KeyError, IndexError, TypeError, ValidationError):
             raise RuntimeError(f'{self.provider} returned an incomplete or invalid mixing plan. No actions from this response were applied.') from None

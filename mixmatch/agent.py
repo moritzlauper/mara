@@ -29,6 +29,7 @@ from .display import parse_display
 from .planner import device_summary
 from .activity import report as activity
 from . import mix_quality, workflow
+from .engine import SolverFlow
 
 VOCAL_ROLES = {"lead_vocal", "backing_vocal", "vocal_fx", "vocal_chop", "choir"}
 
@@ -80,6 +81,15 @@ class Settings:
     revisit_channels: int = 1     # repair only the strongest unresolved source before the final master check
     audit_bars: int = 4           # A/B window per effect
     finish_early: bool = False    # record the current accepted state without another validation pass
+    # solver: calculate packages of moves from one measurement and verify each package (docs/konzept-solver.md);
+    # rounds: the older flow, one planner proposal per round, kept as a fallback.
+    engine: str = "solver"
+    solver_iterations: int = 3    # master: calculate, apply, measure; again with what is left
+    collision_pairs: int = 5      # strongest collisions treated per passage
+    other_passages: int = 2       # passages outside the loudest part checked for collisions
+    free_rounds: int = 2          # planner rounds after the calculated work (not with built-in rules)
+    jump: bool = True             # measurements jump to the loop start instead of waiting for it
+    jump_settle: float = 0.4      # seconds after the jump, so tails of the previous position fade
 
 
 @dataclass
@@ -116,7 +126,7 @@ class MasterSilent(Exception):
     """The master tap reports nothing: Live is not playing, exporting, or its audio engine is off."""
 
 
-class Agent:
+class Agent(SolverFlow):
     def __init__(self, live, hub, planner, settings: Settings | None = None, env=None, log=print, ask=input,
                  references=None):
         self.live, self.hub, self.planner = live, hub, planner
@@ -174,6 +184,28 @@ class Agent:
                 return
             last = pos
             self.env.wait(0.05)
+
+    def cue_loop_start(self) -> None:
+        """Jumps to the loop start, so a measurement does not wait for the loop to come round.
+
+        Falls back to waiting when Live does not confirm the jump (the position is read back, not assumed)."""
+        if self.loop is None:
+            return
+        if not self.s.jump:
+            return self.wait_for_loop_start()
+        start = self.loop[0]
+        try:
+            self.live.transport(time=start)
+        except Exception:
+            return self.wait_for_loop_start()
+        deadline = self.env.now() + 2.0
+        while self.env.now() < deadline:
+            pos = self.live.transport()["song_time"]
+            if start - 0.05 <= pos < start + 2.0:
+                self.env.wait(self.s.jump_settle)
+                return
+            self.env.wait(0.05)
+        self.wait_for_loop_start()
 
     def match_taps(self) -> None:
         taps = self.hub.by_name()
@@ -636,7 +668,7 @@ class Agent:
         """
         activity(self.log, "Listening and measuring the mix")
         for attempt in range(retries + 1):
-            self.wait_for_loop_start()
+            self.cue_loop_start()
             self.env.wait(self.window_seconds())
             end = self.env.now()
             start = end - self.window_seconds()
@@ -673,7 +705,7 @@ class Agent:
             refs = [s for s in (stats(r.window(start, end)) for r in taps) if s]
             ref = refs[0] if len(refs) == 1 else _average(refs) if refs else None
             cmp = compare(master, ref) if master and ref else None
-        masks, mask_coverage = self._maskings(tracks, windows, gains)
+        masks, mask_coverage, mask_frames = self._maskings(tracks, windows, gains)
         # Include missing start/end packets in coverage, not only gaps inside a tap's data.
         for pair in mask_coverage:
             a, b = pair.split(":")
@@ -699,6 +731,7 @@ class Agent:
                 parts["clipping"] = max(0.0, master.peak_db + 1.0) * 4
             obj = sum(parts.values())
         return {"master": master, "ref": ref, "tracks": tracks, "masking": masks, "masking_coverage": mask_coverage,
+                "mask_frames": mask_frames,
                 "assessment_parts": objective_parts(cmp, penalty) if cmp and scoring == "full" else parts,
                 "scoring": scoring,
                 "cmp": None if scoring == "local" else cmp,   # the references do not apply outside the loud part
@@ -785,7 +818,7 @@ class Agent:
                     out.append({**hit, "track_a": a, "track_b": b, "role_a": ra.role, "role_b": rb.role,
                                 "foreground": foreground, "background": background,
                                 "priority_a": ra.priority, "priority_b": rb.priority})
-        return sorted(out, key=lambda m: -m["severity"] * min(m["priority_a"], m["priority_b"])), coverage
+        return sorted(out, key=lambda m: -m["severity"] * min(m["priority_a"], m["priority_b"])), coverage, frames
 
     # ── 3. decide ───────────────────────────────────────────────────────────
     def context(self, section: str, m: dict, focus: str | None = None) -> dict:
@@ -839,8 +872,11 @@ class Agent:
                         "at_max": self.limiter_at_cap()},
             "clipper": ({"plugin": self.ex.clipper()[0], "gain_db": self.ex.clipper_gain(),
                          "max_gain_db": CLIPPER_MAX_GAIN_DB} if self.ex.clipper() else "none installed"),
-            "loudness_note": ("limiter and clipper are at their maximum: the remaining loudness gap is accepted and "
-                              "does not count; do not raise faders to chase loudness") if self.loudness_exhausted() else "",
+            "loudness_note": ("MARA sets limiter and clipper itself after this check, towards the references' loudness: "
+                              "do not propose limiter or clipper moves and do not raise faders for loudness"
+                              if getattr(self, "_loudness_auto", False) else
+                              "limiter and clipper are at their maximum: the remaining loudness gap is accepted and "
+                              "does not count; do not raise faders to chase loudness" if self.loudness_exhausted() else ""),
             "harmony": ({"key": self.harmony["key"], "bass_hz": self.harmony["bass_hz"],
                          "note": "kick, sub and bass sit on the tonic and fifth; masking there matters most"}
                         if self.harmony else None),
@@ -1171,6 +1207,9 @@ class Agent:
                     self.target_no_vocals = None
             self.save_checkpoint(phase=phase, next_channel=None)
         workflow.update(status="mixing", analysis_complete=True)
+        if self.use_solver(ck):
+            self.run_solver(main[0], phase, deadline)
+            return
         if phase == "master":
             if self.s.complete:
                 self.log(f"\n━━ Master against the reference")
@@ -1292,6 +1331,9 @@ class Agent:
             masters = 0 if self.s.resume else (1 if self.s.focus == "loud" else len(sections))
             self._done, self._total = 0.0, (self.W_PREP + masters * self.W_MASTER + channels * self.W_CHANNEL
                                             + (self.W_AUDIT_GUESS if self.s.audit else 0) + self.W_FINAL)
+            if self.use_solver(None):
+                self._total = (self.W_PREP + self.W_SOLVE + self.W_COLLIDE
+                               + (self.W_AUDIT_GUESS if self.s.audit else 0) + self.W_FINAL)
             self.progress(step="harmony and scan")
         self.read_harmony(sections)
         scan = self.scan(sections) if self.s.complete else None
@@ -1428,8 +1470,10 @@ class Agent:
         return m
 
     def quality_key(self, m: dict, scoring: str) -> str:
-        return json.dumps([self.loop, scoring, "instrumental" if self.s.mode == "instrumental" else self.beat,
-                           m["ref"].summary() if m.get("ref") and m.get("cmp") else None], sort_keys=True)
+        # Reference taps in the project are measured anew each time: their numbers cannot be part of the key.
+        ref = (m["ref"].summary() if self.target is not None else "reference taps") if m.get("ref") and m.get("cmp") else None
+        return json.dumps([self.loop, scoring, "instrumental" if self.s.mode == "instrumental" else self.beat, ref],
+                          sort_keys=True)
 
     def section(self, name: str, deadline: float, focus: str | None = None, max_rounds: int | None = None,
                 scoring: str = "full") -> None:
@@ -1453,7 +1497,7 @@ class Agent:
             workflow.check_pause()
             if self.env.now() >= deadline:
                 self.log("  time is up")
-                return
+                return m
             self.ex.refresh()
             plan = self.plan_with_retries(self.context(name, m, focus))
             workflow.check_pause()
@@ -1476,7 +1520,13 @@ class Agent:
                     self.log("  No supported change proposed for this channel.")
                 elif plan.get("done"):
                     self.log("  Planner finished this section; remaining differences stay documented.")
-                return
+                return m
+            if getattr(self, "_loudness_auto", False):
+                for a in [a for a in actions if a.get("type") in ("limiter", "clipper")]:
+                    self.log(f"    – not now: {a['type']} (MARA sets the loudness itself after this check)")
+                actions = [a for a in actions if a.get("type") not in ("limiter", "clipper")]
+                if not actions:
+                    return m
             from . import monitoring
             if self.s.silent or monitoring.read(self.s.log_dir).get("managed"):
                 actions = [a for a in actions if not (a.get("type") == "volume" and a.get("track") in (None, "m"))]
@@ -1504,7 +1554,7 @@ class Agent:
                 self._record(Round(name, n, best, best, plan, rr.applied, rr.skipped))
                 stall += 1
                 if stall >= self.s.stall_rounds:
-                    return
+                    return m
                 continue
             try:
                 self.env.wait(self.s.settle)
@@ -1559,7 +1609,8 @@ class Agent:
                 self.progress(piece, name)
             if plan.get("done") or stall >= self.s.stall_rounds:
                 self.log("  no further improvement in this section" if stall else "  Planner finished this section.")
-                return
+                return m
+        return m
 
     TRANSIENT = ("can't reach", "cannot reach", "enotfound", "network", "timed out", "timeout", "connection",
                  "econnreset", "overloaded", "529", "503", "502", "temporarily")

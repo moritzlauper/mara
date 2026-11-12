@@ -6,11 +6,11 @@ from mixmatch.planner import ACTION_SCHEMA, ClaudePlanner, RulePlanner
 from mixmatch.sim import demo_project
 
 
-def run_demo(planner, minutes=3):
+def run_demo(planner, minutes=3, engine="solver"):
     song, hub, env, live = demo_project()
     env.wait(5)
     logs = []
-    agent = Agent(live, hub, planner, Settings(minutes=minutes, settle=1.0), env=env, log=logs.append)
+    agent = Agent(live, hub, planner, Settings(minutes=minutes, settle=1.0, engine=engine), env=env, log=logs.append)
     history = agent.run()
     return agent, history, logs
 
@@ -167,7 +167,7 @@ class FakeClaude:
 def test_claude_planner_request_and_loop(monkeypatch):
     planner = ClaudePlanner.__new__(ClaudePlanner)
     planner.client, planner.model, planner.effort = FakeClaude(), "claude-opus-5-5", "medium"
-    agent, history, logs = run_demo(planner, minutes=2)
+    agent, history, logs = run_demo(planner, minutes=2, engine="rounds")
     call = planner.client.calls[0]
     assert call["model"] == "claude-opus-5-5" and call["fallbacks"] == "default"
     assert call["output_config"]["format"]["schema"] is ACTION_SCHEMA
@@ -182,7 +182,7 @@ def test_haiku_is_the_default_and_gets_no_fallback():
     assert MODEL == "claude-haiku-5-5"
     planner = ClaudePlanner.__new__(ClaudePlanner)
     planner.client, planner.model, planner.effort = FakeClaude(), MODEL, "medium"
-    run_demo(planner, minutes=1)
+    run_demo(planner, minutes=1, engine="rounds")
     call = planner.client.calls[0]
     assert call["model"] == "claude-haiku-5-5" and "fallbacks" not in call and "betas" not in call
 
@@ -238,7 +238,7 @@ def test_complete_run_visits_every_channel_and_ends_with_a_final_check(tmp_path,
     song, hub, env, live = demo_project()
     env.wait(2)
     logs, stub = [], ChannelStub()
-    agent = Agent(live, hub, stub, Settings(minutes=None, complete=True, focus="loud", settle=1.0,
+    agent = Agent(live, hub, stub, Settings(engine="rounds", minutes=None, complete=True, focus="loud", settle=1.0,
                                             roles_file=str(tmp_path / "roles.json"), log_dir=str(tmp_path)),
                   env=env, log=logs.append)
     agent.run()
@@ -285,7 +285,7 @@ def test_a_failing_planner_stops_the_run_cleanly(tmp_path):
     song, hub, env, live = demo_project()
     env.wait(2)
     logs = []
-    agent = Agent(live, hub, Broke(), Settings(minutes=1, settle=1.0, roles_file=str(tmp_path / "r.json"),
+    agent = Agent(live, hub, Broke(), Settings(engine="rounds", minutes=1, settle=1.0, roles_file=str(tmp_path / "r.json"),
                                                log_dir=str(tmp_path)), env=env, log=logs.append)
     agent.run()
     assert any("planner failed" in l and "credit" in l for l in logs) and any(l.startswith("\nDone.") for l in logs)
@@ -392,7 +392,7 @@ def test_effect_audit_bypasses_neutral_and_harmful_effects_reversibly(tmp_path):
         def plan(self, ctx):
             return {"assessment": "fine", "done": True, "actions": []}
 
-    agent = Agent(live, hub, Idle(), Settings(minutes=None, complete=True, focus="loud", settle=1.0,
+    agent = Agent(live, hub, Idle(), Settings(engine="rounds", audit=True, minutes=None, complete=True, focus="loud", settle=1.0,
                                               roles_file=str(tmp_path / "r.json"), log_dir=str(tmp_path)),
                   env=env, log=logs.append)
     agent.run()
@@ -511,7 +511,7 @@ def test_silent_mode_turns_the_main_fader_down_and_back():
             return super().plan(ctx)
 
     logs = []
-    agent = Agent(live, hub, Watch(), Settings(minutes=1, settle=1.0, silent=True), env=env, log=logs.append)
+    agent = Agent(live, hub, Watch(), Settings(engine="rounds", minutes=1, settle=1.0, silent=True), env=env, log=logs.append)
     history = agent.run()
     assert during and all(v == 0.0 for v in during)       # down while it worked …
     assert vol() == before                                  # … and back afterwards
@@ -593,7 +593,7 @@ def test_a_network_outage_is_waited_out():
             return super().plan(ctx)
 
     logs = []
-    agent = Agent(live, hub, Flaky(), Settings(minutes=1, settle=1.0), env=env, log=logs.append)
+    agent = Agent(live, hub, Flaky(), Settings(engine="rounds", minutes=1, settle=1.0), env=env, log=logs.append)
     history = agent.run()
     assert history and not any("Stopped" in l for l in logs)
     assert sum("trying again" in l for l in logs) == 2
@@ -608,7 +608,7 @@ def test_a_real_planner_error_still_stops_the_run():
             raise RuntimeError("invalid schema")
 
     logs = []
-    Agent(live, hub, Broken(), Settings(minutes=1, settle=1.0), env=env, log=logs.append).run()
+    Agent(live, hub, Broken(), Settings(engine="rounds", minutes=1, settle=1.0), env=env, log=logs.append).run()
     assert any("Stopped: the planner failed" in l for l in logs)
 
 
@@ -617,7 +617,7 @@ def test_a_stopped_run_continues_exactly_where_it_stopped(tmp_path):
 
     song, hub, env, live = demo_project()
     env.wait(5)
-    settings = lambda **kw: Settings(minutes=None, complete=True, focus="loud", settle=1.0,
+    settings = lambda **kw: Settings(engine="rounds", minutes=None, complete=True, focus="loud", settle=1.0,
                                      roles_file=str(tmp_path / "r.json"), log_dir=str(tmp_path), **kw)
 
     class DiesInTheChannelPass(RulePlanner):
@@ -686,7 +686,7 @@ def test_reference_search_pauses_and_only_explicit_selection_resumes(tmp_path, m
 
     monkeypatch.setattr(Agent, "find_references", find)
     monkeypatch.setattr(Agent, "section", section)
-    settings = lambda **kw: Settings(minutes=None, complete=complete, mode="song", focus="loud", settle=1,
+    settings = lambda **kw: Settings(engine="rounds", minutes=None, complete=complete, mode="song", focus="loud", settle=1,
                                     fine=False, audit=False, log_dir=str(tmp_path / "runs"), **kw)
     first = Agent(live, hub, RulePlanner(), settings(auto_ref=True, review_references=True), env=env, log=lambda *_: None)
     first.run()
