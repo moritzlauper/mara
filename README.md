@@ -4,7 +4,7 @@ MARA helps you compare an Ableton Live set with reference tracks, spot practical
 
 It is a mixing assistant, not an automatic mastering button: you choose the references, set the goal, review roles, and decide whether the result works musically.
 
-![MARA's Mix view with reference comparison, mix history, listening controls, and latest changes.](docs/images/mara-teaser.png)
+![MARA result view: kept changes with their before-and-after values, rationale, and verification.](docs/images/mara-teaser.png)
 
 ## [Download MARA → GitHub Releases](https://github.com/moritzlauper/mara/releases)
 

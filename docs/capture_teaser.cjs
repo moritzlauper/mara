@@ -9,7 +9,10 @@ const path = require('node:path');
     const page = await browser.newPage({ viewport: { width: 1440, height: 1700 }, deviceScaleFactor: 2 });
     const errors = [];
     page.on('pageerror', error => errors.push(error.message));
-    await page.goto('http://127.0.0.1:8876/workflow?demo=mix');
+    // The README lead image should answer the practical question first: what
+    // stays in a user's set.  Use the finished demo rather than the in-progress
+    // screen, then reveal representative kept-change records.
+    await page.goto('http://127.0.0.1:8876/workflow?demo=result');
     await page.locator('#change-review .change').first().waitFor();
     await page.evaluate(() => document.fonts.ready);
     await page.addStyleTag({ content: `
@@ -20,17 +23,16 @@ const path = require('node:path');
       #connection { display: none!important; }
       .app-header .badge { margin-left: auto; order: 3; }
       .teaser-caption { font: 16px var(--sans); margin-left: 12px; }
-      aside, footer, #message, #pause-note, .mix-more, section > details { display: none!important; }
+      aside, footer, #message, #pause-note, #result-assessment, #result-remaining, section > details { display: none!important; }
       .app-shell { display: block; min-height: 0; }
       main { padding: 22px 0 0; }
       section { max-width: none; padding-bottom: 20px; }
-      #mix-title { font-size: 28px; }
-      #mix-stage-purpose, #mix-description { font-size: 15px; }
-      #mix-description { margin-bottom: 18px; }
-      .closeness-word { font-size: 30px; }
-      .dashboard-window p.muted, .latest-changes li, #monitor-context, #progress-label { font-size: 14px; }
-      .latest-changes { margin-bottom: 0; }
-      .latest-changes h2 { font-size: 16px; }
+      #result h1 { font-size: 28px; }
+      #result > .intro { font-size: 15px; margin-bottom: 16px; }
+      #result-audio { margin-bottom: 16px; }
+      #change-review { margin: 12px 0 0; padding-top: 14px; }
+      .change-body { font-size: 14px; }
+      .change { margin: 8px 0; }
       * { animation: none!important; transition: none!important; }
     ` });
     await page.evaluate(() => {
@@ -39,8 +41,11 @@ const path = require('node:path');
       caption.className = 'teaser-caption';
       caption.textContent = 'Free reference-guided mixing for Ableton Live';
       document.querySelector('.logo').after(caption);
+      document.querySelectorAll('#changes .change').forEach((item, index) => {
+        item.open = index < 2;
+      });
     });
-    const bounds = await page.locator('[data-panel="mix"]').boundingBox();
+    const bounds = await page.locator('[data-panel="result"]').boundingBox();
     if (errors.length) throw new Error(errors.join('\n'));
     await page.screenshot({ path: path.join(__dirname, 'images/mara-teaser.png'),
       clip: { x: bounds.x - 28, y: 0, width: bounds.width + 56, height: Math.ceil(bounds.y + bounds.height + 30) } });
