@@ -144,3 +144,39 @@ def test_before_is_never_recorded_with_main_at_minus_inf(tmp_path):
     state = agent.snapshot_state(0.0)
     volume = next(p["value"] for t in state["tracks"] if t["key"] == "m" for p in t["mixer"] if p["name"] == "Volume")
     assert volume == UNITY_VOLUME and any("0 dB" in l for l in logs)
+
+
+def test_a_reference_search_stays_on_the_references_stage(tmp_path):
+    from mixmatch import workflow
+
+    folder = str(tmp_path)
+    stage = lambda: workflow.presentation(folder, {}, active=True, previews={}, checkpoint=None)["stage"]
+    workflow.write(folder, {"schema": 1, "id": "a", "kind": "analysis", "status": "analysing", "purpose": "references"})
+    assert stage() == "references"
+    workflow.write(folder, {"schema": 1, "id": "a", "kind": "analysis", "status": "ready", "purpose": "references"})
+    assert stage() == "references"
+    workflow.write(folder, {"schema": 1, "id": "b", "kind": "analysis", "status": "analysing"})
+    assert stage() == "analysis"
+
+
+def test_a_running_mix_takes_a_new_reference_selection_at_the_next_phase(tmp_path):
+    from conftest import write_audio
+    from mixmatch.agent import Agent, Settings
+    from mixmatch.planner import RulePlanner
+    from mixmatch.reference import ReferenceSet
+    from mixmatch.sim import demo_project
+
+    refs = tmp_path / "references"
+    refs.mkdir()
+    first = write_audio(str(refs / "a.wav"), tilt=0, seed=1)
+    song, hub, env, live = demo_project()
+    logs = []
+    agent = Agent(live, hub, RulePlanner(), Settings(ref_dirs=(str(refs),), log_dir=str(tmp_path)), env=env,
+                  log=logs.append, references=ReferenceSet([first], log=lambda *_: None))
+    assert not agent.sync_references()                    # unchanged selection: nothing happens
+    write_audio(str(refs / "b.wav"), tilt=3, seed=2)
+    assert agent.sync_references() and len(agent.refset.paths) == 2 and agent.target is not None
+    assert any("References changed" in l for l in logs)
+    for f in refs.iterdir():
+        f.unlink()
+    assert not agent.sync_references() and len(agent.refset.paths) == 2   # empty: keeps the previous ones

@@ -52,6 +52,7 @@ class SolverFlow:
         self._trust = 1.0
         if phase not in ("master", "channels", "effects", "final"):
             phase = "master"
+        self.sync_references()
         if phase == "master":
             self.log("\n━━ Master against the reference")
             self.log(f"\n▶ {name}")
@@ -64,6 +65,7 @@ class SolverFlow:
         if self.env.now() >= deadline:
             return
         if phase == "channels":
+            self.sync_references()
             if self.s.complete:
                 self.channel_collisions(main, deadline)
             phase = "effects"
@@ -76,6 +78,7 @@ class SolverFlow:
             phase = "final"
             self._save_solver_checkpoint(phase)
         if self.env.now() < deadline:
+            self.sync_references()
             self.final_solver(main, deadline)
 
     def _save_solver_checkpoint(self, phase: str) -> None:
@@ -431,7 +434,9 @@ class SolverFlow:
             except BaseException:
                 self.undo_moves(applied)
                 raise
-            ok, why = mix_quality.evaluate(m, after, baseline, intent["priority"], self.s.min_gain)
+            # The final step sets loudness and density with trim and limiter: packages before it are judged on
+            # tone, width, low end and the protections, not on the level they happen to leave.
+            ok, why = mix_quality.evaluate(m, after, baseline, intent["priority"], self.s.min_gain, level_free=True)
             record["verification"] = why
             if factor == 1.0:
                 self._probe, self._probe_why = after, why   # the full package's effect, for the calibration

@@ -292,7 +292,8 @@ def final_assessment(m: dict, baseline: dict | None) -> dict:
     return report
 
 
-def evaluate(before: dict, after: dict, baseline: dict, priority: str | None, min_gain: float) -> tuple[bool, str]:
+def evaluate(before: dict, after: dict, baseline: dict, priority: str | None, min_gain: float,
+             level_free: bool = False) -> tuple[bool, str]:
     """The planner chooses what needs help; measurements decide whether it helped.
 
     Never rebase allowances on each accepted round. Otherwise small compromises
@@ -348,8 +349,12 @@ def evaluate(before: dict, after: dict, baseline: dict, priority: str | None, mi
     mask_limit = max(bp.get("masking", 0), base.get("masking", 0) + max(0.15, base.get("masking", 0) * 0.1))
     if ap.get("masking", 0) > mask_limit + min(.25, uncertainty(before, after, "masking")):
         return False, "masking regressed"
-    # Tolerated reference compromises, in the existing weighted score's units.
-    for metric, allowance in (("tonal", 0.6), ("width", 0.3), ("dynamics", 0.45), ("loudness", 1.0)):
+    # Tolerated reference compromises, in the existing weighted score's units. `level_free`: loudness and density
+    # are set later (level base, limiter), so a package is not held against the level change it causes.
+    allowances = (("tonal", 0.6), ("width", 0.3), ("dynamics", 0.45), ("loudness", 1.0))
+    if level_free:
+        allowances = allowances[:2]
+    for metric, allowance in allowances:
         if ap.get(metric, 0) > max(bp.get(metric, 0), base.get(metric, 0) + allowance) + min(.1, uncertainty(before, after, metric)):
             return False, f"{metric} moved too far from the reference"
     cmp = after.get("cmp")
@@ -365,8 +370,10 @@ def evaluate(before: dict, after: dict, baseline: dict, priority: str | None, mi
             return False, f"no measured improvement in the intended {priority}"
         # Reference dimensions may not trade against each other just to chase numbers.
         if priority in ("tonal", "width", "dynamics", "loudness"):
-            spread = sum(uncertainty(before, after, k) for k in ("tonal", "width", "dynamics", "loudness", "low_side"))
-            if reference_cost(bp) - reference_cost(ap) <= max(min_gain, spread):
+            keys = ("tonal", "width", "low_side") if level_free else ("tonal", "width", "dynamics", "loudness", "low_side")
+            spread = sum(uncertainty(before, after, k) for k in keys)
+            cost = lambda parts: sum(parts.get(k, 0) for k in keys)
+            if cost(bp) - cost(ap) <= max(min_gain, spread):
                 return False, "reference move brought no reliable reference improvement"
         return True, f"verified {priority} improvement; mix character protected"
     if priority is not None:

@@ -368,7 +368,7 @@ class Executor:
         layout = self.master_layout()
         for idx in sorted((i for i in (layout["pre"], layout["trim"]) if i is not None), reverse=True):
             if idx == layout["trim"]:
-                p = self._param(key, idx, "Gain")
+                p = self._trim_param(idx)
                 if p is not None and abs(self._db_of(p)) > 0.05:
                     continue
             count = len(self.track(key)["devices"])
@@ -401,6 +401,11 @@ class Executor:
         if abs(self._db_of(ceiling) - LIMITER_CEILING_DB) > 0.05:
             self._set(rr, self.master_key(), dev, "Ceiling", target=LIMITER_CEILING_DB)
 
+    def _trim_param(self, idx: int) -> dict | None:
+        """Utility's level: «Output» in Live 12, «Gain» in older versions."""
+        key = self.master_key()
+        return self._param(key, idx, "Output") or self._param(key, idx, "Gain")
+
     def trim_gain(self) -> float | None:
         try:
             idx = self.master_layout()["trim"]
@@ -408,18 +413,18 @@ class Executor:
             return None
         if idx is None:
             return None
-        p = self._param(self.master_key(), idx, "Gain")
+        p = self._trim_param(idx)
         return self._db_of(p) if p else None
 
     def _do_trim(self, rr, a):
         idx = self.master_layout()["trim"]
         if idx is None:
             raise RuntimeError("no trim in front of the loudness chain on Main")
-        p = self._param(self.master_key(), idx, "Gain")
+        p = self._trim_param(idx)
         if p is None:
-            raise KeyError("the trim Utility has no Gain parameter")
+            raise KeyError("the trim Utility has no Output or Gain parameter")
         target = max(-TRIM_RANGE_DB, min(TRIM_RANGE_DB, self._db_of(p) + _clamp(float(a["delta_db"]), MAX_TRIM_STEP_DB)))
-        self._set(rr, self.master_key(), idx, "Gain", target=target)
+        self._set(rr, self.master_key(), idx, p["name"], target=target)
 
     def _ensure_device(self, key: str, name: str, *classes: str) -> int:
         idx = self._device(key, *(c.lower() for c in classes))

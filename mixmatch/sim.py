@@ -81,7 +81,7 @@ def eq_eight():
 
 def utility():
     return Device("Utility", "StereoGain", [
-        Param("Gain", -35, 35, 0, lambda v: f"{v:.1f} dB"),
+        Param("Output", -35, 35, 0, lambda v: f"{v:.2f} dB"),   # Live 12 calls Utility's level «Output»
         Param("Stereo Width", 0, 4, 1, lambda v: f"{v*100:.0f} %"),
         Param("Bass Mono", 0, 1, 0, lambda v: ["Off", "On"][int(round(v))], True, ["Off", "On"]),
     ])
@@ -249,7 +249,7 @@ def track_output(t: Track, fader: bool = True, _visiting=()) -> tuple[np.ndarray
         if d.class_name == "Eq8":
             spec = spec + eq_response(d)
         elif d.class_name == "StereoGain":
-            spec = spec + d.p("Gain").value
+            spec = spec + d.p("Output").value
             w = d.p("Stereo Width").value
             width += 20 * math.log10(max(w, 1e-3))
             if d.p("Bass Mono").value >= 0.5:
@@ -293,7 +293,7 @@ def master_chain(song: Song, refs: set[str]):
         if d.class_name == "Eq8":
             spec = spec + eq_response(d)
         elif d.class_name == "StereoGain":
-            spec = spec + d.p("Gain").value
+            spec = spec + d.p("Output").value
             if d.p("Bass Mono").value >= 0.5:
                 low_side = -60.0
         elif d.class_name == "Limiter":

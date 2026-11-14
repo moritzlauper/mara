@@ -199,6 +199,8 @@ def cmd_run(args):
     from .preview import RestoreFailed
 
     workflow.begin(kind="analysis" if args.review_references else "mix", resume=bool(args.cont or args.resume))
+    if args.review_references and args.auto_ref:
+        workflow.update(purpose="references")   # reference discovery: the interface stays on References
     try:
         agent = _cmd_run(args)
         current = workflow.read("runs")
@@ -250,6 +252,8 @@ def _cmd_run(args):
                                            jamendo=args.jamendo, audit=getattr(args, "audit", False) and not args.no_audit,
                                            finish_early=getattr(args, "finish", False),
                                            engine=getattr(args, "engine", "solver"),
+                                           ref_dirs=tuple(os.path.abspath(r) for r in (args.ref or [])
+                                                          if os.path.isdir(r)),
                                            silent=args.silent),
                   references=refset)
     main_volume = None

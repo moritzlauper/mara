@@ -987,8 +987,7 @@ def make_handler(runner: Runner, watcher: "DownloadWatcher | None" = None, live_
             try:
                 from urllib.parse import unquote
                 self._local_request()
-                if runner.running():
-                    raise ValueError("Pause the run before changing references.")
+                # References can change at any time; a running mix picks the new selection up at its next phase.
 
                 if not self.path.startswith("/api/references/"):
                     return self._send(404, {"error": "not found"})
@@ -1029,7 +1028,10 @@ def make_handler(runner: Runner, watcher: "DownloadWatcher | None" = None, live_
             nonlocal pinned_project
             try:
                 body = self._body()
-                if runner.running() and self.path not in ("/api/stop", "/api/output", "/api/open", "/api/analysis/review", "/api/roles", "/api/preferences", "/api/project", "/api/setup/planner", "/api/setup/models", "/api/songs/switch", "/api/songs/follow-live", "/api/preview/blind", "/api/preview/reveal"):
+                if runner.running() and self.path not in ("/api/stop", "/api/output", "/api/open", "/api/analysis/review", "/api/roles", "/api/preferences", "/api/project", "/api/setup/planner", "/api/setup/models", "/api/songs/switch", "/api/songs/follow-live", "/api/preview/blind", "/api/preview/reveal",
+                                                               "/api/references/choose", "/api/references/remove",
+                                                               "/api/references/reuse", "/api/references/hide",
+                                                               "/api/references/use", "/api/references/import"):
                     raise RuntimeError("Pause the current operation safely first.")
                 if self.path == "/api/preferences":
                     from .preferences import save

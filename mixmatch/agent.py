@@ -90,6 +90,7 @@ class Settings:
     free_rounds: int = 2          # planner rounds after the calculated work (not with built-in rules)
     jump: bool = True             # measurements jump to the loop start instead of waiting for it
     jump_settle: float = 0.4      # seconds after the jump, so tails of the previous position fade
+    ref_dirs: tuple = ()          # folders of the chosen references: re-read at every phase change
 
 
 @dataclass
@@ -1394,6 +1395,32 @@ class Agent(SolverFlow):
         if self.s.complete:
             self.progress(self.W_PREP, "master" if not self.s.resume else "channels")
         return main
+
+    def sync_references(self) -> bool:
+        """The user may change the chosen references at any time: at a phase change, a new selection becomes the
+        target. Returns True when the target changed. An empty selection keeps the previous references."""
+        if not self.s.ref_dirs:
+            return False
+        from .reference import ReferenceSet
+        from .cli import AUDIO
+
+        now = sorted(os.path.realpath(os.path.join(d, f)) for d in self.s.ref_dirs if os.path.isdir(d)
+                     for f in os.listdir(d) if f.lower().endswith(AUDIO) and not f.startswith("."))
+        before = sorted(os.path.realpath(p) for p in (self.refset.paths if self.refset else []))
+        if now == before:
+            return False
+        if not now:
+            self.log("References: the selection is empty right now; the run keeps the previous references.")
+            return False
+        try:
+            self.refset = ReferenceSet(now, log=self.log)
+        except Exception as e:
+            self.log(f"References: the new selection could not be read ({str(e)[:100]}); keeping the previous one.")
+            return False
+        self.target, self.target_no_vocals = self.refset.target(self.beat, self.s.loudness_from), None
+        self.log(f"References changed: {', '.join(os.path.basename(p) for p in now)}. "
+                 f"Target from here on: {self.target.description}, {self.target.loudness:.1f} LUFS")
+        return True
 
     def prepare_input_stage(self) -> bool:
         """Trim and a second tap in front of clipper and limiter on Main (both pass the sound unchanged).

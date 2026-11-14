@@ -153,3 +153,5 @@ section[data-panel=mix]>.mix-dashboard{margin-top:18px}
 #settings-dialog{width:min(650px,90vw);max-height:90vh;overflow:auto}#settings-dialog input{width:100%}#settings-dialog .actions{flex-wrap:wrap}#settings-message{color:var(--muted);font-size:13px}
 
 #header-progress{flex:1 1 260px;min-width:180px;justify-content:center}.header-meter{width:140px;flex-shrink:1}#project-switch{width:260px;min-width:180px;max-width:25vw}#settings{flex-shrink:0}#header-progress-label{max-width:240px;white-space:normal}@media(max-width:750px){#project-switch{width:100%;max-width:100%;min-width:0}}
+
+.player-dock{position:sticky;bottom:12px;z-index:5;margin-top:8px;box-shadow:0 6px 24px #0004}.player-dock audio{margin:8px 0 0}
