@@ -272,13 +272,22 @@ def power_sum(levels: list[np.ndarray]) -> np.ndarray:
 
 
 def master_output(song: Song, refs: set[str]):
+    return master_chain(song, refs)[0]
+
+
+def master_chain(song: Song, refs: set[str]):
+    """(output after Main's devices, signal at a tap with another tap after it or None)."""
     outs = [track_output(t) for t in song.tracks if t.name not in refs]
     spec = power_sum([o[0] for o in outs])
     plr = float(np.mean([o[1] for o in outs]))
     width = float(np.mean([o[2] for o in outs]))
     low_side = float(max(o[3] for o in outs))
     peak_extra = 0.0
-    for d in song.master_track.devices:
+    taps = [i for i, d in enumerate(song.master_track.devices) if d.name == "MixMatch Tap"]
+    pre = None
+    for i, d in enumerate(song.master_track.devices):
+        if len(taps) >= 2 and i == taps[0]:
+            pre = (spec, plr, width, low_side, 0.0)
         if not _on(d):
             continue
         if d.class_name == "Eq8":
@@ -295,7 +304,7 @@ def master_output(song: Song, refs: set[str]):
             spec = spec + gain - 0.3 * over       # limiting eats part of the gain
             plr = max(4.0, plr - 0.7 * over)      # and squashes the peaks
             peak_extra = -over
-    return spec, plr, width, low_side, peak_extra
+    return (spec, plr, width, low_side, peak_extra), pre
 
 
 # ── environment that drives time and taps ──────────────────────────────────
@@ -331,8 +340,14 @@ class SimEnv:
             for i, tr in enumerate(self.song.tracks):
                 f = self._frame(*track_output(tr, fader=False)) if song.is_playing else Frame(self.t, 0, 0, 0, 0, [0] * len(F))
                 self.hub.taps[i + 1].frames.append(f)
-            self.hub.taps[999].frames.append(self._frame(*master_output(self.song, self.refs)) if song.is_playing
-                                           else Frame(self.t, 0, 0, 0, 0, [0] * len(F)))
+            out, pre = master_output(self.song, self.refs), master_chain(self.song, self.refs)[1]
+            self.hub.taps[999].frames.append(self._frame(*out) if song.is_playing
+                                             else Frame(self.t, 0, 0, 0, 0, [0] * len(F)))
+            if pre is not None:   # a second tap on Main, in front of the loudness chain
+                if 998 not in self.hub.taps:
+                    self.hub.on_name(998, "master_in", song.master_track.name)
+                self.hub.taps[998].frames.append(self._frame(*pre) if song.is_playing
+                                                 else Frame(self.t, 0, 0, 0, 0, [0] * len(F)))
 
 
 class SimLive:

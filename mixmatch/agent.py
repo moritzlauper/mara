@@ -100,6 +100,7 @@ class Scan:
     total: float                  # length in beats
     master: list                  # (beat offset, frame)
     channels: dict                # track key → [(beat offset, frame)]
+    master_in: list = field(default_factory=list)   # (beat offset, frame) in front of clipper and limiter
 
 
 @dataclass
@@ -568,9 +569,10 @@ class Agent(SolverFlow):
                         out.append((b, f))
             return out
 
-        master_tap = next((t for t in self.hub.snapshot() if t.kind == "master"), None)
+        master_tap, input_tap = self.hub.latest("master"), self.hub.latest("master_in")
         return Scan(start, total, positioned(master_tap) if master_tap else [],
-                    {k: positioned(tap) for k, tap in self.tap_of.items()})
+                    {k: positioned(tap) for k, tap in self.tap_of.items()},
+                    positioned(input_tap) if input_tap else [])
 
     def loudest_part(self, sections: list[tuple[str, float, float]], scan: Scan | None = None) -> tuple[str, float, float]:
         """The loudest `focus_bars` bars, measured at the master.
@@ -672,7 +674,7 @@ class Agent(SolverFlow):
             self.env.wait(self.window_seconds())
             end = self.env.now()
             start = end - self.window_seconds()
-            master_tap = next((t for t in self.hub.snapshot() if t.kind == "master"), None)  # «Main» in Live 12
+            master_tap = self.hub.latest("master")  # «Main» in Live 12
             master = stats(master_tap.window(start, end)) if master_tap else None
             if master_tap is None or (master is not None and master.active >= 0.5):
                 break  # a master that plays in less than half the window (audio dropped out) does not count
@@ -684,6 +686,9 @@ class Agent(SolverFlow):
                 self.live.transport(play=True)
             except Exception:
                 pass  # Live busy (e.g. exporting): try again after the next wait
+        input_tap = self.hub.latest("master_in")
+        input_frames = input_tap.window(start, end) if input_tap else []
+        master_in, input_peak99 = stats(input_frames), peak_percentile(input_frames)
         gains = self.fader_gains()
         windows = {k: tap.window(start, end) for k, tap in self.tap_of.items()}
         tracks = {k: post_fader(stats(frames), gains.get(k, 0.0)) for k, frames in windows.items()}
@@ -697,7 +702,8 @@ class Agent(SolverFlow):
                 target = self.target_no_vocals
             ref = target.stats
             cmp = compare(master, ref, target.loudness, target.tolerance, target.one_sided,
-                          offset=target.offset, anchor=target.anchor) if master else None
+                          offset=target.offset, anchor=target.anchor,
+                          lump=getattr(target, "lump_low", False)) if master else None
         else:
             taps = self.references
             if self.beat and any("inst" in t.name.lower() for t in taps):
@@ -730,16 +736,17 @@ class Agent(SolverFlow):
                 parts["low_side"] = max(0.0, master.low_side_db - LOW_SIDE_LIMIT_DB) * 0.5
                 parts["clipping"] = max(0.0, master.peak_db + 1.0) * 4
             obj = sum(parts.values())
-        return {"master": master, "ref": ref, "tracks": tracks, "masking": masks, "masking_coverage": mask_coverage,
+        return {"master": master, "master_in": master_in, "input_peak99": input_peak99,
+                "ref": ref, "tracks": tracks, "masking": masks, "masking_coverage": mask_coverage,
                 "mask_frames": mask_frames,
                 "assessment_parts": objective_parts(cmp, penalty) if cmp and scoring == "full" else parts,
                 "scoring": scoring,
                 "cmp": None if scoring == "local" else cmp,   # the references do not apply outside the loud part
                 "objective": obj, "parts": parts}
 
-    def measure_verified(self, scoring="full", first=None) -> dict:
+    def measure_verified(self, scoring="full", first=None, passes: int | None = None) -> dict:
         samples = [] if first is None else [first]
-        for _ in range(len(samples), max(2, self.s.verification_passes)):
+        for _ in range(len(samples), max(2, passes or self.s.verification_passes)):
             workflow.check_pause()
             samples.append(self.measure(scoring))
         return mix_quality.combine(samples)
@@ -1336,7 +1343,10 @@ class Agent(SolverFlow):
                                + (self.W_AUDIT_GUESS if self.s.audit else 0) + self.W_FINAL)
             self.progress(step="harmony and scan")
         self.read_harmony(sections)
+        if self.s.complete and self.s.engine == "solver":
+            self.prepare_input_stage()
         scan = self.scan(sections) if self.s.complete else None
+        self._scan = scan
         if scan is not None and not self.beat and self.s.mode == "auto":
             vocals = self.audible_vocals()
             if vocals and all(len(scan.channels.get(k, [])) >= 8
@@ -1358,12 +1368,44 @@ class Agent(SolverFlow):
         if scan is not None:
             focus = main[0] if self.s.focus == "loud" else None
             self.regions = {r.key: self.channel_region(r.key, scan, focus) for r in self.roles.values()}
+            _, s0, length = main[0]
+            inside = [f for b, f in scan.master_in if s0 - scan.start <= b < s0 - scan.start + length]
+            self._scan_input_peak = peak_percentile(inside)
         self._ck = {"stamp": time.strftime("%Y-%m-%d %H:%M"), "main": list(main[0]), "beat": self.beat,
                     "harmony": getattr(self, "harmony", None),
                     "regions": {k: (list(v) if v else None) for k, v in self.regions.items()}}
         if self.s.complete:
             self.progress(self.W_PREP, "master" if not self.s.resume else "channels")
         return main
+
+    def prepare_input_stage(self) -> bool:
+        """Trim and a second tap in front of clipper and limiter on Main (both pass the sound unchanged).
+
+        A tap script from before this change reports both taps on Main under one identity, which would mix their
+        frames: when no input measurement arrives, both devices come off again and the run works without level base."""
+        try:
+            added = self.ex.ensure_input_stage()
+        except Exception as e:
+            self.log(f"Level base: no input measurement on Main ({str(e)[:100]})")
+            return False
+        if added is None:
+            self.log("Level base: no tap on Main («Set taps»); loudness is set without level base.")
+            return False
+        until = self.env.now() + 5.0
+        while self.env.now() < until:
+            tap = self.hub.latest("master_in")
+            if tap is not None and tap.window(self.env.now() - 1.0, self.env.now()):
+                if added:
+                    self.log("Level base: trim and input measurement placed in front of clipper and limiter on Main.")
+                return True
+            self.env.wait(0.25)
+        self.log("Level base: the tap on Main does not report its input (update with «Set up the connection», "
+                 "then «Set taps»); loudness is set without level base this time.")
+        try:
+            self.ex.remove_input_stage()
+        except Exception as e:
+            self.log(f"  could not remove the input tap again ({str(e)[:80]})")
+        return False
 
     def _resume_from(self, ck: dict) -> None:
         """Back to where a stopped run was, without playing the song through again."""
@@ -1680,6 +1722,16 @@ def post_fader(st, gain_db: float):
     if gain_db == 0.0:
         return st
     return replace(st, loudness=st.loudness + gain_db, bands_db=st.bands_db + gain_db, peak_db=st.peak_db + gain_db)
+
+
+def peak_percentile(frames, q: float = 99.0) -> float | None:
+    """The q-th percentile of the 100 ms frame peaks in dBFS: the level base ignores a single stray peak."""
+    from .analysis import SILENCE
+
+    peaks = [f.peak for f in frames if f.m_rms > SILENCE and math.isfinite(f.peak) and f.peak > 0]
+    if len(peaks) < 8:
+        return None
+    return float(20 * np.log10(np.percentile(peaks, q)))
 
 
 def loudest_window(positioned, total_beats: float, length_beats: float,

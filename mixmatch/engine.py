@@ -3,9 +3,14 @@
 Instead of one planner proposal per round, every phase measures once, calculates a package of moves from
 the channels' spectra (mixmatch.solver), applies it together and verifies it with fresh measurements:
 
+0. Level base: a trim in front of clipper and limiter on Main puts the 99th percentile of the input peaks on
+   the limiter ceiling, so the limiter and clipper limits (+5/+4 dB) are gain reduction in every project
+   (docs/konzept-pegelbasis.md). It is held before the loudness step.
 1. Master: the tonal difference to the references is spread over the channels that cause it. The planner
    reviews the draft once (keep, scale, drop, protect), the solver recalculates, the package is measured;
-   then once or twice more with what is left. Stereo low end is switched to mono on the channels causing it.
+   then once or twice more with what is left. Every measured package calibrates the model (per-band share of
+   the predicted change); a package that falls short halves the step size for the next one. Stereo low end is
+   switched to mono on the channels causing it.
 2. Channels: the strongest collisions in the loudest part and in up to two other passages, each fix
    simulated on the recorded frames first and kept only when its own pair measurably improves.
 3. Final: up to two free planner rounds for what the calculation does not cover (compressors, sends,
@@ -18,9 +23,10 @@ from types import SimpleNamespace
 import numpy as np
 
 from . import mix_quality, solver, workflow
-from .actions import CLIPPER_MAX_GAIN_DB, LIMITER_MAX_GAIN_DB, RoundResult
+from .actions import CLIPPER_MAX_GAIN_DB, LIMITER_CEILING_DB, LIMITER_MAX_GAIN_DB, RoundResult
 from .activity import focus as report_focus, report as activity
-from .bands import BAND_COUNT
+from .analysis import TONAL_BANDS, stats
+from .bands import BAND_COUNT, bands_between
 
 
 class SolverFlow:
@@ -41,6 +47,9 @@ class SolverFlow:
         self._constraints = solver.Constraints(frozen=set(getattr(self, "_ck", {}).get("protected", [])))
         self._decisions = {}
         self._checked_passages = set()
+        self._passages = {}
+        self._sensitivity = None
+        self._trust = 1.0
         if phase not in ("master", "channels", "effects", "final"):
             phase = "master"
         if phase == "master":
@@ -144,7 +153,16 @@ class SolverFlow:
         workflow.update(section=name)
         self._inspection_channel = "Main"
         report_focus(self.log, channel="Main", region=self.loop)
-        m = self.measure_verified("full", first=self.measure_fine("full", "m"))
+        trim = self.level_base()
+        # Three windows for the baseline: its spread decides what counts as a measured change all run long.
+        m = self.measure_verified("full", first=self.measure_fine("full", "m"), passes=3)
+        if trim is not None:
+            from .agent import Round
+            self._record(Round("level base", 1, m["objective"], m["objective"], {
+                "assessment": trim["text"], "verification": "level base for the loudness chain, not a mix change",
+                "mix_intent": {"priority": "none", "evidence": trim["text"], "preserve": "balance of all channels",
+                               "reference_relevance": "limiter and clipper limits count as gain reduction"}},
+                trim["rr"].applied, trim["rr"].skipped, parameters=self.journal_parameters(trim["rr"])))
         baseline = self.quality_anchors.setdefault(self.quality_key(m, "full"), {
             **mix_quality.anchor(m), "before_mix": getattr(self, "_ck", {}).get("phase") == "master"})
         self._level_baseline = baseline
@@ -164,7 +182,8 @@ class SolverFlow:
             sources = self.solver_sources(m)
             target = self.solver_target(m)
             activity(self.log, "Calculating the next changes from the measurements")
-            plan = (solver.solve(m["master"], sources, target, self._constraints, beat=self.beat)
+            plan = (solver.solve(m["master"], sources, target, self._constraints, beat=self.beat,
+                                 sensitivity=self._sensitivity, trust=self._trust)
                     if target is not None and m.get("master") is not None else solver.Plan([], 0.0, 0.0))
             extra = solver.bass_mono_moves(sources, mono_needed) if n == 1 else []
             if n == 1 and (plan.moves or extra):
@@ -184,16 +203,98 @@ class SolverFlow:
                       "evidence": self._evidence(plan),
                       "preserve": "core range of high-priority channels, user notes and protected channels",
                       "reference_relevance": "differences beyond the references' tolerance, spread over their sources"}
+            before = m
             accepted, m = self.try_package(name, n, m, baseline, moves, intent, "full", plan)
             self._advance(0.3, name)
-            if not accepted:
+            share = self.learn(plan, before)
+            if accepted:
+                mono_needed = False
+                if share is not None and share >= 0.75:
+                    self._trust = min(1.0, self._trust * 1.5)
+                continue
+            missed = self._probe_why.startswith(("no measured improvement", "reference move brought"))
+            if not (missed and plan.moves) or self._trust <= 0.5:
                 break
-            mono_needed = False
+            # The prediction fell short: calculate again with the learned sensitivity and half the step size.
+            self._trust *= 0.5
+            self.log(f"  next calculation with the measured sensitivity and {self._trust:.0%} of the step size")
         if last_plan is not None:
             for key, why in last_plan.unchanged.items():
                 if key not in self._decisions:
                     self._decisions[key] = [f"master: unchanged, {why}"]
         return m
+
+    # ── level base ──────────────────────────────────────────────────────────
+    def level_base(self, threshold: float = 0.5) -> dict | None:
+        """Trim in front of clipper and limiter so the input peaks (99th percentile) sit on the ceiling.
+
+        Uses the scan of the original song when there is one (no extra measurement), else one measurement.
+        Returns {"rr", "text"} when the trim changed, for the journal."""
+        if self.hub.latest("master_in") is None and not self.prepare_input_stage():
+            return None
+        peak, self._scan_input_peak = getattr(self, "_scan_input_peak", None), None
+        if peak is None:
+            peak = self.measure("full").get("input_peak99")
+        if peak is None:
+            self.log("  Level base: no input measurement on Main; limiter and clipper limits stay settings.")
+            return None
+        return self._trim_to(peak, threshold)
+
+    NO_LIMITER_ROOM_DB = 3.0   # without a limiter yet, the calculated packages need room under the ceiling
+
+    def _trim_to(self, peak: float, threshold: float, hold: bool = False) -> dict | None:
+        """`hold`: right before the loudness step, which adds the limiter when it is missing: on the ceiling.
+        (Peaks on the ceiling at a PLR above the references' cannot end louder than the references.)"""
+        limited = hold or self.ex.active_limiter() is not None
+        goal = LIMITER_CEILING_DB - (0.0 if limited else self.NO_LIMITER_ROOM_DB)
+        delta = goal - peak
+        now = self.ex.trim_gain() or 0.0
+        where = (f"input peaks {peak:.1f} dBFS (99th percentile), ceiling {LIMITER_CEILING_DB:.0f} dBFS"
+                 + ("" if limited else f"; no limiter yet, so {self.NO_LIMITER_ROOM_DB:.0f} dB under it"))
+        actions = [{"type": "ceiling", "track": None, "reason": f"limiter ceiling {LIMITER_CEILING_DB:.0f} dBFS"}] \
+            if self.ex.active_limiter() is not None else []
+        if abs(delta) >= threshold:
+            actions.append({"type": "trim", "track": None, "delta_db": round(delta, 1), "reason": f"level base: {where}"})
+        rr = self.ex.apply(actions)
+        if not any(c.param != "Ceiling" for c in rr.changes):
+            self.log(f"  Level base: {where}; trim stays at {now:+.1f} dB.")
+            if not rr.changes:
+                return None
+            self.env.wait(self.s.settle)
+            return {"rr": rr, "text": f"limiter ceiling to {LIMITER_CEILING_DB:.0f} dBFS; {where}"}
+        if not rr.changes:
+            return None
+        text = f"trim {now:+.1f} → {self.ex.trim_gain() or 0.0:+.1f} dB: {where}"
+        self.log(f"  Level base: {text}")
+        self.env.wait(self.s.settle)
+        return {"rr": rr, "text": text}
+
+    def chain_report(self, m: dict) -> dict | None:
+        """What the loudness chain does, from the two taps on Main."""
+        peak, inp, out = m.get("input_peak99"), m.get("master_in"), m.get("master")
+        if peak is None or inp is None or out is None:
+            return None
+        limiter, clipper = self.ex.limiter_gain() or 0.0, self.ex.clipper_gain() or 0.0
+        return {"input_peak_dbfs": round(peak, 1), "trim_db": round(self.ex.trim_gain() or 0.0, 1),
+                "limiter_db": round(limiter, 1), "clipper_db": round(clipper, 1),
+                "peak_reduction_db": round(max(0.0, peak + limiter + clipper - LIMITER_CEILING_DB), 1),
+                "chain_gain_lu": round(float(out.loudness - inp.loudness), 1)}
+
+    # ── calibration ─────────────────────────────────────────────────────────
+    def learn(self, plan, before: dict) -> float | None:
+        """Per-band sensitivity from the package just measured, also when it was undone."""
+        probe = getattr(self, "_probe", None)
+        self._probe = None
+        if probe is None or not plan.moves or before.get("cmp") is None or probe.get("cmp") is None:
+            return None
+        self._sensitivity, share = solver.calibrate(self._sensitivity, plan, before["cmp"].tonal_diff,
+                                                    probe["cmp"].tonal_diff)
+        if share is not None:
+            low = [i for i in TONAL_BANDS if self._sensitivity[i] < 0.8]
+            from .analysis import band_label
+            self.log(f"    model check: {share:.0%} of the predicted change measured"
+                     + (f"; expecting less at {', '.join(band_label(i) for i in low[:5])} Hz from now on" if low else ""))
+        return share
 
     def _evidence(self, plan) -> str:
         if plan.excess_before is None:
@@ -303,6 +404,7 @@ class SolverFlow:
         from .agent import Round, _parts
 
         names = {k: r.name for k, r in self.roles.items()}
+        self._probe, self._probe_why = None, ""
         for attempt, factor in enumerate((1.0, 0.5)):
             todo = moves if factor == 1.0 else [mv.scaled(factor) for mv in moves]
             if not todo:
@@ -331,6 +433,8 @@ class SolverFlow:
                 raise
             ok, why = mix_quality.evaluate(m, after, baseline, intent["priority"], self.s.min_gain)
             record["verification"] = why
+            if factor == 1.0:
+                self._probe, self._probe_why = after, why   # the full package's effect, for the calibration
             if plan is not None and plan.moves and factor == 1.0:
                 self.log(f"    predicted tonal {plan.cost_before:.2f} → {plan.cost_after:.2f}, measured "
                          f"{m['parts'].get('tonal', 0):.2f} → {after['parts'].get('tonal', 0):.2f}")
@@ -378,7 +482,8 @@ class SolverFlow:
             a, b = region[0] / 4 + 1, (region[0] + region[1]) / 4 + 1
             self.log(f"\n▶ Other passage, bars {a:g}–{b:g} (outside the loudest part: overlap and mono bass only)")
             self.play_loop(*region)
-            self.solve_collisions(f"collision in bars {a:g}–{b:g}", deadline, "local", keys=set(keys))
+            after = self.solve_collisions(f"collision in bars {a:g}–{b:g}", deadline, "local", keys=set(keys))
+            self._passages[region] = after.get("master")
             self._checked_passages.add(region)
             self._advance(0.5, "collisions")
         for region, keys in others.items():
@@ -499,6 +604,19 @@ class SolverFlow:
             self._log_distance(m)
         baseline = self.quality_anchors.get(self.quality_key(m, "full")) or mix_quality.anchor(m)
         self.log("\n▶ Loudness")
+        if m.get("input_peak99") is not None:
+            # The calculated cuts lowered the level into the chain: back onto the ceiling, so the limits stay
+            # gain reduction. Only when it moved by a dB or more, to spare a measurement.
+            trim = self._trim_to(m["input_peak99"], 1.0, hold=True)
+            if trim is not None:
+                from .agent import Round
+                after = self.measure_verified("full")
+                self._record(Round("level base", 2, m["objective"], after["objective"], {
+                    "assessment": trim["text"], "verification": "level base held before the loudness step",
+                    "mix_intent": {"priority": "none", "evidence": trim["text"], "preserve": "balance of all channels",
+                                   "reference_relevance": "limiter and clipper limits count as gain reduction"}},
+                    trim["rr"].applied, trim["rr"].skipped, parameters=self.journal_parameters(trim["rr"])))
+                m = after
         measured = self.set_loudness(m, baseline)
         self.report_final(measured)
 
@@ -512,16 +630,19 @@ class SolverFlow:
         if gap <= 0.5:
             self.log(f"  Loudness: {abs(gap):.1f} LU from the references, nothing to do.")
             return m
-        room = master.plr - (ref_plr - mix_quality.DENSER_THAN_REFERENCE_DB)
+        # A small margin under the references' density, so measurement spread does not undo the first step.
+        room = master.plr - (ref_plr - mix_quality.DENSER_THAN_REFERENCE_DB) - 0.2
         if room <= 0.3:
             self.log(f"  Loudness: {gap:.1f} LU quieter, but already as dense as the references allow "
                      f"(PLR {master.plr:.1f}, references {ref_plr:.1f} dB); left as it is.")
             return m
         push = min(gap, room)
-        for attempt, factor in enumerate((1.0, 0.5)):
-            amount = push * factor
+        # Input peaks above the ceiling are gain reduction the limiter already does.
+        over = max(0.0, (m.get("input_peak99") or LIMITER_CEILING_DB) - LIMITER_CEILING_DB)
+        amount = push
+        for attempt in range(2):
             limiter_now = self.ex.limiter_gain() or 0.0
-            lim = max(0.0, min(amount, LIMITER_MAX_GAIN_DB - limiter_now))
+            lim = max(0.0, min(amount, LIMITER_MAX_GAIN_DB - limiter_now - over))
             clip = 0.0
             if amount - lim > 0.3 and self.ex.clipper():
                 clip = max(0.0, min(amount - lim, CLIPPER_MAX_GAIN_DB - (self.ex.clipper_gain() or 0.0)))
@@ -562,6 +683,12 @@ class SolverFlow:
             self._record(rnd)
             self.log(f"    ↺ undone: {why} ({m['objective']:.2f} → {after['objective']:.2f})")
             self.env.wait(self.s.settle)
+            # The second step from what the first one measured: PLR lost per dB of gain, so it lands under the
+            # references' density instead of guessing half.
+            lost = master.plr - after["master"].plr if after.get("master") is not None else 0.0
+            amount = (min(push, room / (lost / (lim + clip)) * 0.9) if lost > 0.1 and lim + clip > 0 else push * 0.5)
+            if amount < 0.3:
+                break
         return m
 
     def report_final(self, measured: dict) -> None:
@@ -573,12 +700,67 @@ class SolverFlow:
                   "passage": list(self.loop), "parts": measured["parts"], "spread": measured["noise"],
                   "revisited_channels": [], "other_passages_checked": len(self._checked_passages),
                   "listening_judgment": False}
+        chain = self.chain_report(measured)
+        if chain is not None:
+            report["loudness_chain"] = chain
+            text = (f"Input peaks {chain['input_peak_dbfs']:.1f} dBFS after a trim of {chain['trim_db']:+.1f} dB; "
+                    f"limiter +{chain['limiter_db']:.1f}, clipper +{chain['clipper_db']:.1f} dB: about "
+                    f"{chain['peak_reduction_db']:.1f} dB peak reduction, {chain['chain_gain_lu']:+.1f} LU louder.")
+            report["checks"].append({"name": "Loudness chain", "status": "attention" if chain["peak_reduction_db"]
+                                     > LIMITER_MAX_GAIN_DB + CLIPPER_MAX_GAIN_DB + 0.5 else "clear", "text": text})
+            self.log("  " + text)
+        drift = self.passage_drift(measured)
+        if drift is not None:
+            report["passages"] = drift
+            worst = [d for d in drift if d["status"] == "attention"]
+            report["checks"].append({"name": "Other passages", "status": "attention" if worst else "clear", "text":
+                                     ("; ".join(d["text"] for d in worst) if worst else
+                                      f"{len(drift)} other passage(s) changed like the loudest part (within 2 dB per region).")})
+            for d in drift:
+                self.log(f"  {'⚠' if d['status'] == 'attention' else '='} {d['text']}")
+            if worst and report.get("status") == "checked":
+                report.update(status="attention", summary="Some measured risks need attention.")
         workflow.update(quality_check=report)
         self.log("  " + report["summary"] + " " + report["benefit_text"])
         self.log("  Final measurements verified; this is an automated check, not a listening judgment.")
         self.finish_step("done")
         self.clear_checkpoint()
         self._mix_complete = True
+
+    def passage_drift(self, measured: dict) -> list | None:
+        """The other checked passages against the original song, region by region, relative to the change in
+        the loudest part: the calculated EQ is static and also acts where it was not measured."""
+        scan, master = getattr(self, "_scan", None), measured.get("master")
+        if scan is None or not scan.master or not getattr(self, "_passages", None) or master is None:
+            return None
+
+        def original(region):
+            s0, length = region
+            return stats([f for b, f in scan.master if s0 - scan.start <= b < s0 - scan.start + length])
+
+        def by_region(now, then):
+            return {name: float(np.mean(now.shape_db[bands_between(lo, hi)] - then.shape_db[bands_between(lo, hi)]))
+                    for name, lo, hi in mix_quality.REGIONS}
+
+        main = original(self.loop)
+        if main is None:
+            return None
+        loud = by_region(master, main)
+        out = []
+        for region, now in sorted(self._passages.items()):
+            then = original(region)
+            if now is None or then is None:
+                continue
+            rel = {k: v - loud[k] for k, v in by_region(now, then).items()}
+            name, worst = max(rel.items(), key=lambda kv: abs(kv[1]))
+            a, b = region[0] / 4 + 1, (region[0] + region[1]) / 4 + 1
+            attention = abs(worst) > 2.0
+            out.append({"bars": [a, b], "region": name, "relative_db": round(worst, 1),
+                        "status": "attention" if attention else "clear",
+                        "text": (f"bars {a:g}–{b:g}: {name} {worst:+.1f} dB against the original, beyond what changed "
+                                 "in the loudest part" if attention else
+                                 f"bars {a:g}–{b:g}: changed like the loudest part (largest {name} {worst:+.1f} dB)")})
+        return out
 
     def _log_distance(self, m: dict) -> None:
         from .agent import _parts

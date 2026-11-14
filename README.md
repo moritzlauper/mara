@@ -39,6 +39,8 @@ No model account is required: **Built-in rules** handles broad balance, limiter 
 
 Run **Set taps** again after adding tracks. The tap passes audio unchanged and measures the signal before the fader.
 
+After updating MARA, choose **Set up the connection** once more and restart Live: the level base needs the current tap script and remote script. With older ones, MARA sets loudness without it and says so in the log.
+
 ## A typical session
 
 ### 1. Set the goal
@@ -61,7 +63,7 @@ MARA scans the chosen song range, finds a useful passage, and asks you to review
 
 ### 4. Follow the mix pass
 
-The app works in three phases. First it compares the full mix with your references and calculates, from every channel's measured spectrum, which channels cause each difference; the planner reviews that draft once against your goal and roles, and the whole package is applied and measured together. Then it treats the strongest collisions between channels, each fix simulated on the recorded audio frames first and kept only if its own pair measurably improves. Finally it sets limiter and clipper towards the references' loudness, no denser than they are, and checks the result against the original passage. A package that does not pass the checks is reverted; accepted changes remain normal editable Live parameters. The older flow with one planner proposal per round is still available with `mixmatch run --engine rounds`.
+Before anything else, MARA sets a level base on Main: a trim Utility and a second tap in front of clipper and limiter put the input peaks on the limiter ceiling, so the limiter and clipper limits mean gain reduction in every project. The app then works in three phases. First it compares the full mix with your references and calculates, from every channel's measured spectrum, which channels cause each difference; the planner reviews that draft once against your goal and roles, and the whole package is applied and measured together. Each measured package calibrates the calculation for the next one. Then it treats the strongest collisions between channels, each fix simulated on the recorded audio frames first and kept only if its own pair measurably improves. Finally it sets limiter and clipper towards the references' loudness, no denser than they are, and checks the result against the original passage and against the other checked passages of the song. A package that does not pass the checks is reverted; accepted changes remain normal editable Live parameters. The older flow with one planner proposal per round is still available with `mixmatch run --engine rounds`.
 
 You can pause at a safe checkpoint, alter the goal for subsequent work, or unmute the current signal to listen. The UI starts with Live output muted to avoid unexpected playback while it analyses and records.
 
@@ -69,7 +71,7 @@ You can pause at a safe checkpoint, alter the goal for subsequent work, or unmut
 
 ### 5. Listen and decide
 
-Compare Before and After at matched loudness, use blind playback if helpful, and expand the change list to see exactly what changed. **Restore original** prepares a guarded restore of MARA's saved parameter state; it does not replace a proper `.als` backup.
+Compare Before and After at matched loudness, use blind playback if helpful, and expand the change list to see exactly what changed. In blind playback, **Hidden is better** or **Hidden is worse** records your vote before revealing; the votes are counted per project, with the chance that guessing alone would give the same result. **Restore original** prepares a guarded restore of MARA's saved parameter state; it does not replace a proper `.als` backup.
 
 ![Result: matched listening, retained changes, and remaining reference differences.](docs/images/05-result.png)
 

@@ -12,9 +12,11 @@ import numpy as np
 from .bands import bands_between
 
 VERSION = "mix-first-v2"
-# Loudness may make the master denser than the original mix, but not more than this much denser (lower PLR)
-# than the references: loud like them, while still holding together.
-DENSER_THAN_REFERENCE_DB = 1.0
+# Loudness may make the master denser than the original mix, but not denser (lower PLR) than the references.
+# Both PLRs are peak minus loudness; MARA's limiter stops at -1 dBFS where mastered references reach 0 dBFS,
+# so equal density ends about 1 LU quieter than the references. That is the intended trade: a beat that still
+# gets vocals keeps the references' punch instead of their last LU (docs/konzept-pegelbasis.md).
+DENSER_THAN_REFERENCE_DB = 0.0
 METRICS = ("masking", "tonal", "dynamics", "width", "loudness", "low_side", "clipping")
 REGIONS = (("sub", 30, 80), ("bass", 80, 200), ("low mids", 200, 500),
            ("mids", 500, 2000), ("presence", 2000, 6000), ("air", 6000, 16000))
@@ -43,6 +45,9 @@ def combine(samples: list[dict]) -> dict:
         return replace(values[-1], **means, peak_db=max(v.peak_db for v in values),
                        active=min(v.active for v in values))
     result["master"] = average_stats([m.get("master") for m in samples])
+    result["master_in"] = average_stats([m.get("master_in") for m in samples])
+    peaks = [m.get("input_peak99") for m in samples]
+    result["input_peak99"] = float(np.mean(peaks)) if peaks and all(p is not None for p in peaks) else None
     tracks = set().union(*(m.get("tracks", {}) for m in samples))
     result["tracks"] = {k: average_stats([m.get("tracks", {}).get(k) for m in samples]) for k in tracks}
     pairs = set().union(*(m.get("masking_coverage", {}) for m in samples))

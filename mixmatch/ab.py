@@ -146,3 +146,38 @@ class BlindComparison:
 
     def reveal(self, log_dir: str) -> str | None:
         return self._which if self._log_dir == os.path.realpath(log_dir) else None
+
+
+VOTES = "blind-votes.jsonl"
+
+
+def record_vote(log_dir: str, hidden: str, verdict: str, preview_id: str | None = None) -> dict:
+    """One blind trial: the hidden version was judged better or worse than the other one."""
+    if hidden not in ("before", "after") or verdict not in ("better", "worse"):
+        raise ValueError("a vote is «better» or «worse» for a hidden Before or After")
+    entry = {"time": time.strftime("%Y-%m-%d %H:%M:%S"), "hidden": hidden, "verdict": verdict,
+             "preview": preview_id, "after_preferred": (hidden == "after") == (verdict == "better")}
+    os.makedirs(log_dir, exist_ok=True)
+    with open(os.path.join(log_dir, VOTES), "a") as f:
+        f.write(json.dumps(entry) + "\n")
+    return entry
+
+
+def vote_summary(log_dir: str) -> dict:
+    """How often After won the blind trials, with the one-sided binomial p-value against guessing."""
+    import math
+
+    wins = total = 0
+    try:
+        with open(os.path.join(log_dir, VOTES)) as f:
+            for line in f:
+                try:
+                    entry = json.loads(line)
+                except ValueError:
+                    continue
+                total += 1
+                wins += bool(entry.get("after_preferred"))
+    except OSError:
+        pass
+    p = sum(math.comb(total, k) for k in range(wins, total + 1)) / 2 ** total if total else None
+    return {"after_preferred": wins, "total": total, "p_value": None if p is None else round(p, 4)}

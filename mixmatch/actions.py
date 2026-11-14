@@ -127,6 +127,10 @@ LIMITER_MAX_GAIN_DB = 5.0   # about 4–5 dB of peak gain reduction: loud but st
 # Clippers before the master limiter, as (plugin, drive parameter); the first installed one is used.
 CLIPPERS = (("Classic Clipper", "Gain"),)
 CLIPPER_MAX_GAIN_DB = 4.0   # the clipper takes the transients, it copes with them better than the limiter
+TAP = "MixMatch Tap"
+TRIM = "MARA Trim"          # Utility in front of clipper and limiter on Main: the level base of the loudness chain
+TRIM_RANGE_DB = 24.0
+MAX_TRIM_STEP_DB = 12.0
 SHAPES = {"bell": ["bell"], "low_shelf": ["low shelf", "lowshelf"], "high_shelf": ["high shelf", "highshelf"],
           "low_cut": ["low cut 12", "lowcut 12", "low cut", "lowcut", "12 db"], "notch": ["notch"]}
 
@@ -275,6 +279,148 @@ class Executor:
         order.insert(to, frm)
         self._reindex(key, order)
 
+    # ── Main: [user devices …] [MARA Trim] [input tap] [clipper] [limiter] [… end tap] ──────────────
+    def _is_chain(self, d: dict) -> bool:
+        name = _plain(d["name"])
+        return (d.get("class_name") == "Limiter" or name in {_plain(n) for n in LIMITERS}
+                or any(name == _plain(c) for c, _ in CLIPPERS))
+
+    def master_layout(self) -> dict:
+        """Indices on Main: the trim, the input tap (a tap with another tap after it), the loudness chain,
+        and the end tap. None where there is none."""
+        devs = self.track(self.master_key())["devices"]
+        taps = [d["index"] for d in devs if d["name"] == TAP]
+        pre = taps[0] if len(taps) >= 2 else None
+        trim = next((d["index"] for d in devs if d["name"] == TRIM), None)
+        if trim is None and pre is not None and pre > 0 and devs[pre - 1].get("class_name") == "StereoGain":
+            trim = pre - 1   # an older remote script cannot rename the device: found by its place
+        return {"trim": trim, "pre": pre, "end": taps[-1] if taps else None,
+                "chain": [d["index"] for d in devs if self._is_chain(d)]}
+
+    def _move_on_master(self, at: int, to: int) -> int:
+        key = self.master_key()
+        if at == to:
+            return at
+        count = len(self.track(key)["devices"])
+        self.live.move_device(key, at, to)
+        self._moved(key, at, to, count)
+        self.refresh()
+        return to
+
+    def _place_on_master(self, at: int) -> int:
+        """A device loaded onto Main goes in front of the level base, so the loudness chain stays last;
+        clipper and limiter go behind the input tap. Older remote scripts load in front of the first tap."""
+        key = self.master_key()
+        dev = self.track(key)["devices"][at]
+        layout = self.master_layout()
+        if self._is_chain(dev):
+            if layout["pre"] is not None and at < layout["pre"]:
+                return self._move_on_master(at, layout["pre"])      # the input tap moves one to the front
+            return at
+        first = min(i for i in (layout["trim"], layout["pre"], *layout["chain"]) if i is not None) \
+            if any(i is not None for i in (layout["trim"], layout["pre"], *layout["chain"])) else None
+        if first is not None and at > first:
+            return self._move_on_master(at, first)
+        return at
+
+    def ensure_input_stage(self) -> bool | None:
+        """Puts a trim Utility and a second tap in front of clipper and limiter on Main. Both pass the sound
+        unchanged (the trim starts at 0 dB). Returns True when it added something, None without a tap on Main."""
+        key = self.master_key()
+        self.refresh()
+        layout = self.master_layout()
+        if layout["end"] is None:
+            return None
+        added = False
+        if layout["pre"] is None:
+            count = len(self.track(key)["devices"])
+            at = self.live.load_device(key, TAP, source="user_library")
+            self._inserted(key, at, count)
+            self.refresh()
+            layout = self.master_layout()
+            # The new tap is the last one now; the tap that measured Main so far stays the end tap.
+            end_before = layout["end"] if at != layout["end"] else layout["pre"]
+            target = min(layout["chain"]) if layout["chain"] else end_before
+            self._move_on_master(at, target)
+            added = True
+            layout = self.master_layout()
+        if layout["trim"] is None:
+            count = len(self.track(key)["devices"])
+            at = self.live.load_device(key, "Utility")
+            self._inserted(key, at, count)
+            self.refresh()
+            pre = self.master_layout()["pre"]
+            if pre is not None:
+                self._move_on_master(at, pre - 1 if at < pre else pre)
+            try:
+                idx = self.master_layout()["pre"] - 1
+                self.live.request("rename_device", track=key, device=idx, name=TRIM)
+                self.refresh()
+            except Exception:
+                pass   # older remote script: the trim is found by its place in front of the input tap
+            added = True
+        return added
+
+    def remove_input_stage(self) -> None:
+        """Takes the input tap and an untouched trim off Main again (old tap script: no separate identity)."""
+        key = self.master_key()
+        self.refresh()
+        layout = self.master_layout()
+        for idx in sorted((i for i in (layout["pre"], layout["trim"]) if i is not None), reverse=True):
+            if idx == layout["trim"]:
+                p = self._param(key, idx, "Gain")
+                if p is not None and abs(self._db_of(p)) > 0.05:
+                    continue
+            count = len(self.track(key)["devices"])
+            self.live.delete_device(key, idx)
+            self._deleted(key, idx, count)
+            self.refresh()
+
+    def active_limiter(self) -> int | None:
+        """Index of a switched-on limiter on Main: only then are the output peaks held at its ceiling."""
+        try:
+            devs = self.track(self.master_key())["devices"]
+        except KeyError:
+            return None
+        for d in devs:
+            name = _plain(d["name"])
+            if d.get("class_name") == "Limiter" or name in {_plain(n) for n in LIMITERS}:
+                on = next((p["value"] for p in d["params"] if p["name"] == "Device On"), 1.0)
+                if on >= 0.5:
+                    return d["index"]
+        return None
+
+    def _do_ceiling(self, rr, a):
+        """The limiter's ceiling to MARA's -1 dBFS (the loudness step would set it anyway)."""
+        dev = self.active_limiter()
+        if dev is None:
+            raise RuntimeError("no switched-on limiter on Main")
+        ceiling = self._param(self.master_key(), dev, "Ceiling")
+        if ceiling is None:
+            raise KeyError("the limiter has no ceiling parameter")
+        if abs(self._db_of(ceiling) - LIMITER_CEILING_DB) > 0.05:
+            self._set(rr, self.master_key(), dev, "Ceiling", target=LIMITER_CEILING_DB)
+
+    def trim_gain(self) -> float | None:
+        try:
+            idx = self.master_layout()["trim"]
+        except KeyError:
+            return None
+        if idx is None:
+            return None
+        p = self._param(self.master_key(), idx, "Gain")
+        return self._db_of(p) if p else None
+
+    def _do_trim(self, rr, a):
+        idx = self.master_layout()["trim"]
+        if idx is None:
+            raise RuntimeError("no trim in front of the loudness chain on Main")
+        p = self._param(self.master_key(), idx, "Gain")
+        if p is None:
+            raise KeyError("the trim Utility has no Gain parameter")
+        target = max(-TRIM_RANGE_DB, min(TRIM_RANGE_DB, self._db_of(p) + _clamp(float(a["delta_db"]), MAX_TRIM_STEP_DB)))
+        self._set(rr, self.master_key(), idx, "Gain", target=target)
+
     def _ensure_device(self, key: str, name: str, *classes: str) -> int:
         idx = self._device(key, *(c.lower() for c in classes))
         if idx is not None:
@@ -291,6 +437,8 @@ class Executor:
                 at = self.live.load_device(key, name)
             self._inserted(key, at, count)
             self.refresh()
+            if key == self.master_key():
+                at = self._place_on_master(at)
             idx = self._device(key, *(c.lower() for c in classes))
             if idx is None and plugin and 0 <= at < len(self.track(key)["devices"]):
                 idx = at  # plugins show up under their own name, e.g. «FabFilter Pro-C 2»

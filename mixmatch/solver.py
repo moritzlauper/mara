@@ -8,7 +8,9 @@ best predicted benefit, prefers cutting background sources and stays inside per-
 pair. Measurements afterwards decide what is kept.
 
 Assumptions: channels add up in power (uncorrelated), bus processing and the master limiter do not change
-the tonal shape. Both are approximations, which is why every package is measured before it stays.
+the tonal shape. Both are approximations, which is why every package is measured before it stays, and why
+`calibrate` turns each measured package into a per-band sensitivity: where bus compression, correlated layers
+or the limiter realise only part of a predicted change, the next calculation expects only that part.
 """
 from __future__ import annotations
 
@@ -18,7 +20,8 @@ from dataclasses import dataclass, field, replace
 import numpy as np
 
 from .actions import band_db, eq_curve
-from .analysis import K_WEIGHT, TONAL_BANDS, MaskingFrames, band_label, masking, masking_alignment, smooth
+from .analysis import (K_WEIGHT, TONAL_BANDS, MaskingFrames, band_label, masking, masking_alignment,
+                       shape_difference, smooth)
 from .bands import BAND_COUNT, CENTRES, bands_between
 from .roles import LOW_END_ROLES
 
@@ -122,6 +125,8 @@ class Plan:
     excess_before: np.ndarray | None = None
     excess_after: np.ndarray | None = None
     unchanged: dict = field(default_factory=dict)  # key → why nothing changes there
+    diff_before: np.ndarray | None = None          # predicted tonal difference (before the tolerance)
+    diff_after: np.ndarray | None = None
 
     @property
     def benefit(self) -> float:
@@ -156,9 +161,12 @@ def floor_curve(src: Source) -> np.ndarray:
 
 # ── the tonal model ────────────────────────────────────────────────────────
 class Model:
-    """Predicts the master's tonal distance to the target from changes to the channels."""
+    """Predicts the master's tonal distance to the target from changes to the channels.
 
-    def __init__(self, master, leaves: dict[str, np.ndarray], target):
+    `sensitivity` per band: the share of a calculated change that reaches the master, learned from measured
+    packages (1 = as calculated)."""
+
+    def __init__(self, master, leaves: dict[str, np.ndarray], target, sensitivity=None):
         self.power = {k: 10 ** (np.asarray(b, dtype=float) / 10) for k, b in leaves.items()}
         self.total = np.maximum(sum(self.power.values()), 1e-30) if self.power else np.ones(BAND_COUNT)
         self.mb, self.loud = np.asarray(master.bands_db, dtype=float), float(master.loudness)
@@ -169,17 +177,28 @@ class Model:
         self.offset = None if target.offset is None else np.asarray(target.offset, dtype=float)
         self.anchor = list(target.anchor or [])
         self.one_sided = list(target.one_sided or [])
+        self.lump = bool(getattr(target, "lump_low", False))
+        self.k = np.ones(BAND_COUNT) if sensitivity is None else np.asarray(sensitivity, dtype=float)
 
-    def excess(self, ratio: np.ndarray) -> np.ndarray:
-        """`ratio`: new over old power per band of the summed channels, shape (..., bands)."""
-        ratio = np.maximum(ratio, 1e-6)
+    def effective(self, ratio: np.ndarray) -> np.ndarray:
+        """The power ratio that reaches the master: the calculated one, scaled in dB by the sensitivity."""
+        return np.maximum(ratio, 1e-6) ** self.k
+
+    def diff(self, ratio: np.ndarray) -> np.ndarray:
+        """`ratio`: new over old power per band of the summed channels, shape (..., bands).
+        The tonal difference to the target like analysis.compare computes it, before the tolerance."""
+        ratio = self.effective(ratio)
         mb = self.mb + 10 * np.log10(ratio)
         loud = self.loud + 10 * np.log10((ratio * self.kw).sum(axis=-1) / self.kw_sum)
-        diff = (mb - loud[..., None] - self.ref) @ SMOOTH.T
+        diff = shape_difference(mb - loud[..., None], self.ref, self.lump) @ SMOOTH.T
         if self.anchor:
             diff = diff - diff[..., self.anchor].mean(axis=-1, keepdims=True)
         if self.offset is not None:
             diff = diff - self.offset
+        return diff
+
+    def excess(self, ratio: np.ndarray) -> np.ndarray:
+        diff = self.diff(ratio)
         out = np.sign(diff) * np.maximum(0.0, np.abs(diff) - self.tol)
         if self.one_sided:
             out[..., self.one_sided] = np.maximum(0.0, out[..., self.one_sided])
@@ -194,11 +213,17 @@ def _weight(src: Source) -> float:
 
 
 def solve(master, sources: dict[str, Source], target, constraints: Constraints | None = None,
-          beat: bool = False, max_moves: int = MAX_MOVES) -> Plan:
-    """Greedy: each step takes the move with the best weighted predicted benefit until none is worth it."""
+          beat: bool = False, max_moves: int = MAX_MOVES, sensitivity=None, trust: float = 1.0) -> Plan:
+    """Greedy: each step takes the move with the best weighted predicted benefit until none is worth it.
+
+    `trust` (0.25–1) shrinks the largest change per band and fader after a package whose measured effect
+    fell short of the prediction; `sensitivity` is the learned per-band share (see `calibrate`)."""
     constraints = constraints or Constraints()
+    trust = float(np.clip(trust, 0.25, 1.0))
+    max_cut, max_boost = MAX_CUT_PER_SOLVE * trust, MAX_BOOST * trust
+    fader_range = (FADER_RANGE[0] * trust, FADER_RANGE[1] * trust)
     leaves = {k: s.bands_db for k, s in sources.items() if not s.is_group}
-    model = Model(master, leaves, target)
+    model = Model(master, leaves, target, sensitivity)
     gain = {k: np.zeros(BAND_COUNT) for k in leaves}     # dB added to each leaf so far
     planned = {}                                          # (key, kind, idx) → Move
     eq_added = {k: np.zeros(BAND_COUNT) for k in sources}
@@ -213,7 +238,7 @@ def solve(master, sources: dict[str, Source], target, constraints: Constraints |
 
     num = numerator()
     cost = float(model.cost(num / model.total))
-    start, excess_before = cost, model.excess(num / model.total)
+    start, excess_before, diff_before = cost, model.excess(num / model.total), model.diff(num / model.total)
 
     for _ in range(max_moves):
         best = None
@@ -241,7 +266,7 @@ def solve(master, sources: dict[str, Source], target, constraints: Constraints |
                                                      for b in src.eq)
                     if not reuses and new_bands[src.key] >= min(src.eq_free, MAX_NEW_BANDS):
                         continue
-                    for step, boost in ((CUT_STEP, False), (BOOST_STEP, True)):
+                    for step, boost in ((max(CUT_STEP, -max_cut), False), (min(BOOST_STEP, max_boost), True)):
                         new = old + step
                         if (src.key, "bell", idx) in constraints.banned:
                             continue
@@ -249,10 +274,10 @@ def solve(master, sources: dict[str, Source], target, constraints: Constraints |
                         if cap is not None and abs(new) > cap + 1e-6:
                             continue
                         if boost:
-                            if new > MAX_BOOST or old < 0 or (beat and idx in VOCAL_RANGE):
+                            if new > max_boost + 1e-6 or old < 0 or (beat and idx in VOCAL_RANGE):
                                 continue
                         else:
-                            if old > 0 or -new > MAX_CUT_PER_SOLVE:
+                            if old > 0 or -new > max_cut + 1e-6:
                                 continue
                         delta = bell(idx, new, TONE_Q) - bell(idx, old, TONE_Q)
                         after = eq_added[src.key] + delta
@@ -277,7 +302,7 @@ def solve(master, sources: dict[str, Source], target, constraints: Constraints |
                 for step in (-1.0, 1.0):
                     new = fader_added[src.key] + step
                     cap = constraints.caps.get((src.key, "fader", None))
-                    if not FADER_RANGE[0] <= new <= FADER_RANGE[1] or (src.key, "fader", None) in constraints.banned:
+                    if not fader_range[0] - 1e-6 <= new <= fader_range[1] + 1e-6 or (src.key, "fader", None) in constraints.banned:
                         continue
                     if cap is not None and abs(new) > cap + 1e-6:
                         continue
@@ -289,7 +314,7 @@ def solve(master, sources: dict[str, Source], target, constraints: Constraints |
             ratio = (num + amount * (10 ** (curves / 10) - 1)) / model.total
             costs = model.cost(ratio)
             # No move may make a channel lose more against the master than the layer protection allows.
-            master_delta = 10 * np.log10(np.maximum((np.maximum(ratio, 1e-6) * model.kw).sum(axis=-1), 1e-30) / model.kw_sum)
+            master_delta = 10 * np.log10(np.maximum((model.effective(ratio) * model.kw).sum(axis=-1), 1e-30) / model.kw_sum)
             allowed = np.ones(len(curves), dtype=bool)
             for k in members:
                 weighted = model.power[k] * K_WEIGHT
@@ -325,11 +350,12 @@ def solve(master, sources: dict[str, Source], target, constraints: Constraints |
         cost = new_cost
 
     moves = [m for m in planned.values() if m.kind == "low_cut" or abs(m.gain) >= 0.05]
-    excess_after = model.excess(num / model.total)
+    excess_after, diff_after = model.excess(num / model.total), model.diff(num / model.total)
     shares = {k: _share(model, sources[k], leaves) for k in sources}
     for m in moves:
         m.reason = _reason(m, sources[m.key], shares[m.key], excess_before)
-    plan = Plan(sorted(moves, key=lambda m: -m.benefit), start, cost, excess_before, excess_after)
+    plan = Plan(sorted(moves, key=lambda m: -m.benefit), start, cost, excess_before, excess_after,
+                diff_before=diff_before, diff_after=diff_after)
     for i, m in enumerate(plan.moves, 1):
         m.id = i
     changed = {m.key for m in moves}
@@ -343,6 +369,31 @@ def solve(master, sources: dict[str, Source], target, constraints: Constraints |
         else:
             plan.unchanged[k] = "no move with enough predicted benefit within its limits"
     return plan
+
+
+SENSITIVITY_RANGE = (0.25, 1.25)
+MIN_PREDICTED_DB = 0.75   # bands whose predicted change is smaller than this say little against measurement spread
+
+
+def calibrate(sensitivity, plan: Plan, measured_before: np.ndarray, measured_after: np.ndarray):
+    """Per-band sensitivity after a measured package, and the share of the predicted change that was measured.
+
+    Compares the predicted change of the tonal difference with the measured one, in the bands where the
+    prediction was clearly above measurement spread. A band that realised half of what was calculated gets
+    about 0.7 of its sensitivity (half the step towards the measured value, so one noisy package cannot
+    swing it); bands without evidence keep theirs. Returns (sensitivity, share or None)."""
+    k = np.ones(BAND_COUNT) if sensitivity is None else np.asarray(sensitivity, dtype=float).copy()
+    if plan.diff_before is None or plan.diff_after is None:
+        return k, None
+    predicted = np.asarray(plan.diff_after) - np.asarray(plan.diff_before)
+    measured = np.asarray(measured_after, dtype=float) - np.asarray(measured_before, dtype=float)
+    use = [i for i in TONAL_BANDS if abs(predicted[i]) >= MIN_PREDICTED_DB]
+    if not use:
+        return k, None
+    share = float(np.dot(measured[use], predicted[use]) / np.dot(predicted[use], predicted[use]))
+    ratio = np.clip(measured[use] / predicted[use], 0.0, 1.5)   # the wrong direction counts as nothing reached
+    k[use] = np.clip(k[use] * np.sqrt(np.maximum(ratio, 0.1)), *SENSITIVITY_RANGE)
+    return k, share
 
 
 def _share(model: Model, src: Source, leaves) -> np.ndarray:

@@ -1132,7 +1132,11 @@ def make_handler(runner: Runner, watcher: "DownloadWatcher | None" = None, live_
                             if (preview_trial.get("folder") != folder or not preview.selected_file(
                                     folder, preview_trial.get("which"), preview_trial.get("id"))):
                                 raise ValueError("choose a blind preview first")
-                            return self._send(200, {"which": preview_trial["which"]})
+                            out = {"which": preview_trial["which"]}
+                            if body.get("verdict") is not None:
+                                ab.record_vote(folder, preview_trial["which"], body["verdict"], preview_trial.get("id"))
+                                out["votes"] = ab.vote_summary(folder)
+                            return self._send(200, out)
                         versions = preview.available(folder)
                         if not all(versions.values()):
                             raise ValueError("both audio previews must be ready")

@@ -113,9 +113,26 @@ def smooth(x: np.ndarray, width: int = 3) -> np.ndarray:
 TONAL_BANDS = bands_between(30, 16000)
 
 
-def tonal_difference(mix: Stats, ref: Stats) -> np.ndarray:
+# With few references the bass fundamental of their key would dictate single third-octave bands: there the
+# low end counts as one sum.
+LOW_LUMP = bands_between(30, 120)
+
+
+def shape_difference(mix_shape: np.ndarray, ref_shape: np.ndarray, lump: bool = False) -> np.ndarray:
+    """mix minus reference per band (any leading dimensions); with `lump`, 30–120 Hz as one power sum."""
+    mix_shape, ref_shape = np.asarray(mix_shape, dtype=float), np.asarray(ref_shape, dtype=float)
+    d = mix_shape - ref_shape
+    if lump:
+        mix_low = 10 * np.log10(np.sum(10 ** (mix_shape[..., LOW_LUMP] / 10), axis=-1))
+        ref_low = 10 * np.log10(np.sum(10 ** (ref_shape[..., LOW_LUMP] / 10), axis=-1))
+        d = d.copy()
+        d[..., LOW_LUMP] = np.expand_dims(mix_low - ref_low, -1)
+    return d
+
+
+def tonal_difference(mix: Stats, ref: Stats, lump: bool = False) -> np.ndarray:
     """Positive = the mix has more in that band than the reference (at equal loudness)."""
-    return smooth(mix.shape_db - ref.shape_db)
+    return smooth(shape_difference(mix.shape_db, ref.shape_db, lump))
 
 
 @dataclass
@@ -143,10 +160,12 @@ class Comparison:
 
 
 def compare(mix: Stats, ref: Stats, loudness: float | None = None, tolerance: np.ndarray | None = None,
-            one_sided: list[int] = (), offset: np.ndarray | None = None, anchor: list[int] = ()) -> Comparison:
+            one_sided: list[int] = (), offset: np.ndarray | None = None, anchor: list[int] = (),
+            lump: bool = False) -> Comparison:
     """`anchor`: bands whose mean difference is taken as level 0 (instead of equal loudness);
-    `offset`: per band, how much more (+) or less (−) the mix is expected to have than the reference."""
-    diff = tonal_difference(mix, ref)
+    `offset`: per band, how much more (+) or less (−) the mix is expected to have than the reference;
+    `lump`: the low end 30–120 Hz compared as one sum."""
+    diff = tonal_difference(mix, ref, lump)
     if len(anchor):
         diff = diff - float(np.mean(diff[list(anchor)]))
     if offset is not None:

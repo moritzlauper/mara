@@ -79,6 +79,13 @@ class TapHub:
         with self.lock:
             return list(self.taps.values())
 
+    def latest(self, kind: str) -> Tap | None:
+        """The tap of this kind that sent the newest frame (a removed tap keeps its old entry)."""
+        taps = [t for t in self.snapshot() if t.kind == kind]
+        with self.lock:
+            newest = {id(t): (t.frames[-1].t if t.frames else -1.0) for t in taps}
+        return max(taps, key=lambda t: newest[id(t)], default=None)
+
     def by_name(self) -> dict[tuple[str, str], Tap]:
         """(kind, name) → tap, to match taps to the tracks the remote script reports."""
         return {(t.kind, t.name): t for t in self.snapshot() if t.name}

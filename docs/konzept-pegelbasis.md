@@ -104,6 +104,24 @@ Die zweite Etappe bringt die Balance-Phase mit Dynamikprofil, die Verdeckung geg
 
 Die dritte Etappe ist eine berechnete Dynamikstufe: Kompressoren mit Threshold und Ratio aus der gemessenen Pegelverteilung des Kanals, geprüft an der gemessenen Gain Reduction. Für Beats aus Samples und Synths ist sie weniger dringend als für Gesang.
 
+## Umsetzung Etappe 1 (14.11.2026)
+
+Die offenen Entscheide sind gefallen: Ziel ist die gleiche Dichte wie die Referenzen (der Mix endet etwa 1 LU leiser als ein Master bei 0 dBFS), der Trim ist ein Utility auf Main, und die Pegelbasis bezieht sich auf das 99. Perzentil der Peaks.
+
+Umgesetzt ist Folgendes:
+
+- Der Tap meldet sich mit seiner eigenen Geräte-ID. Ein Tap auf Main, hinter dem noch ein Tap folgt, meldet sich als «master_in». In der Analyse setzt Mara «MARA Trim» und diesen Eingangs-Tap vor Clipper und Limiter. Neue Geräte auf Main landen vor dem Trim, Limiter und Clipper dahinter. Ein älteres Tap-Script erkennt Mara daran, dass innert fünf Sekunden keine Eingangsmessung ankommt. Dann nimmt sie beide Geräte wieder heraus und arbeitet ohne Pegelbasis.
+- Den Peak für den Trim liefert der Durchlauf durch den ganzen Song, der ohnehin stattfindet. Dafür braucht es keine zusätzliche Messung. Der Trim wird erst nach der Vorher-Aufnahme gesetzt, sodass diese das Original bleibt. Ohne eingeschalteten Limiter bleibt der Eingang 3 dB unter der Ceiling, sonst scheitern die Pakete an der Headroom-Prüfung. Ein vorhandener Limiter bekommt die Ceiling von -1 dBFS.
+- Der Trim wird nicht nach jedem Paket nachgeführt, sondern einmal vor dem Lautheitsschritt, und nur wenn er sich um mindestens 1 dB verschoben hat. Das spart pro Paket eine Messung. Die Pakete selbst dürfen den Pegel ohnehin um höchstens 0.3 dB anheben.
+- Jedes gemessene Paket kalibriert die Empfindlichkeit pro Band, auch ein zurückgenommenes. Fällt ein Paket hinter der Vorhersage zurück, rechnet der Solver mit halber Schrittweite neu, statt abzubrechen.
+- Der Lautheitsschritt hält 0.2 dB Abstand zur Dichte der Referenzen. Scheitert der erste Schritt trotzdem, wird der zweite aus dem gemessenen PLR-Verlust pro dB berechnet.
+- Bei weniger als drei Referenzen gilt der Toleranzboden, und 30–120 Hz werden als Summe verglichen. Das Fenster für den Gesang im Beat-Modus bleibt davon unberührt.
+- Die Basismessung umfasst drei statt zwei Durchgänge.
+- Im Schlussbericht stehen die Kette (Eingangspeak, Trim, Limiter, Clipper, Peak-Reduktion, Lautheitsgewinn) und die geprüften anderen Passagen im Vergleich zum Original.
+- Die Blindwahl wird in `runs/blind-votes.jsonl` gespeichert und mit dem einseitigen Binomialtest gegen Raten ausgewertet.
+
+Offen sind die Songposition im Frame und die RMS-Länge nach Samplerate. Beides erfordert eine Änderung am Max-Patch, die ich ohne Max nicht prüfen kann. Ebenfalls offen ist der Kohärenzrest zwischen der Kanalsumme und dem Eingangs-Tap. Im Simulator dauert ein kompletter Lauf 5.8 statt 4.9 Minuten. Die zusätzliche Zeit entfällt auf den dritten Basisdurchgang und das Nachführen des Trims. In einer echten Live-Session ist der Ablauf noch nicht gelaufen.
+
 ## Was bleibt
 
 Alle Schutzregeln, das Journal, A/B, die Checkpoints und die Mix-Richtung bleiben: Platz für Gesang, Master-EQ höchstens 3 dB Schnitt, ausgeschaltete Geräte unberührt, Höhen offen. Die Grenzen 5 und 4 dB bleiben als Zahlen und gelten neu für die gemessene Gain Reduction.

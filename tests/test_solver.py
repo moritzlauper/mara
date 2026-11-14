@@ -151,10 +151,10 @@ def test_limiter_gain_is_no_lost_layer_and_loudness_stops_at_the_references_dens
                            "t2": replace(st, loudness=-22)}}
 
     before = measured(st, 2.5)
-    louder = measured(replace(st, loudness=-9.5, plr=7.5), 0.0)      # +2.5 LU, 0.5 dB denser than the refs
+    louder = measured(replace(st, loudness=-10.0, plr=8.0), 0.0)     # +2 LU, exactly as dense as the refs
     assert evaluate(before, louder, anchor(before), "loudness", .05)[0]
-    squashed = measured(replace(st, loudness=-9.0, plr=6.0), 0.0)    # 2 dB denser than the references
-    ok, why = evaluate(before, squashed, anchor(before), "loudness", .05)
+    denser = measured(replace(st, loudness=-9.5, plr=7.5), 0.0)      # 0.5 dB denser than the references
+    ok, why = evaluate(before, denser, anchor(before), "loudness", .05)
     assert not ok and "denser" in why
 
 
@@ -268,3 +268,128 @@ def test_a_stopped_calculated_run_continues_without_the_master_phase(tmp_path, m
     text = "\n".join(second)
     assert "Master against the reference" not in text and "━━ Channel pass" in text and "━━ Final check" in text
     assert not (tmp_path / "checkpoint.json").exists()
+
+
+# ── level base, calibration, few references ───────────────────────────────
+def test_calibration_learns_how_much_of_a_predicted_change_reaches_the_master():
+    plan = solver.Plan([], 1.0, 0.5, diff_before=np.zeros(BAND_COUNT), diff_after=np.zeros(BAND_COUNT))
+    plan.diff_after[14:17] = -2.0                         # predicted: 2 dB less around 500 Hz
+    measured = np.zeros(BAND_COUNT)
+    measured[14:17] = -1.0                                # measured: half of it
+    k, share = solver.calibrate(None, plan, np.zeros(BAND_COUNT), measured)
+    assert share == pytest.approx(0.5)
+    assert np.all(k[14:17] < 0.8) and np.all(k[:14] == 1.0)
+    # The model with that sensitivity expects less from the same cut.
+    mix = muddy_mix()
+    master = stats_of(power_sum(*(s.bands_db for s in mix.values())))
+    flat = target_for(pink(-30))
+    full = solver.solve(master, mix, flat)
+    damped = solver.solve(master, mix, flat, sensitivity=np.where(np.arange(BAND_COUNT) >= 0, 0.5, 1.0))
+    assert damped.benefit < full.benefit
+
+
+def test_a_smaller_trust_region_makes_smaller_moves():
+    mix = muddy_mix()
+    master = stats_of(power_sum(*(s.bands_db for s in mix.values())))
+    plan = solver.solve(master, mix, target_for(pink(-30)), trust=0.5)
+    assert plan.moves and all(abs(m.gain) <= 1.5 + 1e-6 for m in plan.moves if m.kind == "bell")
+    assert all(-1.5 - 1e-6 <= m.gain <= 1.0 + 1e-6 for m in plan.moves if m.kind == "fader")
+
+
+def test_the_low_end_counts_as_one_sum_when_it_is_lumped():
+    from mixmatch.analysis import LOW_LUMP, shape_difference
+
+    ref = np.full(BAND_COUNT, -20.0)
+    mix = ref.copy()
+    mix[LOW_LUMP[3]] = -60.0                               # the bass note sits in another band than the ref's
+    mix[LOW_LUMP[1]] = 10 * np.log10(2 * 10 ** (-2.0) - 10 ** (-6.0))   # same power sum overall
+    assert np.abs(shape_difference(mix, ref, lump=True)[LOW_LUMP]).max() < 0.01
+    assert np.abs(shape_difference(mix, ref)[LOW_LUMP]).max() > 2.9
+
+
+def test_few_references_get_a_tolerance_floor_but_keep_the_vocal_window():
+    from mixmatch.analysis import Stats
+    from mixmatch.reference import VOCAL_RANGE, Reference, ReferenceSet, tolerance_floor
+
+    def ref(seed):
+        bands = np.full(31, -22.0) + np.random.default_rng(seed).normal(0, 0.2, 31)
+        return Reference(f"{seed}.wav", Stats(10, -7.5, bands, bands + 7.5, 0.0, 7.5, -10.0, -25.0, 1.0))
+
+    def target(n, beat):
+        rs = ReferenceSet.__new__(ReferenceSet)
+        rs.log, rs.refs = (lambda *_: None), [ref(i) for i in range(n)]
+        return rs.target(beat=beat)
+
+    one = target(1, beat=False)
+    assert one.lump_low and np.all(one.tolerance >= tolerance_floor() - 1e-9)
+    beat = target(1, beat=True)
+    assert np.allclose(beat.tolerance[VOCAL_RANGE], 0.5 + 2.0)      # 0–4 dB under the song, as before
+    many = target(3, beat=False)
+    assert not many.lump_low and many.tolerance.max() < 1.0
+
+
+def test_blind_votes_are_counted_against_guessing(tmp_path):
+    from mixmatch import ab
+
+    for hidden, verdict in [("after", "better"), ("before", "worse"), ("after", "better"), ("before", "better")]:
+        ab.record_vote(str(tmp_path), hidden, verdict, "p1")
+    summary = ab.vote_summary(str(tmp_path))
+    assert summary["after_preferred"] == 3 and summary["total"] == 4
+    assert summary["p_value"] == pytest.approx(5 / 16)
+    with pytest.raises(ValueError):
+        ab.record_vote(str(tmp_path), "after", "maybe")
+
+
+def main_with_tap(limiter=False):
+    from mixmatch import sim
+
+    song, hub, env, live = demo_project()
+    song.master_track.devices.append(sim.tap())
+    if limiter:
+        song.master_track.devices.insert(0, sim.limiter())
+    return song, hub, env, live
+
+
+def test_the_input_stage_sits_in_front_of_the_loudness_chain_and_new_devices_find_their_place():
+    song, hub, env, live = main_with_tap(limiter=True)
+    agent = Agent(live, hub, RulePlanner(), Settings(settle=1.0), env=env, log=lambda *_: None)
+    assert agent.prepare_input_stage()
+    names = lambda: [d.name for d in song.master_track.devices]
+    assert names() == ["MARA Trim", "MixMatch Tap", "Limiter", "MixMatch Tap"]
+    assert hub.latest("master_in") is not None and hub.latest("master") is not None
+    agent.ex.apply([{"type": "eq", "track": "m", "freq_hz": 300, "gain_db": -1.0, "q": 1.0, "shape": "bell"}])
+    assert names() == ["EQ Eight", "MARA Trim", "MixMatch Tap", "Limiter", "MixMatch Tap"]
+    assert not agent.ex.ensure_input_stage()                     # nothing added twice
+
+
+def test_without_input_measurement_the_input_stage_comes_off_again(monkeypatch):
+    song, hub, env, live = main_with_tap()
+    monkeypatch.setattr(hub, "latest", lambda kind: None)        # a tap script that cannot tell its taps apart
+    logs = []
+    agent = Agent(live, hub, RulePlanner(), Settings(settle=1.0), env=env, log=logs.append)
+    assert not agent.prepare_input_stage()
+    assert [d.name for d in song.master_track.devices] == ["MixMatch Tap"]
+    assert any("Set up the connection" in l for l in logs)
+
+
+def test_a_complete_run_sets_the_level_base_and_reports_the_loudness_chain(tmp_path, monkeypatch):
+    from mixmatch import workflow
+
+    updates = []
+    monkeypatch.setattr(workflow, "update", lambda **values: updates.append(values))
+    song, hub, env, live = main_with_tap()
+    env.wait(5)
+    logs = []
+    agent = Agent(live, hub, RulePlanner(),
+                  Settings(minutes=None, complete=True, settle=1.0, roles_file=str(tmp_path / "r.json"),
+                           log_dir=str(tmp_path)), env=env, log=logs.append)
+    start = env.now()
+    agent.run()
+    text = "\n".join(logs)
+    assert "Level base: trim" in text and "model check:" in text
+    assert any(h.section == "level base" for h in agent.history)
+    report = next(u["quality_check"] for u in updates if "quality_check" in u)
+    chain = report["loudness_chain"]
+    assert abs(chain["input_peak_dbfs"] + 1.0) < 1.0 and chain["peak_reduction_db"] <= 9.5
+    assert any(c["name"] == "Loudness chain" for c in report["checks"])
+    assert (env.now() - start) / 60 < 10 and agent._mix_complete

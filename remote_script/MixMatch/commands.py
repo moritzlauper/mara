@@ -275,7 +275,8 @@ class Commands:
         return {"value": p.value, "display": _display(p), "min": p.min, "max": p.max}
 
     def load_device(self, req):
-        """Load a device into a track's chain: at the end, but before a «MixMatch Tap» so the tap keeps measuring last.
+        """Load a device into a track's chain: at the end, but before the last «MixMatch Tap» so it keeps measuring
+        last (Main can have a second tap in front of its loudness chain).
 
         `source` is «audio_effects» (built-in devices such as «EQ Eight», the
         default), «user_library» (e.g. the «MixMatch Tap» device itself) or
@@ -292,7 +293,7 @@ class Commands:
             raise CommandError("device %r not found in the browser" % req["name"])
         devices = list(track.devices)
         taps = [i for i, d in enumerate(devices) if d.name == TAP]
-        at = taps[0] if taps and _stem(req["name"]) != TAP.lower() else len(devices)
+        at = taps[-1] if taps and _stem(req["name"]) != TAP.lower() else len(devices)
         self.song.view.selected_track = track
         self.browser.load_item(item)  # Live appends at the end of the chain of the selected track
         if at < len(devices):
@@ -580,6 +581,18 @@ class Commands:
             self.song.delete_track(index)
         self.song.back_to_arranger = False  # the session clip had taken over this track only; play the arrangement
         return {"tracks": len(list(self.song.tracks))}
+
+    def rename_device(self, req):
+        """Give a device MARA created a name that says what it is («MARA Trim»)."""
+        track = self._track(req["track"])
+        index = req["device"]
+        if not isinstance(index, int) or not 0 <= index < len(list(track.devices)):
+            raise CommandError("unknown device %r" % index)
+        name = str(req["name"])[:60]
+        if not name.startswith("MARA "):
+            raise CommandError("only MARA devices are renamed")
+        list(track.devices)[index].name = name
+        return {"name": name}
 
     def delete_device(self, req):
         """Remove the device at `device` (index) from a track's chain."""

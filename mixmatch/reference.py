@@ -36,6 +36,11 @@ LOUD_WITHIN_LU = 3.0   # a block counts only this close to the loudest one: no f
 SHORT_CLIP_S = 60.0    # shorter files (e.g. 30 s previews) count half, and not for loudness and dynamics
 VOCAL_RANGE = bands_between(200, 5000)
 VOCAL_ROOM_DB = 4.0   # beat mode: how far under the song the vocal range may sit
+# With fewer references than this, one song (and its key, arrangement and mastering) would be the norm to
+# 0.5 dB per band. Below it the tolerance has a floor and the low end 30–120 Hz counts as one sum. The floor is
+# a starting value from typical spreads between mastered songs, not yet measured on a reference library.
+FEW_REFERENCES = 3
+TOLERANCE_FLOOR_DB, TOLERANCE_FLOOR_EDGES_DB = 1.5, 3.0   # mids; below 80 Hz and above 8 kHz
 
 
 # ── measuring a file like a tap would ──────────────────────────────────────
@@ -161,6 +166,11 @@ class Target:
     description: str = ""
     offset: np.ndarray | None = None  # per band: expected mix minus reference (beat mode: room for a vocal)
     anchor: list[int] = field(default_factory=list)     # bands that set the level of the comparison
+    lump_low: bool = False            # compare 30–120 Hz as one sum (few references: their key would decide)
+
+
+def tolerance_floor() -> np.ndarray:
+    return np.array([TOLERANCE_FLOOR_EDGES_DB if c < 80 or c > 8000 else TOLERANCE_FLOOR_DB for c in CENTRES])
 
 
 def _mean_stats(items: list[Stats], weights: list[float] | None = None) -> Stats:
@@ -198,13 +208,18 @@ class ReferenceSet:
         target = Stats(**{**target.__dict__, "loudness": level.loudness, "plr": level.plr, "peak_db": level.peak_db})
         spread = np.std([s.shape_db for s in full], axis=0) if len(full) > 1 else np.zeros(len(CENTRES))
         tolerance = 0.5 + spread / 2
+        few = len(full) < FEW_REFERENCES
+        base = tolerance
+        if few:
+            tolerance = np.maximum(tolerance, tolerance_floor())
         offset, anchor = None, []
         if beat:
-            # Room for a vocal: the beat may sit 0 to VOCAL_ROOM_DB under the song in the vocal range.
+            # Room for a vocal: the beat may sit 0 to VOCAL_ROOM_DB under the song in the vocal range. That window
+            # is set on purpose, so the floor for few references does not widen it.
             offset = np.zeros(len(CENTRES))
             offset[VOCAL_RANGE] = -VOCAL_ROOM_DB / 2
             tolerance = tolerance.copy()
-            tolerance[VOCAL_RANGE] += VOCAL_ROOM_DB / 2
+            tolerance[VOCAL_RANGE] = base[VOCAL_RANGE] + VOCAL_ROOM_DB / 2
             # The comparison is smoothed over three bands, so the edge of the vocal range bleeds one band out.
             edges = [VOCAL_RANGE[0] - 1, VOCAL_RANGE[-1] + 1]
             tolerance[edges] += VOCAL_ROOM_DB / 3
@@ -215,8 +230,11 @@ class ReferenceSet:
             how = "full references"
         clips = sum(r.short for r in self.refs)
         count = f"{len(full)} reference(s)" + (f", {clips} short clip(s) at half weight" if clips else "")
+        if few:
+            how += (f"; with fewer than {FEW_REFERENCES} references at least ±{TOLERANCE_FLOOR_DB:g} dB per band "
+                    f"(±{TOLERANCE_FLOOR_EDGES_DB:g} dB below 80 Hz and above 8 kHz), 30–120 Hz as one sum")
         return Target(stats=target, loudness=level.loudness, tolerance=tolerance,
-                      one_sided=[], offset=offset, anchor=anchor,
+                      one_sided=[], offset=offset, anchor=anchor, lump_low=few,
                       description=f"{count}, {how}; loudness and dynamics from the "
                                   f"{'whole tracks' if len(whole) < len(full) else 'full songs'}")
 
