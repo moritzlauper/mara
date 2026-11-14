@@ -12,12 +12,11 @@ It is a mixing assistant, not an automatic mastering button: you choose the refe
 
 ## What using it looks like
 
-1. Open your Live set and connect MARA once.
-2. Add one or more finished reference tracks, or let MARA suggest a starting set.
-3. Tell MARA what to protect or improve — for example, “keep the Rhodes warm; separate kick and sub; leave space for a vocal.”
-4. Let it analyse the relevant song section and proposed style, then check the detected instrument roles and references.
-5. Watch the mix pass, pause at safe checkpoints if needed, and listen to the loudness-matched Before/After result.
-6. Inspect every kept or reverted change. Keep the result, or restore the saved parameter state.
+1. Open your Live set, connect MARA once, and set the goal for the mix.
+2. Let MARA listen to the song with Live muted, then check the detected instrument roles if needed.
+3. Add one or more finished reference tracks (or use MARA’s suggestions) and choose the mix depth.
+4. Start the mix pass, pause at safe checkpoints if needed, and listen to the loudness-matched Before/After result.
+5. Inspect every kept or reverted change. Keep the result, or restore the saved parameter state.
 
 The app records why it kept a change, such as a reduced kick/sub conflict or a closer reference balance. It does not hide changes behind a single score.
 
@@ -49,19 +48,19 @@ Choose whether the project is a beat awaiting vocals, an instrumental, or a song
 
 ![Project & goal: connection, tap coverage, project mode, and a specific mixing goal.](docs/images/01-project.png)
 
-### 2. Choose references
+### 2. Understand your mix
 
-Drag in one or more tracks that represent the sound and arrangement you are aiming for. A full track is more useful than a short preview. MARA builds a target from all selected references, so choose tracks that agree with each other.
+Choose **Analyse my mix**. MARA plays the song once with Live muted, finds a useful passage, recognises the instruments, and describes the likely style. Check the detected channel roles and priorities before continuing; a bass, lead, and pad can need different treatment even when their frequency content overlaps.
 
-Your selections also give the reference search its strongest stylistic signal. After **Analyse my mix**, MARA listens to the song with Live muted, describes the likely style, and can suggest recent tracks in that lane. Your goal and chosen references take precedence over the audio-based style estimate; the latter is only a fallback and can be wrong, especially for newer electronic styles or half-/double-time tempos. MARA keeps your own references at the top and does not suggest them again. Listen to a preview, then add only full files you actually want to mix against.
+![Your mix: analysis summary, detected instrument roles, and the path to references.](docs/images/02-your-mix.png)
 
-![References: selected tracks, import, and library access.](docs/images/02-references.png)
+### 3. Choose references
 
-### 3. Check the analysis
+Drag in one or more tracks that represent the sound and arrangement you are aiming for, then select **Thorough** or **Fast** and start mixing. A full track is more useful than a short preview. MARA builds a target from all selected references, so choose tracks that agree with each other.
 
-MARA scans the chosen song range, finds a useful passage, and asks you to review channel roles and priorities. Correct anything that is wrong before continuing — a bass, lead, and pad can need different treatment even when their frequency content overlaps.
+The analysis gives reference suggestions their strongest stylistic signal. Your goal and chosen references take precedence over the audio-based style estimate; the latter is only a fallback and can be wrong, especially for newer electronic styles or half-/double-time tempos. MARA keeps your own references at the top and does not suggest them again. Listen to a preview, then add only full files you actually want to mix against.
 
-![Analysis: role review and the recorded original preview.](docs/images/03-analysis.png)
+![References: mix-depth choice, selected tracks, and import controls.](docs/images/03-references.png)
 
 ### 4. Follow the mix pass
 

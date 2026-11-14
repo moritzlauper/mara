@@ -82,6 +82,13 @@ def state(scene):
         "reference_files": ["01 — Glass Skyline (demo reference).wav", "02 — Late Train (demo reference).wav"],
         "project_references": [], "reference_candidates": [{"id": "demo-extra", "name": "03 — Blue Hour (demo reference).wav"}],
         "to_get": [], "song": "Liquid drum & bass · 174 BPM · F minor · 96 bars. Focus passage: bars 49–65.",
+        "understanding": {
+            "text": "Liquid drum & bass with a deep sub, punchy drums and warm Rhodes. The main tension is between kick and sub around 63 Hz.",
+            "key": "F minor", "tempo": 174, "style": "Liquid drum & bass",
+            "loudest": {"from": 49, "to": 65, "lufs": -12.7},
+            "families": [{"family": "drums", "count": 2}, {"family": "bass", "count": 1},
+                         {"family": "keys", "count": 1}, {"family": "pads", "count": 1}],
+        } if prepared else None,
         "previews": {"before": PREVIEW if prepared else None, "after": {**PREVIEW, "id": "demo-after"} if finished else None},
         "loudness_match": {"ready": finished, "version": "demo", "target_lufs": -12.1},
         "parts": parts if measured else {}, "target_lufs": -10.5,
