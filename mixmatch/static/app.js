@@ -84,6 +84,9 @@ $('go-references').onclick=()=>show('references');
 $('analyse').onclick=()=>action(async()=>{if(state?.workflow?.status==='ready'){show('analysis');return;}await api('/api/analyse',runBody({auto_mix:true}));show('analysis');});
 $('start-top').onclick=()=>$('start').click();
 $('start').onclick=()=>action(async()=>{if(rolesDirty)await saveRoles();await api('/api/run',runBody({continue:!!state.checkpoint}));show('mix');});
+let startOverArmed=0;
+$('start-over').onclick=()=>{if(Date.now()-startOverArmed>4000){startOverArmed=Date.now();$('start-over').textContent='Click again to start over';setTimeout(()=>{if(Date.now()-startOverArmed>=4000)$('start-over').textContent='Start over';},4100);return;}
+ startOverArmed=0;$('start-over').textContent='Start over';action(async()=>{const r=await api('/api/start-over',{});pausedRequested=false;message(r.stopping?'Stopping at the next safe step, then starting over. The changes MARA kept stay in Live; Restore original in Result resets them.':'Started over. MARA analyses the song again.');show('analysis');});};
 $('resume').onclick=()=>action(async()=>{await api('/api/run',runBody({continue:true}));pausedRequested=false;show('mix');});
 $('pause').onclick=()=>action(async()=>{await api('/api/stop',{});pausedRequested=true;message('Pausing at the next safe checkpoint. Any current test will be restored first.');});
 $('repair').onclick=()=>action(async()=>{await api('/api/preview/repair',{});message('Recording missing previews. The mix stays unchanged.');});

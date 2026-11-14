@@ -101,3 +101,12 @@ def presentation(folder: str, legacy: dict, *, active: bool, previews: dict, che
                       "mix" if status in ACTIVE | {"paused", "interrupted", "failed"} else
                       "analysis" if status == "ready" else "project")
     return state
+
+
+def start_over(folder: str) -> dict:
+    """Discard a stopped run's progress: the next start analyses the song again. The mix in Live, logs,
+    recordings and references stay; only the saved place to continue from (and its analysis) goes."""
+    for name in ("checkpoint.json", "understanding.json", "pause.request", "cancel.request"):
+        (Path(folder) / name).unlink(missing_ok=True)
+    return write(folder, {"schema": 1, "id": uuid.uuid4().hex, "kind": "mix", "status": "idle", "phase": None,
+                          "error": None, "mix_complete": False, "previews_ready": False})

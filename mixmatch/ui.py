@@ -1030,7 +1030,7 @@ def make_handler(runner: Runner, watcher: "DownloadWatcher | None" = None, live_
             nonlocal pinned_project
             try:
                 body = self._body()
-                if runner.running() and self.path not in ("/api/stop", "/api/output", "/api/open", "/api/analysis/review", "/api/roles", "/api/preferences", "/api/project", "/api/setup/planner", "/api/setup/models", "/api/songs/switch", "/api/songs/follow-live", "/api/preview/blind", "/api/preview/reveal",
+                if runner.running() and self.path not in ("/api/stop", "/api/start-over", "/api/output", "/api/open", "/api/analysis/review", "/api/roles", "/api/preferences", "/api/project", "/api/setup/planner", "/api/setup/models", "/api/songs/switch", "/api/songs/follow-live", "/api/preview/blind", "/api/preview/reveal",
                                                                "/api/references/choose", "/api/references/remove",
                                                                "/api/references/reuse", "/api/references/hide",
                                                                "/api/references/use", "/api/references/import"):
@@ -1290,6 +1290,17 @@ def make_handler(runner: Runner, watcher: "DownloadWatcher | None" = None, live_
                 if self.path == "/api/stop":
                     runner.stop()
                     return self._send(200, {"ok": True})
+                if self.path == "/api/start-over":
+                    from . import workflow
+                    folder = os.path.join(runner.workdir, "runs")
+                    if runner.running() or run_process_alive():
+                        # Stops at the next safe step (any change under test is undone), then discards the progress.
+                        os.makedirs(folder, exist_ok=True)
+                        open(os.path.join(folder, "cancel.request"), "w").close()
+                        runner.stop()
+                        return self._send(200, {"stopping": True})
+                    workflow.start_over(folder)
+                    return self._send(200, {"stopping": False})
                 if self.path == "/api/references/use":
                     return self._send(200, {"saved": download_reference(runner.workdir, body.get("url", ""),
                                                                         body.get("name", ""))})

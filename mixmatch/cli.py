@@ -223,6 +223,9 @@ def cmd_run(args):
         workflow.update(status="preview_failed" if current.get("mix_complete") else "failed", error=str(e))
         raise
     finally:
+        if os.path.exists(os.path.join("runs", "cancel.request")):   # «Start over» while the run was going
+            workflow.start_over("runs")
+            print("Run cancelled: its progress is discarded, the next start analyses the song again.")
         workflow.end()
 
 

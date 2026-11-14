@@ -199,3 +199,16 @@ def test_the_analysis_progress_only_moves_forward(tmp_path, monkeypatch):
     assert starts == sorted(starts) and starts[0] == 0 and starts[-1] == 1.0
     assert abs(updates[1]["base"] - 60 / 180) < 1e-3 and updates[0]["by_position"]
     assert [u["step"] for u in updates[:3]] == [1, 2, 3] and updates[0]["steps"] == 3
+
+
+def test_start_over_discards_the_saved_progress(tmp_path):
+    from mixmatch import workflow
+
+    folder = tmp_path
+    for name in ("checkpoint.json", "understanding.json", "pause.request"):
+        (folder / name).write_text("{}")
+    workflow.write(str(folder), {"schema": 1, "id": "a", "kind": "mix", "status": "paused"})
+    workflow.start_over(str(folder))
+    assert not any((folder / n).exists() for n in ("checkpoint.json", "understanding.json", "pause.request"))
+    state = workflow.presentation(str(folder), {}, active=False, previews={}, checkpoint=None)
+    assert state["status"] == "idle" and state["stage"] == "project"

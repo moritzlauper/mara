@@ -306,15 +306,13 @@ class Commands:
         devices = list(track.devices)
         taps = [i for i, d in enumerate(devices) if d.name == TAP]
         at = taps[-1] if taps and _stem(req["name"]) != TAP.lower() else len(devices)
-        previous = self.song.view.selected_track
         self.song.view.selected_track = track
-        try:
-            self.browser.load_item(item)  # Live appends at the end of the chain of the selected track
-            if at < len(devices):
-                new = list(track.devices)[-1]
-                self.song.move_device(new, track, at)
-        finally:
-            self._give_back_view(previous)
+        self.browser.load_item(item)  # Live appends at the end of the chain of the selected track
+        if at < len(devices):
+            new = list(track.devices)[-1]
+            self.song.move_device(new, track, at)
+        # The selection is given back once at the end of a run («view»), never right after a load: switching the
+        # selected track at once could send the device to another track.
         return {"index": at}
 
     def _give_back_view(self, track):
