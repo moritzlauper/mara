@@ -84,6 +84,10 @@ class SolverFlow:
         if phase not in ("master", "channels", "character", "effects", "final"):
             phase = "master"
         self.sync_references()
+        # A run continued in thorough mode after a fast start: its progress total did not count the character pass.
+        if (self.s.depth == "thorough" and phase in ("master", "channels", "character")
+                and getattr(self, "_ck", {}).get("depth") != "thorough"):
+            self.progress(total_add=self.W_CHARACTER)
         if phase == "master":
             self.log("\n━━ Master against the reference")
             self.log(f"\n▶ {name}")
@@ -120,7 +124,7 @@ class SolverFlow:
             self.final_solver(main, deadline)
 
     def _save_solver_checkpoint(self, phase: str) -> None:
-        self.save_checkpoint(phase=phase, next_channel=None, engine="solver",
+        self.save_checkpoint(phase=phase, next_channel=None, engine="solver", depth=self.s.depth,
                              protected=sorted(self._constraints.frozen))
 
     def _advance(self, share: float, step: str) -> None:

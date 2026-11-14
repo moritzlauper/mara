@@ -1425,6 +1425,7 @@ class Agent(SolverFlow):
         except Exception as e:   # a description is a bonus: never stop the analysis for it
             self.log(f"  (no summary of the analysis: {str(e)[:100]})")
         self._ck = {"stamp": time.strftime("%Y-%m-%d %H:%M"), "main": list(main[0]), "beat": self.beat,
+                    "depth": self.s.depth,   # the progress total above counted the character pass for thorough
                     "harmony": getattr(self, "harmony", None),
                     "regions": {k: (list(v) if v else None) for k, v in self.regions.items()}}
         if self.s.complete:

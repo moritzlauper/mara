@@ -69,9 +69,14 @@ const fileDrag=e=>[...(e.dataTransfer?.types || [])].includes('Files');
 for(const name of ['dragenter','dragover'])document.addEventListener(name,e=>{if(!fileDrag(e))return;e.preventDefault();e.dataTransfer.dropEffect=stage==='references' && !state?.active?'copy':'none';$('drop').classList.toggle('over',stage==='references' && !state?.active);});
 document.addEventListener('dragleave',e=>{if(!e.relatedTarget)$('drop').classList.remove('over');});
 document.addEventListener('drop',e=>{if(!fileDrag(e))return;e.preventDefault();$('drop').classList.remove('over');if(stage==='references')upload([...e.dataTransfer.files]);else message('Open References to add audio files.');});
-function runBody(extra={}){return {reference_mode:'selected',silent:true,mode:$('mode').value,depth:$('depth').value,...extra};}
-try{const d=localStorage.getItem('mara-depth');if(d)$('depth').value=d;}catch{}
-$('depth').onchange=()=>{try{localStorage.setItem('mara-depth',$('depth').value);}catch{}};
+// One mix depth, shown the same way in References, Settings and Mix.
+let mixDepth='thorough';try{mixDepth=localStorage.getItem('mara-depth') || 'thorough';}catch{}
+const DEPTHS={thorough:['Thorough','about 25–30 min','Also compression and width per channel, and the planner on the important channels.'],fast:['Fast','about 15–20 min','Tone, balance, collisions and loudness: calculated, then measured.']};
+let depthLocked=false;
+function renderDepth(){for(const id of ['depth-refs','depth-settings','depth-mix'])markup(id,Object.entries(DEPTHS).map(([k,[title,time,what]])=>
+ `<button type="button" class="depth-option${mixDepth===k?' chosen':''}" data-depth="${k}" aria-pressed="${mixDepth===k}" ${depthLocked && id!=='depth-settings'?'disabled':''}><strong>${title}</strong><em>${time}</em>${id==='depth-mix'?'':`<small>${what}</small>`}</button>`).join(''));}
+document.addEventListener('click',e=>{const b=e.target.closest('[data-depth]');if(!b || b.disabled)return;mixDepth=b.dataset.depth;try{localStorage.setItem('mara-depth',mixDepth);}catch{}renderDepth();});
+function runBody(extra={}){return {reference_mode:'selected',silent:true,mode:$('mode').value,depth:mixDepth,...extra};}
 function canAnalyse(){const s=state || {},live=s.open_set;return !s.active && !s.running && live && live.taps>0 && s.following_live!==false && !s.understanding && s.workflow?.status!=='ready';}
 $('discover').onclick=()=>action(async()=>{await api('/api/analyse',runBody({reference_mode:'discover'}));show('analysis');});
 $('go-references').onclick=()=>show('references');
@@ -237,7 +242,7 @@ function render(s){const w=s.workflow || {},status=w.status || 'idle',live=s.ope
  const refs=(s.reference_files?.length || 0)+(s.project_references?.length || 0),taps=live && live.taps>0,connected=!!live && s.following_live!==false;
  $('analyse').disabled=active || !connected || !taps || !refs;$('analyse').textContent=status==='ready'?'Continue to the instruments →':'Analyse & mix →';
  renderUnderstanding(s,w,status,active);
- $('start').disabled=active || !connected || !taps || !refs;$('start-top').disabled=$('start').disabled;
+ $('start').disabled=active || !connected || !taps || !refs;$('start-top').disabled=$('start').disabled;$('start-top-hint').textContent=$('start-hint').textContent;depthLocked=active;renderDepth();$('depth-mix-label').textContent=active?`Mix depth · this run: ${DEPTHS[mixDepth][0]}. Change it for the next start or resume.`:'Mix depth for the next start or resume';
  $('start-hint').textContent=active?'':!connected?'Waiting for Ableton Live.':!taps?'Set the measurement taps first (Project).':!refs?'Choose at least one reference.':
   (status==='ready' || s.understanding)?'Starts with the saved analysis.':'MARA analyses the song first, then mixes.';
  $('references-context').textContent=active && w.purpose!=='references'?'You can change the references at any time. The running mix uses the new selection from its next phase.':'Choose references for the mix. Listen before adding a file to your selection.';
