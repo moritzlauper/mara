@@ -58,7 +58,10 @@ def install_bridge(library):
         raise ValueError("Choose your existing Ableton User Library folder.")
     root = resources()
     script = destination / "Remote Scripts/MixMatch"
-    device = destination / "MARA"
+    # Earlier installs put the tap into «MixMatch»: update that folder instead of adding a second «MixMatch Tap»
+    # (Max loads a device's script from the device's own folder first, so a copy elsewhere would stay unused).
+    legacy = destination / "MixMatch"
+    device = legacy if (legacy / "MixMatch Tap.amxd").exists() else destination / "MARA"
     for source, target in [(root / "remote_script/MixMatch", script), (root / "device", device)]:
         target.mkdir(parents=True, exist_ok=True)
         for item in source.iterdir():
