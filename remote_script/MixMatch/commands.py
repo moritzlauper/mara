@@ -306,12 +306,42 @@ class Commands:
         devices = list(track.devices)
         taps = [i for i, d in enumerate(devices) if d.name == TAP]
         at = taps[-1] if taps and _stem(req["name"]) != TAP.lower() else len(devices)
+        previous = self.song.view.selected_track
         self.song.view.selected_track = track
-        self.browser.load_item(item)  # Live appends at the end of the chain of the selected track
-        if at < len(devices):
-            new = list(track.devices)[-1]
-            self.song.move_device(new, track, at)
+        try:
+            self.browser.load_item(item)  # Live appends at the end of the chain of the selected track
+            if at < len(devices):
+                new = list(track.devices)[-1]
+                self.song.move_device(new, track, at)
+        finally:
+            self._give_back_view(previous)
         return {"index": at}
+
+    def _give_back_view(self, track):
+        """Loading selects the track and appoints the device (the blue hand): give both back to the user."""
+        try:
+            if track is not None:
+                self.song.view.selected_track = track
+        except Exception:
+            pass
+        try:
+            self.song.appointed_device = None
+        except Exception:
+            pass
+
+    def view(self, req):
+        """The user's selected track; with `selected_track` it is selected again, and no device stays appointed."""
+        if "selected_track" in req:
+            track = None
+            if req["selected_track"]:
+                try:
+                    track = self._track(req["selected_track"])
+                except Exception:
+                    track = None
+            self._give_back_view(track)
+        selected = self.song.view.selected_track
+        key = next((k for k, _, t in self._tracks() if t == selected), None)
+        return {"selected_track": key}
 
     def create_ducker(self, req):
         """Create one bounded parallel sidechain Compressor, or leave the set unchanged.

@@ -974,6 +974,10 @@ class Agent(SolverFlow):
         from . import ab
 
         stamp = time.strftime("%Y%m%d-%H%M%S")
+        try:   # what the user had selected in Live: given back at the end, without a device left appointed
+            self._user_view = self.live.request("view")
+        except Exception:
+            self._user_view = None
         self.ex.refresh()
         before_state = self.snapshot_state(main_volume)
         # The listening level of Before: master recordings (reference search, resonances) use it in silent mode.
@@ -1023,6 +1027,11 @@ class Agent(SolverFlow):
         finally:
             if main_volume is not None and not externally_muted:
                 self.restore_main_when_quiet(main_volume)
+            if getattr(self, "_user_view", None) is not None:
+                try:
+                    self.live.request("view", selected_track=self._user_view.get("selected_track"))
+                except Exception:
+                    pass
         try:
             self.ex.refresh()
             ab.save(self.snapshot_state(comparison_volume), self.s.log_dir, stamp, "after")
