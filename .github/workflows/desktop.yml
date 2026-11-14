@@ -170,9 +170,10 @@ jobs:
 
           These installers are not signed with a paid certificate. On macOS, open MARA once, then choose **System Settings → Privacy & Security → Open Anyway**. If macOS reports MARA as damaged, run \`xattr -cr /Applications/MARA.app\`. On Windows, choose **More info → Run anyway** in SmartScreen.
 
-          Prefer no installer? Run MARA in the browser with one line in Terminal (macOS/Linux):
+          Prefer no installer? Run MARA in the browser with one line.
 
-          \`curl -LsSf https://raw.githubusercontent.com/$GH_REPO/main/scripts/mara.sh | sh\`
+          - macOS/Linux (Terminal): \`curl -LsSf https://raw.githubusercontent.com/$GH_REPO/main/scripts/mara.sh | sh\`
+          - Windows (PowerShell): \`powershell -ExecutionPolicy ByPass -c "irm https://raw.githubusercontent.com/$GH_REPO/main/scripts/mara.ps1 | iex"\`
 
           Source: [$GITHUB_SHA](https://github.com/$GH_REPO/commit/$GITHUB_SHA)
           Build: [GitHub Actions run $GITHUB_RUN_NUMBER](https://github.com/$GH_REPO/actions/runs/$GITHUB_RUN_ID)

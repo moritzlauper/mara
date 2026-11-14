@@ -8,13 +8,21 @@ It is a mixing assistant, not an automatic mastering button: you choose the refe
 
 ## Get MARA
 
-**Easiest on macOS (no install, always up to date):** Open Terminal and paste this line:
+**Easiest (no install, always up to date):** Paste one line and MARA opens in your browser.
+
+macOS or Linux, in Terminal:
 
 ```bash
 curl -LsSf https://raw.githubusercontent.com/moritzlauper/mara/main/scripts/mara.sh | sh
 ```
 
-MARA opens in your browser. The first start takes about a minute; run the same line again whenever you want to use MARA, and it updates itself. Data is stored in `~/Library/Application Support/MARA`, the same place the desktop app uses. This also works on Linux.
+Windows, in PowerShell:
+
+```powershell
+powershell -ExecutionPolicy ByPass -c "irm https://raw.githubusercontent.com/moritzlauper/mara/main/scripts/mara.ps1 | iex"
+```
+
+The first start takes about a minute. Run the same line again whenever you want to use MARA, and it updates itself. Data is stored where the desktop app keeps it: `~/Library/Application Support/MARA` on macOS, `%LOCALAPPDATA%\MARA` on Windows.
 
 **Desktop app:** [Download from GitHub Releases](https://github.com/moritzlauper/mara/releases). The installers are not signed with a paid Apple or Microsoft certificate, so the system warns on the first start:
 
