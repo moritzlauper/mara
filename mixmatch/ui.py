@@ -1029,7 +1029,7 @@ def make_handler(runner: Runner, watcher: "DownloadWatcher | None" = None, live_
             nonlocal pinned_project
             try:
                 body = self._body()
-                if runner.running() and self.path not in ("/api/stop", "/api/output", "/api/analysis/review", "/api/roles", "/api/preferences", "/api/project", "/api/setup/planner", "/api/setup/models", "/api/songs/switch", "/api/songs/follow-live", "/api/preview/blind", "/api/preview/reveal"):
+                if runner.running() and self.path not in ("/api/stop", "/api/output", "/api/open", "/api/analysis/review", "/api/roles", "/api/preferences", "/api/project", "/api/setup/planner", "/api/setup/models", "/api/songs/switch", "/api/songs/follow-live", "/api/preview/blind", "/api/preview/reveal"):
                     raise RuntimeError("Pause the current operation safely first.")
                 if self.path == "/api/preferences":
                     from .preferences import save
@@ -1290,6 +1290,13 @@ def make_handler(runner: Runner, watcher: "DownloadWatcher | None" = None, live_
                 if self.path == "/api/references/import":
                     added = import_downloads(runner.workdir)
                     return self._send(200, {"added": added})
+                if self.path == "/api/open":
+                    # The desktop webview opens no new windows: shop and streaming links go to the default browser.
+                    url = str(body.get("url", ""))
+                    if urlsplit(url).scheme not in ("http", "https"):
+                        raise ValueError("only web links can be opened")
+                    webbrowser.open(url)
+                    return self._send(200, {"opened": True})
                 if self.path == "/api/references/remove":
                     path = safe_reference(runner.workdir, body.get("name", ""))
                     if not os.path.exists(path):

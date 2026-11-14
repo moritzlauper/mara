@@ -86,8 +86,19 @@ function phaseOf(phase=''){phase=phase.toLowerCase();return phase.startsWith('fi
 function renderReferences(s){
  markup('reference-list',(s.reference_files || []).map(name=>`<div class="card ref"><div><strong>${esc(name)}</strong><p class="muted">Selected for this project</p></div><button data-listen-name="${esc(name)}">Listen</button><button data-remove="${esc(name)}" ${s.active?'disabled':''}>Remove</button></div>`).join('')+(s.project_references || []).map(r=>`<div class="card ref"><div><strong>${esc(r.file?.split(/[\\/]/).pop() || r.track || r)}</strong><p class="muted">Reference clip in Live · ${esc(r.track)}</p></div></div>`).join(''));
  markup('candidates',(s.reference_candidates || []).filter(r=>!r.hidden && r.name.toLowerCase().includes($('reference-search').value.toLowerCase())).map(r=>`<div class="fact"><span>${esc(r.name)}</span><span class="row"><button data-listen-reference="${esc(r.id)}">Listen</button><button data-reference="${esc(r.id)}" ${s.active?'disabled':''}>Add</button></span></div>`).join('') || '<p class="muted">No more files in the shared library.</p>');
- markup('suggestions',(s.to_get || []).map(r=>`<div class="fact"><span>${esc(r.title || r.name)}<br><small>${esc(r.why || '')}</small></span></div>`).join(''));
+ const suggestion=r=>{const links=r.links || {},pages=Object.entries(links).filter(([k])=>!['Preview','Download'].includes(k));
+  return `<div class="fact"><span>${esc(r.title || r.name)}${r.free?' <small>· free</small>':''}<br><small>${esc(r.why || '')}</small></span><span class="row">`
+   +(links.Preview?`<button data-preview="${esc(links.Preview)}" data-preview-name="${esc(r.title)}">Listen</button>`:'')
+   +(r.free && links.Download?`<button data-use="${esc(links.Download)}" data-use-name="${esc(r.title)}" ${s.active?'disabled':''}>Add</button>`:'')
+   +pages.map(([k,u])=>`<button class="subtle" data-open="${esc(u)}" title="Opens in your browser">${esc(k)}</button>`).join('')+'</span></div>';};
+ markup('suggestions',(s.to_get || []).map(suggestion).join('')+((s.to_get || []).length?`<p class="muted">Buy or download a track (WAV, FLAC, MP3 or ZIP): MARA picks it up from Downloads. <button data-import-downloads ${s.active?'disabled':''}>Import from Downloads</button></p>`:''));
 }
+document.addEventListener('click',e=>{const b=e.target.closest('button');if(!b)return;
+ if(b.dataset.open)action(()=>api('/api/open',{url:b.dataset.open}));
+ if(b.dataset.preview){$('reference-playing').textContent=b.dataset.previewName+' · preview';referencePlayer.src=b.dataset.preview;$('reference-player-box').hidden=false;referencePlayer.play().catch(()=>message('Press Play to listen to the preview.'));}
+ if(b.dataset.use)action(async()=>{const r=await api('/api/references/use',{url:b.dataset.use,name:b.dataset.useName});message('Added to your references: '+r.saved);});
+ if(b.dataset.importDownloads!==undefined)action(async()=>{const r=await api('/api/references/import',{});message(r.added?.length?'Imported: '+r.added.join(', '):'Nothing new in Downloads from the last hour.');});
+});
 document.addEventListener('click',e=>{const b=e.target.closest('button');if(!b)return;if(b.dataset.listenReference || b.dataset.listenName){const c=(state.reference_candidates || []).find(c=>c.id===b.dataset.listenReference);$('reference-playing').textContent=c?.name || b.dataset.listenName;referencePlayer.src='/api/reference-audio?'+(c?'id='+encodeURIComponent(c.id):'name='+encodeURIComponent(b.dataset.listenName));$('reference-player-box').hidden=false;referencePlayer.play().catch(()=>message('Press Play to listen to this reference.'));}if(b.dataset.remove)action(()=>api('/api/references/remove',{name:b.dataset.remove}));if(b.dataset.reference)action(()=>api('/api/references/choose',{id:b.dataset.reference}));});
 async function loadRoles(s){
  if(rolesDirty || (rolesRevision===s.roles_revision && rolesProject===s.project_id))return;
