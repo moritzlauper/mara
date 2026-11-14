@@ -547,7 +547,8 @@ def test_silent_stop_waits_for_effect_tails_and_does_not_guess_silence(signal):
     started, wait = env.now(), env.wait
 
     def decay(seconds):
-        assert song.master_track.mixer_device.volume.value == 0
+        if env.now() - started < 6.0:                     # muted while waiting for the tails
+            assert song.master_track.mixer_device.volume.value == 0
         wait(seconds)
         tap = next(t for t in hub.snapshot() if t.kind == "master")
         if signal == "missing":
@@ -561,8 +562,9 @@ def test_silent_stop_waits_for_effect_tails_and_does_not_guess_silence(signal):
     if signal == "tail":
         assert restored and env.now() - started >= 4.0
         assert song.master_track.mixer_device.volume.value == original
-    else:
-        assert not restored and song.master_track.mixer_device.volume.value == 0
+    else:   # tails that never settle (or no measurement): faded back in after the wait, never left muted
+        assert restored and env.now() - started >= 6.0
+        assert song.master_track.mixer_device.volume.value == pytest.approx(original)
 
 
 def test_progress_rises_round_by_round_and_ends_at_the_total(tmp_path):

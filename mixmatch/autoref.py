@@ -328,4 +328,6 @@ def find(live, start: float, length: float, tempo: float, library: str | None = 
     if not picked:
         log("  no mastered song close enough was found in references/ or your library")
     to_get = buy_list(recording, listener, harmony, note, log) if suggest else {"style": "", "buy": [], "free": []}
+    if isinstance(to_get, dict):
+        to_get["sounds_like"] = [s for s, _ in top]
     return picked, to_get

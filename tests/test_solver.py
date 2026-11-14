@@ -393,3 +393,24 @@ def test_a_complete_run_sets_the_level_base_and_reports_the_loudness_chain(tmp_p
     assert abs(chain["input_peak_dbfs"] + 1.0) < 1.0 and chain["peak_reduction_db"] <= 9.5
     assert any(c["name"] == "Loudness chain" for c in report["checks"])
     assert (env.now() - start) / 60 < 10 and agent._mix_complete
+
+
+def test_meters_on_main_move_behind_the_loudness_chain():
+    from mixmatch import sim
+
+    song, hub, env, live = demo_project()
+    meter = lambda n: sim.Device(n, "PluginDevice", [sim.Param("Device On", 0, 1, 1, str, True, ["Off", "On"])])
+    song.master_track.devices[:] = [meter("Youlean Loudness Meter 2"), meter("SPAN"), sim.tap()]
+    agent = Agent(live, hub, RulePlanner(), Settings(settle=1.0), env=env, log=lambda *_: None)
+    assert agent.prepare_input_stage()
+    agent.ex.apply([{"type": "limiter", "delta_db": 1.0, "track": None}])
+    assert [d.name for d in song.master_track.devices] == [
+        "MARA Trim", "MixMatch Tap", "Limiter", "Youlean Loudness Meter 2", "SPAN", "MixMatch Tap"]
+
+
+def test_time_displays_in_seconds_are_read_as_milliseconds():
+    import sys
+    sys.path.insert(0, "remote_script")
+    from MixMatch.commands import _number
+
+    assert _number("1.00 s") == 1000.0 and _number("2.00 ms") == 2.0 and _number("-1.5 dB") == -1.5

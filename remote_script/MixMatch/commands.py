@@ -51,6 +51,18 @@ TAP = "MixMatch Tap"
 DUCKER = "MARA Duck"
 
 
+def _number(text):
+    """A display as a number in its smallest unit: Live shows long times in seconds («1.00 s»), short ones in
+    milliseconds («2.00 ms»); without this, 1 s reads as less than 2 ms."""
+    value = parse_display(text)
+    if value is None:
+        return None
+    t = str(text).strip().lower()
+    if t.endswith(" s") or (t.endswith("s") and not t.endswith("ms") and t[:-1].strip().replace(".", "").replace("-", "").isdigit()):
+        return value * 1000.0
+    return value
+
+
 def _routing_name(route):
     return str(route.get("display_name", "")) if isinstance(route, dict) else str(getattr(route, "display_name", ""))
 
@@ -369,7 +381,7 @@ class Commands:
                 p = params[name]
                 value = self._search(p, target)
                 p.value = max(p.min, min(p.max, value))
-                actual = parse_display(_display(p))
+                actual = _number(_display(p))
                 if actual is None or abs(actual - target) > max(0.1, abs(target) * 0.03):
                     raise CommandError("could not set Compressor %s" % name)
             # Dry signal bounds the attenuation even if the trigger exceeds its measured level.
@@ -645,7 +657,7 @@ class Commands:
     def _search(self, p, target):
         """Raw value whose display is closest to `target`, assuming the display rises with the value."""
         lo, hi = p.min, p.max
-        f_lo, f_hi = parse_display(_display(p, lo)), parse_display(_display(p, hi))
+        f_lo, f_hi = _number(_display(p, lo)), _number(_display(p, hi))
         if f_lo is None or f_hi is None:
             raise CommandError("cannot read the display of %r" % p.name)
         if target <= f_lo:
@@ -654,7 +666,7 @@ class Commands:
             return hi
         for _ in range(48):
             mid = (lo + hi) / 2.0
-            f = parse_display(_display(p, mid))
+            f = _number(_display(p, mid))
             if f is None:
                 break
             if f < target:

@@ -749,6 +749,7 @@ class _Cached:
 
 def make_handler(runner: Runner, watcher: "DownloadWatcher | None" = None, live_set_fn=None):
     from . import ab, songs, preview
+    from . import understanding as understanding_mod
 
     project_refs = _Cached(project_references)
     open_set = _Cached(live_set_fn or live_set, seconds=6.0)
@@ -958,6 +959,7 @@ def make_handler(runner: Runner, watcher: "DownloadWatcher | None" = None, live_
                                         "engine": engine, "running": runner.running() and pinned_project is None, "log": [l.rstrip() for l in lines[-200:]],
                                         "output": output.get(),
                                         "reference_files": references(selected_folder()), "to_get": buy_list(selected_folder()),
+                                        "understanding": understanding_mod.read(os.path.join(selected_folder(), "runs")),
                                         "reference_candidates": [{k: v for k, v in c.items() if k != "path"}
                                                                  for c in reference_candidates(selected_folder())],
                                         "project_references": project_refs.get(), "live": project_refs.reachable,

@@ -551,7 +551,11 @@ class SolverFlow:
                 continue
             now = after.get("pair_severity", {}).get(fix.pair, 0.0)
             spread = m.get("pair_noise", {}).get(fix.pair, 0.0) + after.get("pair_noise", {}).get(fix.pair, 0.0)
-            kept = fix.before - now > max(0.03, spread)
+            # Kept when the measured relief clearly exceeds the spread, or when it confirms the simulation:
+            # at least half of the simulated relief, in the simulated direction. A single pair's severity is
+            # noisy; a prediction that the measurement backs up is evidence too.
+            relief, simulated = fix.before - now, fix.before - fix.predicted
+            kept = relief > max(0.03, spread) or (simulated > 0 and relief >= max(0.02, 0.5 * simulated))
             if not kept:
                 self.undo_moves(entries)
             results.append((fix, entries, now, kept))

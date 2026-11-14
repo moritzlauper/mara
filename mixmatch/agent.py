@@ -526,6 +526,8 @@ class Agent(SolverFlow):
                                           log=self.log)
         stamp = time.strftime("%Y%m%d-%H%M%S")
         self.write_suggestions(to_get, stamp)
+        if isinstance(to_get, dict):
+            self._sounds_like = to_get.get("sounds_like") or []
         if not picked:
             return
         paths = [c["path"] for c in picked] + (list(self.refset.paths) if self.refset else [])
@@ -596,6 +598,7 @@ class Agent(SolverFlow):
         offset, loudness = found
         bar = (scan.start + offset) / 4 + 1
         self.log(f"  loudest part: bars {bar:.0f}–{bar + length / 4:.0f}, {loudness:.1f} LUFS")
+        self._loudest = {"from": round(bar), "to": round(bar + length / 4), "lufs": round(float(loudness), 1)}
         return ("loudest part", scan.start + offset, length)
 
     def channel_region(self, key: str, scan: Scan, main: tuple[str, float, float] | None) -> tuple[float, float] | None:
@@ -1107,13 +1110,13 @@ class Agent(SolverFlow):
         started = self.env.now()
         quiet_since = None
         activity(self.log, "Stopping · keeping output muted while effects fade out")
-        while self.env.now() - started < 8.0:
+        while self.env.now() - started < 6.0:
             self.env.wait(0.1)
             now = self.env.now()
             frames = [f for tap in self.hub.snapshot() if tap.kind == "master"
                       for f in tap.window(max(started, now - 0.4), now)]
-            # -70 dBFS accommodates low plugin noise without opening on an audible effect tail.
-            if len(frames) >= 3 and all(math.isfinite(f.peak) and f.peak < 10 ** (-70 / 20) for f in frames):
+            # -60 dBFS: quiet enough not to open on an audible tail, above the noise of synths and plugins.
+            if len(frames) >= 3 and all(math.isfinite(f.peak) and f.peak < 10 ** (-60 / 20) for f in frames):
                 if quiet_since is None:
                     quiet_since = now
                 if now - quiet_since >= 0.8:
@@ -1125,11 +1128,16 @@ class Agent(SolverFlow):
                     return True
             else:
                 quiet_since = None
+        # Tails or a noise floor that never settles: open anyway, as a short fade from silence, so the user is
+        # not left with a muted Live and never hit by a loud jump.
+        monitoring.reconnect(self.live, self.s.log_dir)
+        for i in range(1, 11):
+            self.live.set("m", "mixer", "Volume", value=volume * i / 10)
+            self.env.wait(0.12)
         self._output_cleanup_done = True
-        self._output_quiet = False
-        self.log("⚠ Main stays muted: effects are still sounding or audio measurements stopped. "
-                 "Raise Main manually when you are ready to listen.")
-        return False
+        self._output_quiet = True
+        self.log("Playback stopped; effects still ringing, so Main faded back in where it was.")
+        return True
 
     CHECKPOINT = "checkpoint.json"
 
@@ -1389,6 +1397,10 @@ class Agent(SolverFlow):
             _, s0, length = main[0]
             inside = [f for b, f in scan.master_in if s0 - scan.start <= b < s0 - scan.start + length]
             self._scan_input_peak = peak_percentile(inside)
+        try:
+            self.write_understanding(main[0], scan)
+        except Exception as e:   # a description is a bonus: never stop the analysis for it
+            self.log(f"  (no summary of the analysis: {str(e)[:100]})")
         self._ck = {"stamp": time.strftime("%Y-%m-%d %H:%M"), "main": list(main[0]), "beat": self.beat,
                     "harmony": getattr(self, "harmony", None),
                     "regions": {k: (list(v) if v else None) for k, v in self.regions.items()}}
@@ -1421,6 +1433,25 @@ class Agent(SolverFlow):
         self.log(f"References changed: {', '.join(os.path.basename(p) for p in now)}. "
                  f"Target from here on: {self.target.description}, {self.target.loudness:.1f} LUFS")
         return True
+
+    def write_understanding(self, main: tuple, scan) -> None:
+        """runs/understanding.json: what the analysis found, for the References step."""
+        from . import understanding
+
+        master = None
+        if scan is not None and scan.master:
+            _, s0, length = main
+            master = stats([f for b, f in scan.master if s0 - scan.start <= b < s0 - scan.start + length])
+        h = self.harmony or {}
+        mode = "instrumental" if self.s.mode == "instrumental" else "beat" if self.beat else "song"
+        understanding.write(self.s.log_dir, {
+            "mode": mode, "tempo": round(float(self.ex.set_state.get("tempo") or 0), 1) or None,
+            "key": (f"{h['key']}" if h.get("key") else None), "chords": (h.get("chords") or [])[:8],
+            "sounds_like": list(getattr(self, "_sounds_like", []) or [])[:3],
+            "loudest": getattr(self, "_loudest", None),
+            "families": understanding.families(self.roles, self.track_muted),
+            "comparison": understanding.comparison(master, self.target),
+            "references": [os.path.basename(p) for p in (self.refset.paths if self.refset else [])]})
 
     def prepare_input_stage(self) -> bool:
         """Trim and a second tap in front of clipper and limiter on Main (both pass the sound unchanged).

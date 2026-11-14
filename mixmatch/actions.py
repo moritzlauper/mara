@@ -297,6 +297,32 @@ class Executor:
         return {"trim": trim, "pre": pre, "end": taps[-1] if taps else None,
                 "chain": [d["index"] for d in devs if self._is_chain(d)]}
 
+    METER_WORDS = ("meter", "analyzer", "analyser", "spectrum", "tuner", "insight", "youlean")
+    METER_NAMES = ("span", "span plus", "spectrumanalyzer", "tuner")
+
+    def _is_meter(self, d: dict) -> bool:
+        name, cls = _plain(d["name"]), str(d.get("class_name", "")).lower()
+        return (name in self.METER_NAMES or cls in self.METER_NAMES
+                or any(w in name for w in self.METER_WORDS)) and d["name"] != TAP
+
+    def meters_last(self) -> int:
+        """Meters on Main (SPAN, Youlean, Spectrum …) go right in front of the end tap, behind clipper and
+        limiter, so they show what leaves the master. They pass the sound unchanged. Returns how many moved."""
+        key, moved = self.master_key(), 0
+        for _ in range(12):
+            devs = self.track(key)["devices"]
+            end = self.master_layout()["end"]
+            if end is None:
+                return moved
+            # a meter in front of anything that is neither a meter nor the end tap is out of place
+            wrong = [d["index"] for d in devs if self._is_meter(d) and any(
+                not self._is_meter(o) and o["index"] != end for o in devs[d["index"] + 1:end])]
+            if not wrong:
+                return moved
+            self._move_on_master(wrong[0], end - 1 if wrong[0] < end else end)
+            moved += 1
+        return moved
+
     def _move_on_master(self, at: int, to: int) -> int:
         key = self.master_key()
         if at == to:
@@ -315,8 +341,10 @@ class Executor:
         layout = self.master_layout()
         if self._is_chain(dev):
             if layout["pre"] is not None and at < layout["pre"]:
-                return self._move_on_master(at, layout["pre"])      # the input tap moves one to the front
-            return at
+                at = self._move_on_master(at, layout["pre"])      # the input tap moves one to the front
+            name = dev["name"]
+            self.meters_last()
+            return next((d["index"] for d in self.track(key)["devices"] if d["name"] == name), at)
         first = min(i for i in (layout["trim"], layout["pre"], *layout["chain"]) if i is not None) \
             if any(i is not None for i in (layout["trim"], layout["pre"], *layout["chain"])) else None
         if first is not None and at > first:
@@ -358,6 +386,8 @@ class Executor:
                 self.refresh()
             except Exception:
                 pass   # older remote script: the trim is found by its place in front of the input tap
+            added = True
+        if self.meters_last():
             added = True
         return added
 
@@ -658,6 +688,7 @@ class Executor:
                 self.live.move_device(key, dev, lim)
                 self._moved(key, dev, lim, count)
                 self.refresh()
+                self.meters_last()
                 dev = self._device(key, plugin)
         p = self._param(key, dev, param)
         if p is None:
