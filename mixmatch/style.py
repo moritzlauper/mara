@@ -34,13 +34,15 @@ AUDIO = (".wav", ".aif", ".aiff", ".flac", ".mp3", ".m4a", ".aac", ".ogg")
 SKIP_DIRS = ("ableton", "spitfire audio", "unison", "vital", "$recycle.bin", "samples", "presets")
 
 STYLES = [
-    "drum and bass", "liquid drum and bass", "atmospheric drum and bass", "jungle", "neurofunk",
-    "PS2-era video game drum and bass", "video game soundtrack", "breakbeat", "breakcore",
-    "hyperpop", "digicore", "emo rap", "cloud rap", "trap", "rage beat", "plugg", "drill", "phonk",
-    "boom bap hip hop", "lo-fi hip hop", "r&b", "pop", "indie pop", "bedroom pop",
-    "house", "deep house", "tech house", "techno", "trance", "uk garage", "2-step", "future garage",
-    "dubstep", "riddim", "future bass", "melodic bass", "electro house", "synthwave", "vaporwave",
-    "ambient", "idm", "glitch", "chiptune", "jersey club", "footwork", "afrobeats", "reggaeton",
+    # Today's electronic and alt-pop lanes first: the audio model knows them poorly, and a list with five drum and
+    # bass variants made it call almost every fast, moody production drum and bass.
+    "hyperpop", "digicore", "glitchcore", "alt pop", "experimental electronic pop", "pc music", "bubblegum bass",
+    "emo rap", "cloud rap", "pluggnb", "rage beat", "jersey club", "uk garage", "2-step", "future garage",
+    "bass music", "club music", "breakbeat", "trance pop", "melodic techno", "hard dance", "deconstructed club",
+    "drum and bass", "jungle", "breakcore", "footwork", "dubstep", "future bass", "melodic bass",
+    "trap", "drill", "phonk", "plugg", "boom bap hip hop", "lo-fi hip hop", "r&b", "pop", "indie pop", "bedroom pop",
+    "house", "deep house", "tech house", "techno", "trance", "electro house", "synthwave", "vaporwave",
+    "ambient", "idm", "glitch", "chiptune", "video game soundtrack", "afrobeats", "reggaeton",
     "rock", "metal", "shoegaze", "emo", "punk", "jazz", "orchestral",
 ]
 
@@ -422,17 +424,23 @@ SUGGEST_SCHEMA = {
     "additionalProperties": False,
 }
 
-SUGGEST_SYSTEM = """You suggest reference tracks for mixing. You get measurements of the user's track: style and mood guesses from an audio model (CLAP; it knows hyperpop and newer styles poorly), key, major or minor and chords, tempo, loudness, dynamics, width and tonal balance, plus the user's own description, which always wins over the audio model.
-Name the style in a few words, then suggest 8 real, released tracks that a producer of this style would mix against: well mixed and mastered, close in style, mood, tempo and energy (a similar key or the same major/minor colour is a plus), ideally available on Bandcamp or Beatport. Only tracks you are sure exist. For each, one short sentence why it fits.
-Then, for producers who do not want to buy, suggest 5 well-produced tracks in the same direction that can be downloaded for free and legally: NoCopyrightSounds (NCS), Creative Commons music on Free Music Archive or Jamendo, or an official free download by the artist (e.g. a free Bandcamp or SoundCloud download). Name the source. Only tracks you are sure exist there; fewer is better than invented ones."""
+SUGGEST_SYSTEM = """You suggest reference tracks for mixing, as a producer who knows today's scene. You get measurements of the user's track: style and mood guesses from an audio model (CLAP), key, major or minor and chords, tempo, loudness, dynamics, width and tonal balance, the user's own description, the references the user already chose (`user_references`) and today's date.
+Weigh the evidence in this order: the user's description, then the user's references (they show the lane the user works in), then the measurements, and the audio model last. The audio model knows recent styles poorly and over-reports drum and bass, jungle and video game music for modern electronic, hyperpop and club productions at 130–170 BPM. A tempo reading may be half or double time.
+Name the style in at most six words, the way the scene would name it today. Then suggest 8 real, released tracks that a producer of this style would mix against today: current and cutting edge. At least six of them must be released within the last three years before today's date, by artists active now; at most two older ones, and only if they are the defining reference for this sound. Prefer the lanes and artists around the user's references (for orientation only: hyperpop and digicore around 2hollis, Jane Remover, underscores, quinn or glaive; alt pop and club around Charli XCX, A. G. Cook or Sega Bodega; UK bass and garage around Overmono, Two Shell, Joy Orbison or Fred again..). Well mixed and mastered, close in style, mood, tempo and energy, ideally on Bandcamp or Beatport. Never suggest a track the user already has (`user_references`). Only tracks you are sure exist. For each, one short sentence why it fits.
+Then, for producers who do not want to buy, suggest up to 5 well-produced, recent tracks in the same direction that can be downloaded for free and legally: Creative Commons music on Free Music Archive or Jamendo, NoCopyrightSounds, or an official free download by the artist (a free Bandcamp or SoundCloud download). Name the source. Only tracks you are sure exist there; fewer is better than invented or outdated ones."""
 
 
-def suggest(desc: dict, note: str = "", model: str = "opus", log=print) -> dict:
-    """Reference suggestions using the selected billing route, including API-only runs."""
+def suggest(desc: dict, note: str = "", model: str = "opus", log=print, known: list[str] | None = None) -> dict:
+    """Reference suggestions using the selected billing route, including API-only runs.
+    `known`: names of the references the user already has; they show the lane and are never suggested again."""
+    import datetime
     from .activity import report as activity
 
     activity(log, "Finding reference suggestions · waiting for AI")
     payload = {k: v for k, v in desc.items() if not k.startswith("_")}
+    payload["today"] = datetime.date.today().isoformat()
+    if known:
+        payload["user_references"] = list(dict.fromkeys(known))[:12]
     if note:
         payload["user_description"] = note
     if os.environ.get("MIXMATCH_PLANNER") == "api":

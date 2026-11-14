@@ -63,9 +63,13 @@ def describe(data: dict) -> str:
     kind = {"beat": "A beat", "song": "A song with vocals", "instrumental": "An instrumental"}.get(data.get("mode"), "A track")
     key = data.get("key")
     first = kind + (f" in {key}" if key else "") + (f" at {data['tempo']:g} BPM" if data.get("tempo") else "")
-    style = data.get("sounds_like") or []
-    parts.append(first + (f" that sounds closest to {style[0]}" + (f" and {style[1]}" if len(style) > 1 else "")
-                          if style else "") + ".")
+    # The style named with the user's references and description in view, else the audio model's best guesses.
+    named, style = (data.get("style") or "").strip().rstrip("."), data.get("sounds_like") or []
+    if named:
+        parts.append(f"{first}: {named}.")
+    else:
+        parts.append(first + (f" that sounds closest to {style[0]}" + (f" and {style[1]}" if len(style) > 1 else "")
+                              if style else "") + ".")
     fam = [f for f in data.get("families", []) if f["family"] != "groups"]
     if fam:
         channels = sum(f["count"] for f in fam)

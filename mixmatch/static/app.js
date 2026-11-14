@@ -99,7 +99,7 @@ function renderReferences(s){
  markup('reference-list',(s.reference_files || []).map(name=>refCard({key:'n:'+name,src:'/api/reference-audio?name='+encodeURIComponent(name),title:bare(name),badge:'selected',
    action:`<button class="mini" data-remove="${esc(name)}">Remove</button>`})).join('')
   +(s.project_references || []).map(r=>refCard({key:'l:'+(r.file || r.track),title:bare(r.file?.split(/[\\/]/).pop() || r.track || r),sub:'reference clip in Live',badge:'in Live'})).join('')
-  || '<p class="muted">Nothing selected yet. Add one or two of the suggestions above.</p>');
+  || ((s.reference_candidates || []).some(r=>!r.hidden)?'':'<p class="muted">Nothing selected yet. Add one or two of the suggestions below.</p>'));
  const q=$('reference-search').value.toLowerCase();
  const chosen=new Set((s.reference_files || []).map(n=>n.toLowerCase()));
  markup('candidates',(s.reference_candidates || []).filter(r=>!r.hidden && !chosen.has(r.name.toLowerCase()) && r.name.toLowerCase().includes(q)).map(r=>refCard({key:'c:'+r.id,
@@ -127,7 +127,7 @@ function renderUnderstanding(s,w,status,active){
  if(discovering)html=`<p class="summary">${esc(w.activity?.text || 'Listening to your song')} …</p><div class="progress indeterminate"><div style="width:30%"></div></div><p class="muted">This takes a few minutes: one pass through the song, the instruments, a style estimate and reference suggestions. You can already pick references in the next step.</p>`;
  else if(failed)html=`<p class="summary">The analysis stopped${w.error?': '+esc(w.error):'.'}</p><p class="muted">Start it again with «Analyse my mix».</p>`;
  if(u && !discovering){const fam=(u.families || []).filter(f=>f.family!=='groups'),c=u.comparison;
-  const facts=[['Key',u.key],['Tempo',u.tempo?u.tempo+' BPM':null],['Sounds like',(u.sounds_like || []).slice(0,3).join(', ')],
+  const facts=[['Key',u.key],['Tempo',u.tempo?u.tempo+' BPM':null],['Style',u.style || (u.sounds_like || []).slice(0,3).join(', ')],
    ['Loudest part',u.loudest?`bars ${u.loudest.from}–${u.loudest.to} · ${u.loudest.lufs.toFixed(1)} LUFS`:null],
    ['Instruments',fam.map(f=>`${f.family} ${f.count}`).join(' · ')],
    ['Against the references',c?`${c.loudness_lu>0?'+':''}${c.loudness_lu} LU · PLR ${c.plr_db} vs ${c.reference_plr_db} dB`:null]].filter(([,v])=>v);
@@ -136,7 +136,7 @@ function renderUnderstanding(s,w,status,active){
  else if(!discovering && !failed)html='<p class="summary">MARA has not listened to this song yet. «Analyse my mix» plays it once with Live muted, describes what it hears and suggests references.</p>';
  markup('understanding',html);
  $('go-references').textContent=discovering?'Choose references now →':'Choose references →';
- const anySuggestions=(s.to_get || []).length || (s.reference_candidates || []).some(r=>!r.hidden);$('suggestions-block').hidden=!anySuggestions;
+ $('suggestions-block').hidden=!(s.to_get || []).length;
 }
 function syncPlayButtons(){const key=referencePlayer.dataset.key,on=!referencePlayer.paused;
  document.querySelectorAll('[data-audition]').forEach(b=>{const mine=b.dataset.audition===key;b.textContent=mine && on?'❚❚':'▶';b.classList.toggle('playing',mine && on);b.setAttribute('aria-pressed',String(mine && on));});

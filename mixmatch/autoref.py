@@ -211,7 +211,7 @@ def mastered(path: str) -> bool:
 
 
 def buy_list(recording: str, listener: Listener, harmony: dict | None = None, note: str = "",
-             log=print) -> dict:
+             log=print, known: list[str] | None = None) -> dict:
     """Claude's suggestions: tracks to get (Bandcamp often has «name your price») and free, legal ones (NCS,
     Creative Commons, free downloads), plus real Jamendo tracks in the style when JAMENDO_CLIENT_ID is set."""
     from .style import describe, styles, suggest
@@ -222,7 +222,7 @@ def buy_list(recording: str, listener: Listener, harmony: dict | None = None, no
         desc = describe(recording, listener)
         if harmony:  # Live's MIDI beats the audio estimate
             desc["harmony"] = {k: harmony[k] for k in ("key", "mode", "chords", "source")}
-        result = suggest(desc, note=note, log=log)
+        result = suggest(desc, note=note, log=log, known=known)
     except Exception as e:
         log(f"  no suggestions from Claude ({str(e)[:100]})")
         return {"style": "", "buy": [], "free": []}
@@ -327,7 +327,10 @@ def find(live, start: float, length: float, tempo: float, library: str | None = 
         log(f"  ✓ {c['score']:.2f}  {name}  [{c['source']}]{extra}")
     if not picked:
         log("  no mastered song close enough was found in references/ or your library")
-    to_get = buy_list(recording, listener, harmony, note, log) if suggest else {"style": "", "buy": [], "free": []}
+    # The user's own references (chosen files and the shared library) show the lane better than any audio model.
+    known = [os.path.splitext(os.path.basename(c["path"]))[0] for c in candidates if c["source"] == "references"]
+    to_get = (buy_list(recording, listener, harmony, note, log, known=known) if suggest
+              else {"style": "", "buy": [], "free": []})
     if isinstance(to_get, dict):
         to_get["sounds_like"] = [s for s, _ in top]
     return picked, to_get

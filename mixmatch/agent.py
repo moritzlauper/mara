@@ -508,7 +508,8 @@ class Agent(SolverFlow):
             recording = autoref.capture(self.live, start, min(length, 64.0), tempo, self.log)
         if recording:
             listener = Listener(log=self.log)
-            self.write_suggestions(autoref.buy_list(recording, listener, self.harmony, note=self.description,
+            known = [os.path.splitext(os.path.basename(p))[0] for p in (self.refset.paths if self.refset else [])]
+            self.write_suggestions(autoref.buy_list(recording, listener, self.harmony, note=self.description, known=known,
                                                     log=self.log), time.strftime("%Y%m%d-%H%M%S"))
 
     def find_references(self, part: tuple[str, float, float]) -> None:
@@ -528,6 +529,7 @@ class Agent(SolverFlow):
         self.write_suggestions(to_get, stamp)
         if isinstance(to_get, dict):
             self._sounds_like = to_get.get("sounds_like") or []
+            self._style = (to_get.get("style") or "").strip()
         if not picked:
             return
         paths = [c["path"] for c in picked] + (list(self.refset.paths) if self.refset else [])
@@ -1448,6 +1450,7 @@ class Agent(SolverFlow):
             "mode": mode, "tempo": round(float(self.ex.set_state.get("tempo") or 0), 1) or None,
             "key": (f"{h['key']}" if h.get("key") else None), "chords": (h.get("chords") or [])[:8],
             "sounds_like": list(getattr(self, "_sounds_like", []) or [])[:3],
+            "style": getattr(self, "_style", "") or None,
             "loudest": getattr(self, "_loudest", None),
             "families": understanding.families(self.roles, self.track_muted),
             "comparison": understanding.comparison(master, self.target),
