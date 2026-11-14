@@ -6,7 +6,20 @@ It is a mixing assistant, not an automatic mastering button: you choose the refe
 
 ![Mix: progress, reference comparison, listening controls, and recent changes.](docs/images/04-mix.png)
 
-## [Download MARA → GitHub Releases](https://github.com/moritzlauper/mara/releases)
+## Get MARA
+
+**Easiest on macOS (no install, always up to date):** Open Terminal and paste this line:
+
+```bash
+curl -LsSf https://raw.githubusercontent.com/moritzlauper/mara/main/scripts/mara.sh | sh
+```
+
+MARA opens in your browser. The first start takes about a minute; run the same line again whenever you want to use MARA, and it updates itself. Data is stored in `~/Library/Application Support/MARA`, the same place the desktop app uses. This also works on Linux.
+
+**Desktop app:** [Download from GitHub Releases](https://github.com/moritzlauper/mara/releases). The installers are not signed with a paid Apple or Microsoft certificate, so the system warns on the first start:
+
+- **macOS:** Drag MARA into Applications and open it. When macOS says it can't verify the developer, open **System Settings → Privacy & Security** and choose **Open Anyway**. If macOS says MARA "is damaged", run `xattr -cr /Applications/MARA.app` in Terminal and open it again.
+- **Windows:** If SmartScreen appears, choose **More info → Run anyway**.
 
 > **Early release — v0.1.0.** MARA is intended for testing on copies of Live sets. Save your project before starting, listen critically, and keep the changes you like in Ableton as usual.
 
@@ -31,7 +44,7 @@ No model account is required: **Built-in rules** handles broad balance, limiter 
 
 ## First-time setup
 
-1. Install and open MARA from the [latest release](https://github.com/moritzlauper/mara/releases).
+1. Start MARA as described in [Get MARA](#get-mara).
 2. In **Project & goal**, choose **Set up the connection**, select your Ableton User Library, and choose **Install connection**.
 3. Restart Ableton Live. In **Settings → Link/Tempo/MIDI → Control Surface**, select **MixMatch**; set both Input and Output to **None**.
 4. Return to MARA and choose **Set taps**. It places a transparent measurement device at the end of each relevant track, group, return, and Main chain.
