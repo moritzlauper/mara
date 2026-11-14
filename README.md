@@ -13,9 +13,9 @@ It is a mixing assistant, not an automatic mastering button: you choose the refe
 ## What using it looks like
 
 1. Open your Live set and connect MARA once.
-2. Add one or more finished reference tracks.
+2. Add one or more finished reference tracks, or let MARA suggest a starting set.
 3. Tell MARA what to protect or improve — for example, “keep the Rhodes warm; separate kick and sub; leave space for a vocal.”
-4. Let it analyse the relevant song section, then check the detected instrument roles.
+4. Let it analyse the relevant song section and proposed style, then check the detected instrument roles and references.
 5. Watch the mix pass, pause at safe checkpoints if needed, and listen to the loudness-matched Before/After result.
 6. Inspect every kept or reverted change. Keep the result, or restore the saved parameter state.
 
@@ -53,6 +53,8 @@ Choose whether the project is a beat awaiting vocals, an instrumental, or a song
 
 Drag in one or more tracks that represent the sound and arrangement you are aiming for. A full track is more useful than a short preview. MARA builds a target from all selected references, so choose tracks that agree with each other.
 
+Your selections also give the reference search its strongest stylistic signal. After **Analyse my mix**, MARA listens to the song with Live muted, describes the likely style, and can suggest recent tracks in that lane. Your goal and chosen references take precedence over the audio-based style estimate; the latter is only a fallback and can be wrong, especially for newer electronic styles or half-/double-time tempos. MARA keeps your own references at the top and does not suggest them again. Listen to a preview, then add only full files you actually want to mix against.
+
 ![References: selected tracks, import, and library access.](docs/images/02-references.png)
 
 ### 3. Check the analysis
@@ -86,7 +88,7 @@ MARA cannot judge musical taste for you. The measurements are decision support, 
 
 ## Optional planner settings
 
-The standard workflow works with **Built-in rules**, which sends no mix-planning request to an external model service. If you want additional contextual suggestions, select a provider under **Planner settings**. Available options include Claude Code, Anthropic, Gemini, and compatible Chat Completions endpoints; keys are stored in the operating system credential store.
+The standard workflow works with **Built-in rules**, which sends no mix-planning request to an external model service. If you want additional contextual suggestions or reference recommendations, select a provider under **Planner settings**. Available options include Claude Code, Anthropic, Gemini, and compatible Chat Completions endpoints; keys are stored in the operating system credential store. Reference recommendations use your goal and any references you selected, and are optional — you can always add files manually.
 
 Provider choice changes how a plan is proposed, not how Live is controlled: every adjustment still goes through the same bounded action and verification steps. Optional reference discovery and style suggestions may use additional local models or online services. You can skip them and select reference files manually.
 
