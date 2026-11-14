@@ -252,6 +252,7 @@ def _cmd_run(args):
                                            jamendo=args.jamendo, audit=getattr(args, "audit", False) and not args.no_audit,
                                            finish_early=getattr(args, "finish", False),
                                            engine=getattr(args, "engine", "solver"),
+                                           depth="thorough" if getattr(args, "thorough", False) else "fast",
                                            ref_dirs=tuple(os.path.abspath(r) for r in (args.ref or [])
                                                           if os.path.isdir(r)),
                                            silent=args.silent),
@@ -408,6 +409,8 @@ def main(argv=None):
                                     help="deprecated: effect auditing is off unless --audit is supplied")
     sub.choices["run"].add_argument("--jamendo", action="store_true",
                                     help="with --auto-ref also try Creative Commons tracks from Jamendo (JAMENDO_CLIENT_ID)")
+    sub.choices["run"].add_argument("--thorough", action="store_true",
+                                    help="thorough mix: also dynamics, width and planner rounds on important channels")
     sub.choices["run"].add_argument("--quick", action="store_true",
                                     help="only match the master to the reference, no pass over every channel")
     sub.choices["run"].add_argument("--focus", choices=["sections", "loud"], default="loud",

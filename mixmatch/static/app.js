@@ -244,7 +244,6 @@ function render(s){const w=s.workflow || {},status=w.status || 'idle',live=s.ope
  $('unmute-current').disabled=!connected || w.preview_recording || ['finalizing','repairing'].includes(status);
  $('monitor-before').textContent=$('monitor-preview').hidden?'Before':'Close Before';
  $('monitor-before').disabled=!connected || !s.previews?.before || ['finalizing','repairing'].includes(status);
- $('review-so-far').hidden=!(s.review?.kept?.length || s.review?.rejected?.length);
  $('monitor-context').textContent=s.output?.silent===false?'Listening to Current · live working passage, including changes being tested.':!monitorPlayer.paused?'Listening to Before · saved original recording. Live is muted.':'Live is muted. Unmute Current to hear what MARA is doing.';
 
  $('analysis-title').textContent=status==='ready' || status==='reviewing' || w.analysis_complete?'Your mix is ready to work on.':status==='analysing'?'MARA is understanding your mix.':'Understand first. Then improve.';

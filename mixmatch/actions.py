@@ -302,16 +302,18 @@ class Executor:
         return (d.get("class_name") == "Limiter" or name in {_plain(n) for n in LIMITERS}
                 or any(name == _plain(c) for c, _ in CLIPPERS))
 
-    def master_layout(self) -> dict:
+    def master_layout(self, exclude: int | None = None) -> dict:
         """Indices on Main: the trim, the input tap (a tap with another tap after it), the loudness chain,
-        and the end tap. None where there is none."""
-        devs = self.track(self.master_key())["devices"]
-        taps = [d["index"] for d in devs if d["name"] == TAP]
+        and the end tap. None where there is none. `exclude`: a device just loaded, left out when telling where
+        the others sit (it may have landed between the trim and the input tap)."""
+        devs = [d for d in self.track(self.master_key())["devices"] if d["index"] != exclude]
+        taps = [i for i, d in enumerate(devs) if d["name"] == TAP]
         pre = taps[0] if len(taps) >= 2 else None
-        trim = next((d["index"] for d in devs if d["name"] == TRIM), None)
+        trim = next((i for i, d in enumerate(devs) if d["name"] == TRIM), None)
         if trim is None and pre is not None and pre > 0 and devs[pre - 1].get("class_name") == "StereoGain":
             trim = pre - 1   # an older remote script cannot rename the device: found by its place
-        return {"trim": trim, "pre": pre, "end": taps[-1] if taps else None,
+        at = lambda i: None if i is None else devs[i]["index"]
+        return {"trim": at(trim), "pre": at(pre), "end": at(taps[-1]) if taps else None,
                 "chain": [d["index"] for d in devs if self._is_chain(d)]}
 
     METER_WORDS = ("meter", "analyzer", "analyser", "spectrum", "tuner", "insight", "youlean")
@@ -324,30 +326,39 @@ class Executor:
 
     def meters_last(self) -> int:
         """Meters on Main (SPAN, Youlean, Spectrum …) go right in front of the end tap, behind clipper and
-        limiter, so they show what leaves the master. They pass the sound unchanged. Returns how many moved."""
+        limiter, so they show what leaves the master. They pass the sound unchanged. Returns how many moved.
+
+        Only leftward moves: the device that belongs in front of a meter moves in front of it. Live places a
+        rightward move one slot differently than a leftward one, so a rightward move can silently stay put."""
         key, moved = self.master_key(), 0
-        for _ in range(12):
+        for _ in range(16):
             devs = self.track(key)["devices"]
             end = self.master_layout()["end"]
             if end is None:
                 return moved
-            # a meter in front of anything that is neither a meter nor the end tap is out of place
-            wrong = [d["index"] for d in devs if self._is_meter(d) and any(
-                not self._is_meter(o) and o["index"] != end for o in devs[d["index"] + 1:end])]
-            if not wrong:
+            meter = next((d["index"] for d in devs[:end] if self._is_meter(d)), None)
+            later = None if meter is None else next(
+                (o["index"] for o in devs[meter + 1:end] if not self._is_meter(o)), None)
+            if later is None:
                 return moved
-            self._move_on_master(wrong[0], end - 1 if wrong[0] < end else end)
+            self._move_on_master(later, meter)
             moved += 1
         return moved
 
     def _move_on_master(self, at: int, to: int) -> int:
+        """Moves a device on Main to the left (`to` < `at`) and checks where it really landed."""
         key = self.master_key()
         if at == to:
             return at
-        count = len(self.track(key)["devices"])
+        if to > at:
+            raise RuntimeError("devices on Main are only moved to the left")
+        devs = self.track(key)["devices"]
+        count, name = len(devs), devs[at]["name"]
         self.live.move_device(key, at, to)
         self._moved(key, at, to, count)
         self.refresh()
+        if self.track(key)["devices"][to]["name"] != name:
+            raise RuntimeError(f"Live did not put {name} where it belongs on Main")
         return to
 
     def _place_on_master(self, at: int) -> int:
@@ -355,11 +366,11 @@ class Executor:
         clipper and limiter go behind the input tap. Older remote scripts load in front of the first tap."""
         key = self.master_key()
         dev = self.track(key)["devices"][at]
-        layout = self.master_layout()
+        layout = self.master_layout(exclude=at)
         if self._is_chain(dev):
-            if layout["pre"] is not None and at < layout["pre"]:
-                at = self._move_on_master(at, layout["pre"])      # the input tap moves one to the front
             name = dev["name"]
+            if layout["pre"] is not None and at < layout["pre"]:
+                self._move_on_master(layout["pre"], at)          # the input tap moves in front of it
             self.meters_last()
             return next((d["index"] for d in self.track(key)["devices"] if d["name"] == name), at)
         first = min(i for i in (layout["trim"], layout["pre"], *layout["chain"]) if i is not None) \
@@ -377,6 +388,12 @@ class Executor:
         if layout["end"] is None:
             return None
         added = False
+        # Repair: clipper or limiter in front of the input tap (an earlier move that Live did not carry out).
+        if layout["pre"] is not None and layout["chain"] and min(layout["chain"]) < layout["pre"]:
+            self._move_on_master(layout["pre"], min(layout["chain"]))
+            self.log("  Main: input measurement moved back in front of clipper and limiter")
+            added = True
+            layout = self.master_layout()
         if layout["pre"] is None:
             count = len(self.track(key)["devices"])
             at = self.live.load_device(key, TAP, source="user_library")

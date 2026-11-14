@@ -439,3 +439,25 @@ def test_undo_reaches_the_limiter_after_the_clipper_moved_in_front_of_it(monkeyp
     ex.undo(rr)
     limiter = next(d for d in song.master_track.devices if d.name == "Limiter")
     assert limiter.p("Gain").value == 0 and clip.p("Gain").value == 0   # each back where it was
+
+
+def test_a_broken_main_chain_is_repaired_and_impossible_values_are_reset():
+    """The state an old run left: clipper and limiter in front of the input tap, meters in front of the taps,
+    the clipper at -15 dB (it had received the limiter's old value)."""
+    from mixmatch import sim
+
+    song, hub, env, live = demo_project()
+    meter = lambda n: sim.Device(n, "PluginDevice", [sim.Param("Device On", 0, 1, 1, str, True, ["Off", "On"])])
+    clip = sim.Device("Classic Clipper", "PluginDevice", [sim.Param("Device On", 0, 1, 1, str, True, ["Off", "On"]),
+                                                           sim.Param("Gain", -15, 15, -15, lambda v: f"{v:.1f} dB")])
+    song.master_track.devices[:] = [sim.utility(), sim.eq_eight(), clip, sim.limiter(), meter("Youlean Loudness Meter 2"),
+                                    meter("SPAN"), sim.tap(), sim.tap()]
+    agent = Agent(live, hub, RulePlanner(), Settings(settle=1.0), env=env, log=lambda *_: None)
+    agent.ex.refresh()
+    from mixmatch.actions import Executor
+    agent.ex.clipper = lambda: ("Classic Clipper", "Gain")
+    agent.prepare_input_stage()
+    names = [d.name for d in song.master_track.devices]
+    assert names.index("MixMatch Tap") < names.index("Classic Clipper") < names.index("Limiter")
+    assert names.index("Limiter") < names.index("SPAN") < len(names) - 1 and names[-1] == "MixMatch Tap"
+    assert agent.sanitize_chain() and abs(clip.p("Gain").value) < 0.1

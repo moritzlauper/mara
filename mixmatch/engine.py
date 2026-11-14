@@ -15,6 +15,10 @@ the channels' spectra (mixmatch.solver), applies it together and verifies it wit
    simulated on the recorded frames first and kept only when its own pair measurably improves.
 3. Final: up to two free planner rounds for what the calculation does not cover (compressors, sends,
    resonances), then limiter and clipper towards the references' loudness, then the final assessment.
+
+Thorough mode (Settings.depth == "thorough") adds a character pass after the collisions: compression on channels
+whose measured level range is well beyond what their role usually has, width per channel when the master's width
+differs from the references, and one planner round on at most four important channels with an open problem.
 """
 from __future__ import annotations
 
@@ -29,10 +33,37 @@ from .analysis import TONAL_BANDS, stats
 from .bands import BAND_COUNT, bands_between
 
 
+# Level range (P95 − P20 of the 100 ms frames while a channel plays) a role usually has in a finished mix, in dB.
+# Drums are left out: their range is their transients, compressing them by this rule would take the punch.
+COMPRESS_NORM = {"bass": 6, "sub": 5, "808": 6, "synth_bass": 6, "bass_guitar": 7, "pad": 6, "chords": 7,
+                 "strings": 8, "keys": 8, "piano": 9, "organ": 7, "lead_synth": 8, "supersaw": 7, "pluck": 9,
+                 "arp": 9, "bell": 9, "guitar": 9, "acoustic_guitar": 9, "lead_vocal": 9, "backing_vocal": 9}
+COMPRESS_STYLE = {   # ratio, attack ms, release ms
+    "low end": (3.0, 30.0, 150.0), "sustained": (2.0, 30.0, 200.0), "keys": (2.5, 15.0, 120.0),
+    "lead": (2.5, 10.0, 100.0), "vocal": (3.0, 8.0, 80.0)}
+STYLE_OF = {**{r: "low end" for r in ("bass", "sub", "808", "synth_bass", "bass_guitar")},
+            **{r: "sustained" for r in ("pad", "chords", "strings", "organ", "supersaw")},
+            **{r: "keys" for r in ("keys", "piano", "guitar", "acoustic_guitar")},
+            **{r: "lead" for r in ("lead_synth", "pluck", "arp", "bell")},
+            **{r: "vocal" for r in ("lead_vocal", "backing_vocal")}}
+WIDE_ROLES = {"pad", "ambience", "fx", "texture", "strings", "chords", "keys", "supersaw", "arp", "riser"}
+CORE_ROLES = {"kick", "snare", "clap", "lead_vocal", "bass", "sub", "808", "synth_bass", "lead_synth"}
+
+
+def level_range(frames) -> float | None:
+    """P95 − P20 of a channel's 100 ms levels while it plays; None with too little playing."""
+    if frames is None or not len(frames.times):
+        return None
+    levels = frames.level_db[frames.active]
+    if len(levels) < 20:
+        return None
+    return float(np.percentile(levels, 95) - np.percentile(levels, 20))
+
+
 class SolverFlow:
     """Mixed into Agent; uses its measurement, executor, journal and checkpoint helpers."""
 
-    W_SOLVE, W_COLLIDE = 6.0, 4.0
+    W_SOLVE, W_COLLIDE, W_CHARACTER = 6.0, 4.0, 4.0
 
     # ── when ────────────────────────────────────────────────────────────────
     def use_solver(self, ck: dict | None) -> bool:
@@ -50,7 +81,7 @@ class SolverFlow:
         self._passages = {}
         self._sensitivity = None
         self._trust = 1.0
-        if phase not in ("master", "channels", "effects", "final"):
+        if phase not in ("master", "channels", "character", "effects", "final"):
             phase = "master"
         self.sync_references()
         if phase == "master":
@@ -68,6 +99,13 @@ class SolverFlow:
             self.sync_references()
             if self.s.complete:
                 self.channel_collisions(main, deadline)
+            phase = "character"
+            self._save_solver_checkpoint(phase)
+        if self.env.now() >= deadline:
+            return
+        if phase == "character":
+            if self.s.complete and getattr(self.s, "depth", "fast") == "thorough":
+                self.character_pass(main, deadline)
             phase = "effects"
             self._save_solver_checkpoint(phase)
         if self.env.now() >= deadline:
@@ -233,6 +271,7 @@ class SolverFlow:
 
         Uses the scan of the original song when there is one (no extra measurement), else one measurement.
         Returns {"rr", "text"} when the trim changed, for the journal."""
+        self.sanitize_chain()
         if self.hub.latest("master_in") is None and not self.prepare_input_stage():
             return None
         peak, self._scan_input_peak = getattr(self, "_scan_input_peak", None), None
@@ -271,6 +310,24 @@ class SolverFlow:
         self.log(f"  Level base: {text}")
         self.env.wait(self.s.settle)
         return {"rr": rr, "text": text}
+
+    def sanitize_chain(self) -> bool:
+        """Values on Main that MARA never sets go back into its range before anything is measured or pushed:
+        a clipper below 0 dB (it once received a limiter's old value) or a limiter beyond its cap."""
+        actions, notes = [], []
+        clip, lim = self.ex.clipper_gain(), self.ex.limiter_gain()
+        if clip is not None and clip < -0.5:
+            actions.append({"type": "clipper", "delta_db": 0.0, "track": None, "reason": "clipper back to 0 dB"})
+            notes.append(f"clipper {clip:+.1f} dB → 0 dB")
+        if lim is not None and lim > LIMITER_MAX_GAIN_DB + 0.05:
+            actions.append({"type": "limiter", "delta_db": 0.0, "track": None, "reason": "limiter to its cap"})
+            notes.append(f"limiter {lim:+.1f} dB → {LIMITER_MAX_GAIN_DB:+.1f} dB")
+        if not actions:
+            return False
+        rr = self.ex.apply(actions)
+        self.log("  ⚠ Main had values MARA never sets: " + ", ".join(notes))
+        self.env.wait(self.s.settle)
+        return bool(rr.changes)
 
     def chain_report(self, m: dict) -> dict | None:
         """What the loudness chain does, from the two taps on Main."""
@@ -577,6 +634,197 @@ class SolverFlow:
             self.explain(after)
         return after
 
+    # ── 2b. character (thorough mode) ───────────────────────────────────────
+    def character_pass(self, main: tuple, deadline: float) -> None:
+        name, start, length = main
+        self.log("\n━━ Character: dynamics, width and the important channels")
+        self.begin_step(self.W_CHARACTER)
+        self.play_loop(start, length)
+        m = self.measure_verified("full")
+        baseline = self.quality_anchors.get(self.quality_key(m, "full")) or mix_quality.anchor(m)
+        self._log_distance(m)
+        m = self.compress_channels(m, baseline)
+        self._advance(0.35, "dynamics")
+        if self.env.now() < deadline:
+            m = self.width_channels(m, baseline)
+            self._advance(0.25, "width")
+        if self.env.now() < deadline:
+            self.review_channels(m, deadline)
+        self.finish_step("character")
+
+    def _user_compressor(self, key: str) -> bool:
+        for d in self.ex.track(key)["devices"]:
+            name, cls = d["name"].lower(), str(d.get("class_name", "")).lower()
+            on = next((p["value"] for p in d["params"] if p["name"] == "Device On"), 1.0) >= 0.5
+            if on and (cls in ("compressor2", "gluecompressor") or "pro-c" in name or "comp" in name):
+                return True
+        return False
+
+    def compress_plan(self, m: dict) -> list[dict]:
+        """Compressor settings for channels whose level range is well beyond their role's usual one."""
+        gains, frames, plan = self.fader_gains(), m.get("mask_frames") or {}, []
+        for key, r in self.roles.items():
+            norm = COMPRESS_NORM.get(r.role)
+            st = m.get("tracks", {}).get(key)
+            if (norm is None or st is None or st.active < 0.5 or self.track_muted(key)
+                    or key in self._constraints.frozen or self.ex.track(key).get("is_group")
+                    or self._user_compressor(key)):
+                continue
+            rng = level_range(frames.get(key))
+            if rng is None or rng - norm < 3.0:
+                continue
+            excess = rng - norm
+            gr = min(4.0, 0.5 * excess)
+            ratio, attack, release = COMPRESS_STYLE[STYLE_OF.get(r.role, "keys")]
+            f = frames[key]
+            pre = f.level_db[f.active] - gains.get(key, 0.0)   # the compressor sits before the fader
+            threshold = float(np.percentile(pre, 95) - gr / (1 - 1 / ratio))
+            makeup = float(np.clip(np.mean(np.maximum(0.0, pre - threshold)) * (1 - 1 / ratio), 0.0, 6.0))
+            plan.append({"key": key, "range": rng, "norm": norm, "gr": gr, "score": excess * r.priority,
+                         "action": {"type": "compress", "track": key, "ratio": ratio, "attack_ms": attack,
+                                    "release_ms": release, "threshold_db": round(threshold, 1),
+                                    "makeup_db": round(makeup, 1),
+                                    "reason": f"level range {rng:.1f} dB, usual for {r.role} about {norm} dB"}})
+        return sorted(plan, key=lambda p: -p["score"])[:6]
+
+    def compress_channels(self, m: dict, baseline: dict) -> dict:
+        from .agent import Round
+
+        plan = self.compress_plan(m)
+        if not plan:
+            self.log("  Dynamics: every channel's level range fits its role (or you compress it yourself).")
+            return m
+        names = {k: r.name for k, r in self.roles.items()}
+        self.log(f"  Dynamics: {len(plan)} channels vary well beyond their role, compressed as one package")
+        applied = []
+        for p in plan:
+            a = p["action"]
+            self.log(f"    · compress {names[p['key']]}: {a['ratio']:g}:1, threshold {a['threshold_db']:.1f} dB, "
+                     f"attack {a['attack_ms']:g} ms, makeup {a['makeup_db']:+.1f} dB · {a['reason']}")
+            rr = self.ex.apply([a])
+            if rr.changes or rr.created_devices:
+                applied.append((p, rr))
+        if not applied:
+            return m
+        try:
+            self.env.wait(self.s.settle)
+            after = self.measure_verified("full")
+        except BaseException:
+            for _, rr in reversed(applied):
+                self.ex.undo(rr)
+            raise
+        safe, why = mix_quality.evaluate(m, after, baseline, "protect", self.s.min_gain)
+        if not safe:
+            for _, rr in reversed(applied):
+                self.ex.undo(rr)
+            self.log(f"    ↺ undone: {why}")
+            return m
+        frames, kept = after.get("mask_frames") or {}, 0
+        for p, rr in applied:
+            now = level_range(frames.get(p["key"]))
+            before_lvl, after_lvl = m["tracks"][p["key"]], after["tracks"].get(p["key"])
+            shift = (after_lvl.loudness - before_lvl.loudness) if after_lvl is not None else 99.0
+            ok = now is not None and p["range"] - now >= max(1.0, 0.4 * p["gr"]) and abs(shift) <= 1.5
+            verdict = (f"{names[p['key']]}: level range {p['range']:.1f} → {now:.1f} dB, level {shift:+.1f} dB"
+                       if now is not None else f"{names[p['key']]}: no measurement")
+            if not ok:
+                self.ex.undo(rr)
+            self.log(f"    {'verified' if ok else '↺ undone'}: {verdict}")
+            self._record(Round("dynamics", 1, m["objective"], after["objective"],
+                               {"assessment": f"compression on {names[p['key']]}", "verification": verdict,
+                                "mix_intent": {"priority": "dynamics", "evidence": p["action"]["reason"],
+                                               "preserve": "channel level and transients", "reference_relevance": "role norm"}},
+                               rr.applied, rr.skipped, undone=not ok, parameters=self.journal_parameters(rr)))
+            if ok:
+                kept += 1
+                self._decisions.setdefault(p["key"], []).append(f"compressed {p['action']['ratio']:g}:1")
+        return self.measure_verified("full") if kept != len(applied) else after
+
+    def _width_now(self, key: str) -> float:
+        for d in self.ex.track(key)["devices"]:
+            if d.get("class_name") == "StereoGain":
+                p = next((p for p in d["params"] if p["name"] in ("Stereo Width", "Width")), None)
+                if p is not None:
+                    return self.ex._db_of(p)
+        return 100.0
+
+    def width_channels(self, m: dict, baseline: dict) -> dict:
+        """When the master is clearly wider or narrower than the references, the channels that carry the side
+        signal move 25% towards them, as one measured package."""
+        from .agent import Round
+
+        cmp = m.get("cmp")
+        if cmp is None or abs(cmp.width_diff) < 1.5:
+            self.log("  Width: the master's width is within 1.5 dB of the references; channels stay as they are.")
+            return m
+        wider = cmp.width_diff < 0
+        cands = []
+        for key, r in self.roles.items():
+            st = m.get("tracks", {}).get(key)
+            if (st is None or st.active < 0.5 or self.track_muted(key) or key in self._constraints.frozen
+                    or self.ex.track(key).get("is_group")):
+                continue
+            if wider and r.role in WIDE_ROLES and -20 < st.width_db < -4:
+                cands.append((st.loudness, key))
+            elif not wider and r.role not in CORE_ROLES and st.width_db > -12:
+                cands.append((st.loudness + st.width_db, key))
+        if not cands:
+            self.log("  Width: no channel that could move the master's width without touching the core.")
+            return m
+        moves = []
+        for _, key in sorted(cands, reverse=True)[:3]:
+            now = self._width_now(key)
+            moves.append({"type": "width", "track": key, "width_pct": round(now + (25 if wider else -25)),
+                          "bass_mono": None, "reason": f"master {abs(cmp.width_diff):.1f} dB "
+                                                       f"{'narrower' if wider else 'wider'} than the references"})
+        names = {k: r.name for k, r in self.roles.items()}
+        self.log(f"  Width: master {abs(cmp.width_diff):.1f} dB {'narrower' if wider else 'wider'} than the "
+                 f"references; {'widening' if wider else 'narrowing'} " + ", ".join(names[a["track"]] for a in moves))
+        rr = self.ex.apply(moves)
+        if not rr.changes:
+            return m
+        try:
+            self.env.wait(self.s.settle)
+            after = self.measure_verified("full")
+        except BaseException:
+            self.ex.undo(rr)
+            raise
+        ok, why = mix_quality.evaluate(m, after, baseline, "width", self.s.min_gain, level_free=True)
+        self._record(Round("width", 1, m["objective"], after["objective"],
+                           {"assessment": "width towards the references", "verification": why,
+                            "mix_intent": {"priority": "width", "evidence": moves[0]["reason"],
+                                           "preserve": "core channels centred", "reference_relevance": "stereo width"}},
+                           rr.applied, rr.skipped, undone=not ok, parameters=self.journal_parameters(rr)))
+        if not ok:
+            self.ex.undo(rr)
+            self.log(f"    ↺ undone: {why}")
+            return m
+        self.log(f"    ✓ verified: {why}")
+        for a in moves:
+            self._decisions.setdefault(a["track"], []).append(f"width {a['width_pct']}%")
+        return after
+
+    def review_channels(self, m: dict, deadline: float) -> None:
+        """One planner round on at most four important channels where a problem is still open after the calculation:
+        an unresolved collision or a tonal region the master still misses. Not with built-in rules."""
+        from .planner import RulePlanner
+
+        if isinstance(self.planner, RulePlanner):
+            return
+        channels = [{"track": k, "name": r.name, "role": r.role, "priority": r.priority,
+                     "kind": "group" if self.ex.track(k).get("is_group") else self.ex.track(k)["kind"]}
+                    for k, r in self.roles.items() if not self.track_muted(k)]
+        keys = [k for k in mix_quality.revisit_candidates(m, channels, limit=6)
+                if self.roles[k].priority >= 3 and k not in self._constraints.frozen][:4]
+        if not keys:
+            self.log("  Important channels: nothing left open that the calculation could not reach.")
+            return
+        self.log("  Important channels with an open problem: " + ", ".join(self.roles[k].name for k in keys))
+        for key in keys:
+            if self.env.now() >= deadline:
+                break
+            self.section(f"channel {self.roles[key].name}", deadline, focus=key, max_rounds=1, scoring="balance")
+
     def log_decisions(self) -> None:
         """One line per channel: what this run decided there."""
         self.log("\n  Channel decisions:")
@@ -613,6 +861,8 @@ class SolverFlow:
             self._log_distance(m)
         baseline = self.quality_anchors.get(self.quality_key(m, "full")) or mix_quality.anchor(m)
         self.log("\n▶ Loudness")
+        if self.sanitize_chain():
+            m = self.measure_verified("full")
         if m.get("input_peak99") is not None:
             # The calculated cuts lowered the level into the chain: back onto the ceiling, so the limits stay
             # gain reduction. Only when it moved by a dB or more, to spare a measurement.

@@ -91,6 +91,7 @@ class Settings:
     jump: bool = True             # measurements jump to the loop start instead of waiting for it
     jump_settle: float = 0.4      # seconds after the jump, so tails of the previous position fade
     ref_dirs: tuple = ()          # folders of the chosen references: re-read at every phase change
+    depth: str = "fast"           # fast | thorough: thorough adds dynamics, width and planner rounds per channel
 
 
 @dataclass
@@ -1372,6 +1373,7 @@ class Agent(SolverFlow):
                                             + (self.W_AUDIT_GUESS if self.s.audit else 0) + self.W_FINAL)
             if self.use_solver(None):
                 self._total = (self.W_PREP + self.W_SOLVE + self.W_COLLIDE
+                               + (self.W_CHARACTER if self.s.depth == "thorough" else 0)
                                + (self.W_AUDIT_GUESS if self.s.audit else 0) + self.W_FINAL)
             self.progress(step="harmony and scan")
         self.read_harmony(sections)

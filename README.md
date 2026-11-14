@@ -73,7 +73,7 @@ You can pause at a safe checkpoint, alter the goal for subsequent work, or unmut
 
 ### 5. Listen and decide
 
-Compare Before and After at matched loudness, use blind playback if helpful, and expand the change list to see exactly what changed. In blind playback, **Hidden is better** or **Hidden is worse** records your vote before revealing; the votes are counted per project, with the chance that guessing alone would give the same result. **Restore original** prepares a guarded restore of MARA's saved parameter state; it does not replace a proper `.als` backup.
+Compare Before and After at matched loudness, use blind playback if helpful, and expand the change list to see exactly what changed. In blind playback, **This is better** or **This is worse** records your vote before revealing; the votes are counted per project, with the chance that guessing alone would give the same result. **Restore original** prepares a guarded restore of MARA's saved parameter state; it does not replace a proper `.als` backup.
 
 ![Result: matched listening, retained changes, and remaining reference differences.](docs/images/05-result.png)
 
