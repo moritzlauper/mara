@@ -31,6 +31,15 @@ def _plain(name: str) -> str:
     return n.removeprefix("fabfilter ").strip()
 
 
+def _number_ms(display: str) -> float | None:
+    """A display as a number, times in milliseconds («1.00 s» → 1000)."""
+    v = parse_display(display)
+    if v is None:
+        return None
+    t = str(display).strip().lower()
+    return float(v) * 1000.0 if t.endswith(" s") and not t.endswith("ms") else float(v)
+
+
 def _db(display: str) -> float | None:
     v = parse_display(display)
     return None if v is None else float(v)
@@ -164,6 +173,9 @@ class Executor:
         self.set_state: dict = {}
         self.locks: set[tuple] = set()
         self.last_set: dict[tuple, float] = {}   # what we set last time, to notice the user's hand
+        # Every change made this session: when devices move, their indices follow, so an undo always reaches the
+        # device it changed (a clipper moved in front of the limiter once received the limiter's old values).
+        self._changes: list = []
         self._plugins: list[str] | None = None
 
     @property
@@ -241,7 +253,9 @@ class Executor:
         if p.get("automated"):
             raise PermissionError(f"{key} {device} {name} is automated; MixMatch leaves automation alone")
         res = self.live.set(key, device, name, target=target, value=value)
-        rr.changes.append(Change(key, device, name, p["value"], res, p.get("display", str(p["value"]))))
+        change = Change(key, device, name, p["value"], res, p.get("display", str(p["value"])))
+        rr.changes.append(change)
+        self._changes.append(change)
         self.last_set[(key, device, name)] = res["value"]
         p["value"], p["display"] = res["value"], res["display"]
         return res
@@ -267,6 +281,9 @@ class Executor:
 
         self.last_set = remap(self.last_set)
         self.locks = remap(self.locks)
+        for c in self._changes:
+            if c.track == key and isinstance(c.device, int):
+                c.device = old_to_new.get(c.device)   # None: the device is gone, nothing to restore there
 
     def _inserted(self, key: str, at: int, count_before: int) -> None:
         self._reindex(key, list(range(at)) + [None] + list(range(at, count_before)))
@@ -501,13 +518,14 @@ class Executor:
 
     def undo(self, rr: RoundResult) -> None:
         changes = [{"track": c.track, "device": c.device, "param": c.param, "value": c.old_value}
-                   for c in reversed(rr.changes)]
+                   for c in reversed(rr.changes) if c.device is not None]
         if changes:
             result = self.live.batch(changes)
             if result.get("errors"):
                 raise RuntimeError(f"could not restore parameters: {result['errors']}")
             for c in reversed(rr.changes):  # a parameter changed twice ends at its first old value
-                self.last_set[(c.track, c.device, c.param)] = c.old_value
+                if c.device is not None:
+                    self.last_set[(c.track, c.device, c.param)] = c.old_value
             self.refresh()
         for key, name in reversed(rr.created_devices):
             matches = [d for d in self.track(key)["devices"] if d["name"] == name]
@@ -695,6 +713,47 @@ class Executor:
             raise KeyError(f"{plugin} has no parameter {param!r}")
         target = max(0.0, min(CLIPPER_MAX_GAIN_DB, self._db_of(p) + _clamp(float(a["delta_db"]), MAX_STEP["clipper"])))
         self._set(rr, key, dev, param, target=target)
+
+    COMP = "MARA Comp"
+
+    def _do_compress(self, rr, a):
+        """A new Compressor at the end of the channel (before the tap), set from measured levels, its own device so
+        undo removes it again. Each value is read back: an older remote script reads «1.00 s» as 1 ms and would set
+        a one-second attack without noticing."""
+        key = a["track"]
+        if any(d["name"] == self.COMP for d in self.track(key)["devices"]):
+            raise RuntimeError("MARA already compresses this channel")
+        count = len(self.track(key)["devices"])
+        at = self.live.load_device(key, "Compressor")
+        self._inserted(key, at, count)
+        self.refresh()
+        dev = self.track(key)["devices"][at]
+        if dev.get("class_name") != "Compressor2":
+            raise RuntimeError("Live did not load its Compressor")
+        name = dev["name"]
+        try:
+            self.live.request("rename_device", track=key, device=at, name=self.COMP)
+            self.refresh()
+            name = self.track(key)["devices"][at]["name"]
+        except Exception:
+            pass
+        if sum(d["name"] == name for d in self.track(key)["devices"]) != 1:
+            count = len(self.track(key)["devices"])
+            self.live.delete_device(key, at)
+            self._deleted(key, at, count)
+            self.refresh()
+            raise RuntimeError("the new compressor cannot be told apart from one already there (update the Live connection)")
+        rr.created_devices.append((key, name))
+        model = self._param(key, at, "Model")
+        if model is not None and "RMS" in model.get("items", []):
+            self._set(rr, key, at, "Model", value=model["min"] + model["items"].index("RMS"))
+        for param, target in (("Ratio", a["ratio"]), ("Attack", a["attack_ms"]), ("Release", a["release_ms"]),
+                              ("Threshold", a["threshold_db"]), ("Output", a.get("makeup_db", 0.0))):
+            res = self._set(rr, key, at, param, target=float(target))
+            got = _number_ms(res.get("display", ""))
+            if got is None or abs(got - float(target)) > max(0.5, abs(float(target)) * 0.15):
+                raise RuntimeError(f"Compressor {param} reads {res.get('display')} instead of {target:g}; "
+                                   "restart Live so it loads the current MixMatch connection")
 
     def _do_param(self, rr, a):
         dev = self.track(a["track"])["devices"][int(a["device_index"])]

@@ -414,3 +414,28 @@ def test_time_displays_in_seconds_are_read_as_milliseconds():
     from MixMatch.commands import _number
 
     assert _number("1.00 s") == 1000.0 and _number("2.00 ms") == 2.0 and _number("-1.5 dB") == -1.5
+
+
+def test_undo_reaches_the_limiter_after_the_clipper_moved_in_front_of_it(monkeypatch):
+    """A clipper inserted before the limiter in the same package shifted the limiter's index; the undo then wrote
+    the limiter's old gain into the clipper."""
+    from mixmatch import sim
+    from mixmatch.actions import Executor
+
+    song, hub, env, live = main_with_tap(limiter=True)
+    clip = sim.Device("Classic Clipper", "PluginDevice", [sim.Param("Device On", 0, 1, 1, str, True, ["Off", "On"]),
+                                                           sim.Param("Gain", -15, 15, 0, lambda v: f"{v:.1f} dB")])
+    ex = Executor(live, log=lambda *_: None)
+    ex.refresh()
+    monkeypatch.setattr(Executor, "clipper", lambda self: ("Classic Clipper", "Gain"))
+
+    def load(track, name, source="audio_effects"):
+        song.master_track.devices.append(clip)
+        return len(song.master_track.devices) - 1
+    monkeypatch.setattr(live, "load_device", load)
+    rr = ex.apply([{"type": "limiter", "delta_db": 2.0, "track": None}, {"type": "clipper", "delta_db": 1.0, "track": None}])
+    names = [d.name for d in song.master_track.devices]
+    assert names.index("Classic Clipper") < names.index("Limiter")
+    ex.undo(rr)
+    limiter = next(d for d in song.master_track.devices if d.name == "Limiter")
+    assert limiter.p("Gain").value == 0 and clip.p("Gain").value == 0   # each back where it was
