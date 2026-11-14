@@ -503,7 +503,8 @@ class Agent(SolverFlow):
         _, start, length = part
         tempo = self.ex.set_state.get("tempo") or 120
         self.log("\n━━ Suggesting references")
-        recording = autoref.capture(self.live, start, min(length, 64.0), tempo, self.log)
+        with autoref.audible_main(self.live, getattr(self, "_listen_volume", None)):
+            recording = autoref.capture(self.live, start, min(length, 64.0), tempo, self.log)
         if recording:
             listener = Listener(log=self.log)
             self.write_suggestions(autoref.buy_list(recording, listener, self.harmony, note=self.description,
@@ -517,10 +518,11 @@ class Agent(SolverFlow):
 
         _, start, length = part
         tempo = self.ex.set_state.get("tempo") or 120
-        picked, to_get = autoref.find(self.live, start, min(length, 64.0), tempo, library=self.s.library,
-                                      references=reference_folders(os.getcwd()),
-                                      jamendo=self.s.jamendo, harmony=self.harmony, note=self.description,
-                                      log=self.log)
+        with autoref.audible_main(self.live, getattr(self, "_listen_volume", None)):
+            picked, to_get = autoref.find(self.live, start, min(length, 64.0), tempo, library=self.s.library,
+                                          references=reference_folders(os.getcwd()),
+                                          jamendo=self.s.jamendo, harmony=self.harmony, note=self.description,
+                                          log=self.log)
         stamp = time.strftime("%Y%m%d-%H%M%S")
         self.write_suggestions(to_get, stamp)
         if not picked:
@@ -967,6 +969,9 @@ class Agent(SolverFlow):
         stamp = time.strftime("%Y%m%d-%H%M%S")
         self.ex.refresh()
         before_state = self.snapshot_state(main_volume)
+        # The listening level of Before: master recordings (reference search, resonances) use it in silent mode.
+        self._listen_volume = next((p["value"] for t in before_state["tracks"] if t["key"] == "m"
+                                    for p in t["mixer"] if p["name"] == "Volume"), None)
         # for the before/after switch; a continued run compares with the state before the run it continues
         ck = self.load_checkpoint() if self.s.resume else None
         first = os.path.join(self.s.log_dir, ck["before"]) if ck and ck.get("before") else None
@@ -1504,15 +1509,21 @@ class Agent(SolverFlow):
 
         if not self.s.fine or key in self.resonances or (key != "m" and not self.s.fine_channels):
             return self.measure(scoring)
+        level = getattr(self, "_listen_volume", None) if key == "m" else None
+        with autoref.audible_main(self.live, level):
+            try:
+                beats = min(self.loop[1] if self.loop else 32.0, self.s.bars * 4.0)
+                cap = autoref.capture_begin(self.live, beats, None if key == "m" else key)
+            except Exception:
+                self.resonances[key] = []
+                return self.measure(scoring)
+            m = self.measure(scoring)
+            path = None
+            try:
+                path = autoref.capture_end(self.live, cap)
+            except Exception as e:
+                self.log(f"  (no fine measurement: {str(e)[:80]})")
         try:
-            beats = min(self.loop[1] if self.loop else 32.0, self.s.bars * 4.0)
-            cap = autoref.capture_begin(self.live, beats, None if key == "m" else key)
-        except Exception:
-            self.resonances[key] = []
-            return self.measure(scoring)
-        m = self.measure(scoring)
-        try:
-            path = autoref.capture_end(self.live, cap)
             found = fine.analyse(path, self.harmony)["resonances"] if path else []
             self.resonances[key] = [r for r in found if r["prominence_db"] >= 5.0][:4]
             if self.resonances[key]:

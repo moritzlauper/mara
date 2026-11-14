@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import os
+from contextlib import contextmanager
 import time
 import urllib.parse
 import urllib.request
@@ -106,6 +107,33 @@ def jamendo_file(track: dict, log=print) -> str | None:
     return path
 
 
+@contextmanager
+def audible_main(live, level: float | None):
+    """Resampling records after the Main fader. In silent mode that fader is down, so a master recording would be
+    silent: raise it to `level` behind a disconnected hardware output (like the preview), then put both back.
+    Without a level, an automated fader or an output that cannot be disconnected, nothing changes."""
+    try:
+        vol = next(p for t in live.get_set()["tracks"] if t["key"] == "m" for p in t["mixer"] if p["name"] == "Volume")
+    except Exception:
+        vol = None
+    if level is None or vol is None or vol["value"] > 1e-6 or vol.get("automated"):
+        yield
+        return
+    try:
+        already = live.request("preview_output").get("muted", False)
+        routing = live.request("preview_output", muted=True)
+    except Exception:
+        yield   # no silent routing: never make Main audible
+        return
+    try:
+        live.set("m", "mixer", "Volume", value=level)
+        yield
+    finally:
+        live.set("m", "mixer", "Volume", value=vol["value"])
+        if not already:
+            live.request("preview_output", muted=False, restore=routing.get("restore"))
+
+
 def capture(live, start: float, length: float, tempo: float, log=print) -> str | None:
     """Records `length` beats of Live's master from `start`; returns the WAV path (in the project's Samples)."""
     from .activity import report as activity
@@ -127,6 +155,17 @@ def capture(live, start: float, length: float, tempo: float, log=print) -> str |
     if path is None:
         log("  recording the master did not finish")
     return path
+
+
+def silent_file(path: str) -> bool:
+    try:
+        import numpy as np
+        import soundfile as sf
+
+        data, _ = sf.read(path, dtype="float32", always_2d=True)
+        return not data.size or float(np.max(np.abs(data))) < 1e-5
+    except Exception:
+        return False
 
 
 def capture_begin(live, beats: float, source: str | None = None, *, start: float | None = None) -> int:
@@ -228,6 +267,9 @@ def find(live, start: float, length: float, tempo: float, library: str | None = 
     recording = capture(live, start, length, tempo, log)
     if not recording:
         return [], []
+    if silent_file(recording):
+        log("  the recording of the song is silent (Main fader down without silent routing?): no search on silence")
+        return [], {"style": "", "buy": [], "free": []}
     listener = Listener(log=log)
     project = listener.file(recording)
     top = styles(listener, project, 5)
