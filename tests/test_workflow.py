@@ -180,3 +180,22 @@ def test_a_running_mix_takes_a_new_reference_selection_at_the_next_phase(tmp_pat
     for f in refs.iterdir():
         f.unlink()
     assert not agent.sync_references() and len(agent.refset.paths) == 2   # empty: keeps the previous ones
+
+
+def test_the_analysis_progress_only_moves_forward(tmp_path, monkeypatch):
+    from mixmatch import workflow
+    from mixmatch.agent import Agent, Settings
+    from mixmatch.planner import RulePlanner
+    from mixmatch.sim import demo_project
+
+    updates = []
+    monkeypatch.setattr(workflow, "update", lambda **v: updates.append(v.get("analysis_progress")))
+    song, hub, env, live = demo_project()
+    agent = Agent(live, hub, RulePlanner(), Settings(log_dir=str(tmp_path)), env=env, log=lambda *_: None)
+    agent._analysis_est = {"scan": 60.0, "search": 90.0, "preview": 30.0}
+    for key in ("scan", "search", "preview", "done"):
+        agent.analysis_step(key, key)
+    starts = [u["base"] for u in updates]
+    assert starts == sorted(starts) and starts[0] == 0 and starts[-1] == 1.0
+    assert abs(updates[1]["base"] - 60 / 180) < 1e-3 and updates[0]["by_position"]
+    assert [u["step"] for u in updates[:3]] == [1, 2, 3] and updates[0]["steps"] == 3

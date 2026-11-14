@@ -1206,8 +1206,10 @@ class Agent(SolverFlow):
             if self.s.review_references:
                 self.save_checkpoint(phase="references", next_channel=None)
                 self._preview_region = (main[0][1], min(main[0][2], 64.0))
+                self.analysis_step("preview", "Recording your original for Before and After")
                 if not self.record_preview(os.path.join(self.s.log_dir, self._before_file), *self._preview_region):
                     raise RuntimeError("The original preview is missing. Check the audio connection and analyse again.")
+                self.analysis_step("done", "Analysis complete")
                 self._awaiting_references = True
                 return
         if phase == "references":
@@ -1217,8 +1219,10 @@ class Agent(SolverFlow):
             phase = "master"
             self.save_checkpoint(phase=phase, next_channel=None)
         self._preview_region = (main[0][1], min(main[0][2], 64.0))
+        self.analysis_step("preview", "Recording your original for Before and After")
         if not self.record_preview(os.path.join(self.s.log_dir, self._before_file), *self._preview_region):
             raise RuntimeError("The original preview is missing. A playable recording is required before mixing.")
+        self.analysis_step("done", "Analysis complete")
         if self.s.finish_early:
             self.log("Skipping remaining validation · recording the current accepted mix.")
             self.clear_checkpoint()
@@ -1373,6 +1377,14 @@ class Agent(SolverFlow):
         self.read_harmony(sections)
         if self.s.complete and self.s.engine == "solver":
             self.prepare_input_stage()
+        if self.s.complete:
+            tempo = self.ex.set_state.get("tempo") or 120
+            total = max(s[1] + s[2] for s in sections) - min(s[1] for s in sections)
+            clip = min(64.0, self.s.focus_bars * 4.0, total) * 60 / tempo
+            search = clip + 75 if self.s.auto_ref else clip + 60 if self.s.suggest else 0
+            self._analysis_est = {k: v for k, v in (("scan", total * 60 / tempo), ("search", search),
+                                                   ("preview", clip + 8)) if v > 0}
+            self.analysis_step("scan", "Listening to the whole song")
         scan = self.scan(sections) if self.s.complete else None
         self._scan = scan
         if scan is not None and not self.beat and self.s.mode == "auto":
@@ -1387,8 +1399,10 @@ class Agent(SolverFlow):
                     self.log(f"Target: {self.target.description}, {self.target.loudness:.1f} LUFS")
         main = [self.loudest_part(sections, scan)] if self.s.focus == "loud" else sections
         if self.s.auto_ref:
+            self.analysis_step("search", "Recording the loudest part and finding references")
             self.find_references(main[0])
         elif self.s.complete and self.s.suggest:
+            self.analysis_step("search", "Recording the loudest part and finding references")
             try:
                 self.suggest_references(main[0])
             except Exception as e:  # suggestions are a bonus: never stop a run for them
@@ -1455,6 +1469,23 @@ class Agent(SolverFlow):
             "families": understanding.families(self.roles, self.track_muted),
             "comparison": understanding.comparison(master, self.target),
             "references": [os.path.basename(p) for p in (self.refset.paths if self.refset else [])]})
+
+    def analysis_step(self, key: str, label: str) -> None:
+        """Where the analysis stands, for a progress bar that only moves forward: each step has a share of the
+        expected total; the interface fills it by song position (listening) or by elapsed time (the rest)."""
+        est = getattr(self, "_analysis_est", None)
+        if not est or (key not in est and key != "done"):
+            return
+        if key == "done":
+            workflow.update(analysis_progress={"step": len(est), "steps": len(est), "label": label, "base": 1.0,
+                                               "weight": 0.0})
+            return
+        keys, total = list(est), sum(est.values())
+        workflow.update(analysis_progress={
+            "step": keys.index(key) + 1, "steps": len(keys), "label": label,
+            "base": round(sum(est[k] for k in keys[:keys.index(key)]) / total, 4),
+            "weight": round(est[key] / total, 4), "started": time.time(), "estimate": round(est[key], 1),
+            "by_position": key == "scan"})
 
     def prepare_input_stage(self) -> bool:
         """Trim and a second tap in front of clipper and limiter on Main (both pass the sound unchanged).

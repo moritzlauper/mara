@@ -75,6 +75,7 @@ $('discover').onclick=()=>action(async()=>{await api('/api/analyse',runBody({ref
 $('go-references').onclick=()=>show('references');
 // After a reference search the song is analysed already: continue to the instruments without a new run.
 $('analyse').onclick=()=>action(async()=>{if(state?.workflow?.status==='ready'){show('analysis');return;}await api('/api/analyse',runBody({auto_mix:true}));show('analysis');});
+$('start-top').onclick=()=>$('start').click();
 $('start').onclick=()=>action(async()=>{if(rolesDirty)await saveRoles();await api('/api/run',runBody({continue:!!state.checkpoint}));show('mix');});
 $('resume').onclick=()=>action(async()=>{await api('/api/run',runBody({continue:true}));pausedRequested=false;show('mix');});
 $('pause').onclick=()=>action(async()=>{await api('/api/stop',{});pausedRequested=true;message('Pausing at the next safe checkpoint. Any current test will be restored first.');});
@@ -103,7 +104,7 @@ function renderReferences(s){
  const q=$('reference-search').value.toLowerCase();
  const chosen=new Set((s.reference_files || []).map(n=>n.toLowerCase()));
  markup('candidates',(s.reference_candidates || []).filter(r=>!r.hidden && !chosen.has(r.name.toLowerCase()) && r.name.toLowerCase().includes(q)).map(r=>refCard({key:'c:'+r.id,
-   src:'/api/reference-audio?id='+encodeURIComponent(r.id),title:bare(r.name),badge:'on your computer',action:`<button class="mini primary" data-reference="${esc(r.id)}">Add</button>`})).join(''));
+   src:'/api/reference-audio?id='+encodeURIComponent(r.id),title:bare(r.name),badge:'on your computer',action:`<button class="mini primary" data-reference="${esc(r.id)}">Add</button><button class="mini" data-hide-reference="${esc(r.id)}" title="Remove from this list (the file stays on your computer)">Remove</button>`})).join(''));
  // A track already on the computer (selected or in the library) is not suggested for purchase again.
  const plain=t=>String(t || '').toLowerCase().replace(/[^a-z0-9]/g,''),owned=[...(s.reference_files || []),...(s.reference_candidates || []).map(r=>r.name)].map(plain);
  const ownedTitle=t=>{const k=plain(String(t).split(' – ').pop());return k.length>=5 && owned.some(o=>o.includes(k));};
@@ -124,7 +125,12 @@ function renderUnderstanding(s,w,status,active){
  $('discover').textContent=u?'Analyse again':'Analyse my mix';$('discover').disabled=active;
  $('understanding-title').textContent=discovering?'MARA is listening to your song':u?'Your song':'Not analysed yet';
  let html='';
- if(discovering)html=`<p class="summary">${esc(w.activity?.text || 'Listening to your song')} …</p><div class="progress indeterminate"><div style="width:30%"></div></div><p class="muted">This takes a few minutes: one pass through the song, the instruments, a style estimate and reference suggestions. You can already pick references in the next step.</p>`;
+ if(discovering){const p=w.analysis_progress;let frac=null;
+  if(p){let part=0;if(p.by_position && w.activity?.total)part=Math.min(1,(w.activity.current || 0)/w.activity.total);else if(p.started && p.estimate)part=Math.min(.95,(Date.now()/1000-p.started)/p.estimate);
+   frac=Math.min(1,p.base+p.weight*part);}
+  html=(p?`<p class="summary">Step ${p.step} of ${p.steps} · ${esc(p.label)}</p>`:`<p class="summary">${esc(w.activity?.text || 'Listening to your song')} …</p>`)
+   +(frac===null?'<div class="progress indeterminate"><div style="width:30%"></div></div>':`<div class="progress" role="progressbar" aria-valuenow="${Math.round(frac*100)}"><div style="width:${(frac*100).toFixed(1)}%"></div></div><p class="muted small">${Math.round(frac*100)}% · ${esc(w.activity?.text || '')}</p>`)
+   +'<p class="muted">One pass through the song, the instruments, a style estimate, reference suggestions and a recording of your original. You can already pick references in the next step.</p>';}
  else if(failed)html=`<p class="summary">The analysis stopped${w.error?': '+esc(w.error):'.'}</p><p class="muted">Start it again with «Analyse my mix».</p>`;
  if(u && !discovering){const fam=(u.families || []).filter(f=>f.family!=='groups'),c=u.comparison;
   const facts=[['Key',u.key],['Tempo',u.tempo?u.tempo+' BPM':null],['Style',u.style || (u.sounds_like || []).slice(0,3).join(', ')],
@@ -153,6 +159,7 @@ document.addEventListener('click',e=>{const seek=e.target.closest('[data-seek]')
  const b=e.target.closest('button');if(b?.dataset.audition)audition(b.dataset.audition,b.dataset.src,b.dataset.title);if(b?.closest('details.more'))b.closest('details.more').open=false;});
 document.addEventListener('click',e=>{const b=e.target.closest('button');if(!b)return;
  if(b.dataset.open)action(()=>api('/api/open',{url:b.dataset.open}));
+ if(b.dataset.hideReference)action(()=>api('/api/references/hide',{id:b.dataset.hideReference,hidden:true}));
  if(b.dataset.use)action(async()=>{const r=await api('/api/references/use',{url:b.dataset.use,name:b.dataset.useName});message('Added to your references: '+r.saved);});
  if(b.dataset.importDownloads!==undefined)action(async()=>{const r=await api('/api/references/import',{});message(r.added?.length?'Imported: '+r.added.join(', '):'Nothing new in Downloads from the last hour.');});
 });
@@ -227,7 +234,7 @@ function render(s){const w=s.workflow || {},status=w.status || 'idle',live=s.ope
  const refs=(s.reference_files?.length || 0)+(s.project_references?.length || 0),taps=live && live.taps>0,connected=!!live && s.following_live!==false;
  $('analyse').disabled=active || !connected || !taps || !refs;$('analyse').textContent=status==='ready'?'Continue to the instruments →':'Analyse & mix →';
  renderUnderstanding(s,w,status,active);
- $('start').disabled=active || !connected || !taps || !refs;
+ $('start').disabled=active || !connected || !taps || !refs;$('start-top').disabled=$('start').disabled;
  $('start-hint').textContent=active?'':!connected?'Waiting for Ableton Live.':!taps?'Set the measurement taps first (Project).':!refs?'Choose at least one reference.':
   (status==='ready' || s.understanding)?'Starts with the saved analysis.':'MARA analyses the song first, then mixes.';
  $('references-context').textContent=active && w.purpose!=='references'?'You can change the references at any time. The running mix uses the new selection from its next phase.':'Choose references for the mix. Listen before adding a file to your selection.';
