@@ -103,11 +103,18 @@ function renderReferences(s){
  const q=$('reference-search').value.toLowerCase();
  const chosen=new Set((s.reference_files || []).map(n=>n.toLowerCase()));
  markup('candidates',(s.reference_candidates || []).filter(r=>!r.hidden && !chosen.has(r.name.toLowerCase()) && r.name.toLowerCase().includes(q)).map(r=>refCard({key:'c:'+r.id,
-   src:'/api/reference-audio?id='+encodeURIComponent(r.id),title:bare(r.name),badge:'in your library',action:`<button class="mini primary" data-reference="${esc(r.id)}">Add</button>`})).join(''));
- markup('suggestions',(s.to_get || []).map(r=>{const links=r.links || {},[artist,title]=String(r.title || r.name).includes(' – ')?String(r.title).split(' – ',2):['',r.title || r.name];
-   return refCard({key:'p:'+(links.Preview || r.title),src:links.Preview || '',title,sub:artist,why:r.why,badge:r.free?'free':'to get',
-    action:r.free && links.Download?`<button class="mini primary" data-use="${esc(links.Download)}" data-use-name="${esc(r.title)}">Add</button>`:'',
-    links:Object.entries(links).filter(([k])=>!['Preview','Download'].includes(k))});}).join('')
+   src:'/api/reference-audio?id='+encodeURIComponent(r.id),title:bare(r.name),badge:'on your computer',action:`<button class="mini primary" data-reference="${esc(r.id)}">Add</button>`})).join(''));
+ // A track already on the computer (selected or in the library) is not suggested for purchase again.
+ const plain=t=>String(t || '').toLowerCase().replace(/[^a-z0-9]/g,''),owned=[...(s.reference_files || []),...(s.reference_candidates || []).map(r=>r.name)].map(plain);
+ const ownedTitle=t=>{const k=plain(String(t).split(' – ').pop());return k.length>=5 && owned.some(o=>o.includes(k));};
+ markup('suggestions',(s.to_get || []).filter(r=>!ownedTitle(r.title || r.name)).map(r=>{const links=r.links || {},[artist,title]=String(r.title || r.name).includes(' – ')?String(r.title).split(' – ',2):['',r.title || r.name];
+   const pages=Object.entries(links).filter(([k])=>!['Preview','Download'].includes(k));
+   // One direct click per card: Add when the file can be fetched, else the shop (or free page) that sells the full file.
+   const direct=r.free?(links.Download?null:pages.find(([k])=>k!=='Spotify')):['Bandcamp','Beatport','Apple Music'].map(k=>[k,links[k]]).find(([,u])=>u);
+   const action=r.free && links.Download?`<button class="mini primary" data-use="${esc(links.Download)}" data-use-name="${esc(r.title)}">Add</button>`
+    :direct?`<button class="mini primary" data-open="${esc(direct[1])}" title="${r.free?'Download it free':'Buy the full file'} on ${esc(direct[0])}">${r.free?'Get free':esc(direct[0])} ↗</button>`:'';
+   return refCard({key:'p:'+(links.Preview || r.title),src:links.Preview || '',title,sub:artist,why:r.why,badge:r.free?'free':'buy',
+    action,links:pages.filter(p=>!direct || p[0]!==direct[0])});}).join('')
   +((s.to_get || []).length?`<p class="muted small">Bought or downloaded one (WAV, FLAC, MP3 or ZIP)? MARA picks it up from Downloads. <button class="mini" data-import-downloads>Import now</button></p>`:''));
  syncPlayButtons();
 }
