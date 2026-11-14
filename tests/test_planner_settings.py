@@ -48,6 +48,13 @@ def test_factory_honors_provider_and_model(storage, monkeypatch):
     assert isinstance(planner.make_planner('rules'), planner.RulePlanner)
 
 
+def test_codex_provider_uses_the_local_chatgpt_cli(storage, monkeypatch):
+    monkeypatch.setattr(planner.shutil, 'which', lambda name: '/bin/codex' if name == 'codex' else None)
+    settings.save('codex', 'default')
+    result = planner.make_planner()
+    assert isinstance(result, planner.CodexPlanner) and result.selected_model == 'default'
+
+
 def test_compatible_plan_contract_and_incomplete_response():
     plan = {'assessment':'Balanced', 'done':True, 'actions':[], 'mix_intent':{
         'priority':'none','evidence':'Measured','preserve':'Groove','reference_relevance':'Direction'}}

@@ -10,7 +10,8 @@ from .platforms import workspace
 HAIKU = 'claude-haiku-5-5'
 ANTHROPIC_MODELS = [HAIKU, 'claude-sonnet-5-5', 'claude-opus-5-5', 'claude-fable-5-2']
 PROVIDERS = {'auto': 'Automatic', 'anthropic': 'Anthropic', 'claude-code': 'Claude Code',
-             'gemini': 'Google Gemini', 'compatible': 'OpenAI-compatible API', 'rules': 'Built-in rules'}
+             'codex': 'Codex (ChatGPT)', 'gemini': 'Google Gemini', 'compatible': 'OpenAI-compatible API',
+             'rules': 'Built-in rules'}
 ENDPOINTS = {'gemini': 'https://generativelanguage.googleapis.com/v1beta/openai'}
 ENV_KEYS = {'anthropic': 'ANTHROPIC_API_KEY', 'gemini': 'GEMINI_API_KEY'}
 
@@ -21,7 +22,8 @@ def read():
     except (OSError, ValueError):
         saved = {}
     return {'provider': 'auto', 'profiles': {'anthropic': {'model': HAIKU},
-            'claude-code': {'model': HAIKU}, **saved.get('profiles', {})}, **{k:v for k,v in saved.items() if k != 'profiles'}}
+            'claude-code': {'model': HAIKU}, 'codex': {'model': 'default'},
+            **saved.get('profiles', {})}, **{k:v for k,v in saved.items() if k != 'profiles'}}
 
 
 def validated(provider, model='', base_url=''):
@@ -32,6 +34,8 @@ def validated(provider, model='', base_url=''):
     model = model.strip()
     if provider in ('auto', 'anthropic', 'claude-code'):
         model = model or HAIKU
+    if provider == 'codex':
+        model = model or 'default'
     if provider not in ('auto', 'rules') and not model:
         raise ValueError('Choose a model or enter its model ID.')
     url = ENDPOINTS.get(provider, '')
@@ -89,7 +93,8 @@ def save(provider, model='', base_url='', api_key=''):
 def public():
     data = read()
     data['providers'] = PROVIDERS
-    data['suggested_models'] = {'anthropic': ANTHROPIC_MODELS, 'claude-code': ANTHROPIC_MODELS}
+    data['suggested_models'] = {'anthropic': ANTHROPIC_MODELS, 'claude-code': ANTHROPIC_MODELS,
+                                'codex': ['default', 'gpt-5.3-codex']}
     data['pricing'] = {
         'checked': '2026-11-10',
         'anthropic': {'source': 'https://platform.claude.com/docs/en/about-claude/pricing', 'models': {
@@ -108,6 +113,8 @@ def models(provider, base_url='', api_key=''):
         return []
     if provider == 'claude-code':
         return ANTHROPIC_MODELS
+    if provider == 'codex':
+        return ['default', 'gpt-5.3-codex']
     profile = validated(provider, 'model-list', base_url)
     token = api_key.strip() or key(provider, profile['base_url'])
     if provider == 'anthropic':

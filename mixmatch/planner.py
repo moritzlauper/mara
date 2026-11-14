@@ -372,6 +372,50 @@ class ClaudeCodePlanner:
         raise RuntimeError(f"claude -p ({model}): {error}")
 
 
+class CodexPlanner:
+    """Plans through local `codex exec` and the user's ChatGPT login, without an API key."""
+
+    def __init__(self, model: str = "default", binary: str = "codex", timeout: float = 600):
+        self.binary = shutil.which(binary) or binary
+        self.selected_model, self.timeout = model, timeout
+        self.model = f"Codex (ChatGPT): {model}"
+
+    def plan(self, context: dict) -> dict:
+        return self._run(context, SYSTEM, ACTION_SCHEMA)
+
+    def review(self, context: dict) -> dict:
+        return self._run(context, REVIEW_SYSTEM, REVIEW_SCHEMA)
+
+    def _run(self, context: dict, system: str, schema: dict) -> dict:
+        from jsonschema import ValidationError, validate
+
+        with tempfile.TemporaryDirectory(prefix="mara-codex-") as folder:
+            schema_path, output_path = os.path.join(folder, "schema.json"), os.path.join(folder, "response.json")
+            with open(schema_path, "w") as f:
+                json.dump(schema, f)
+            cmd = [self.binary, "exec", "--sandbox", "read-only", "--skip-git-repo-check", "--ephemeral",
+                   "--ignore-user-config", "--ignore-rules", "--output-schema", schema_path,
+                   "--output-last-message", output_path, "-"]
+            if self.selected_model != "default":
+                cmd[2:2] = ["--model", self.selected_model]
+            prompt = (system + "\n\nDo not use tools or inspect files. Return only the JSON object requested by the schema."
+                      "\n\nMixing context:\n" + json.dumps(context, ensure_ascii=False))
+            try:
+                proc = subprocess.run(cmd, input=prompt, capture_output=True, text=True, timeout=self.timeout, cwd=folder)
+            except FileNotFoundError:
+                raise RuntimeError("Codex CLI is not installed or not on the PATH.") from None
+            except subprocess.TimeoutExpired:
+                raise RuntimeError("Codex CLI timed out while planning the mix.") from None
+            try:
+                with open(output_path) as f:
+                    plan = json.load(f)
+                validate(plan, schema)
+                return plan
+            except (OSError, ValueError, ValidationError):
+                error = (proc.stderr or proc.stdout).strip().replace("\n", " ")[:300]
+                raise RuntimeError(f"codex exec ({self.selected_model}): {error or 'no valid mixing plan'}") from None
+
+
 LIMIT_WORDS = ("limit", "quota", "usage", "rate")
 
 
@@ -409,6 +453,10 @@ def make_planner(kind: str = "auto"):
     model = profile.get('model') or os.environ.get('MIXMATCH_MODEL') or settings.HAIKU
     if provider == 'rules':
         return RulePlanner()
+    if provider == 'codex':
+        if not shutil.which('codex'):
+            raise RuntimeError('Codex CLI is not installed or not on the PATH.')
+        return CodexPlanner(model=profile.get('model') or 'default')
     if provider in ('gemini', 'compatible'):
         profile = settings.validated(provider, profile.get('model', ''), profile.get('base_url', ''))
         token = settings.key(provider, profile['base_url'])

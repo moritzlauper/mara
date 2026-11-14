@@ -376,6 +376,31 @@ def test_claude_code_planner_reports_a_missing_login(monkeypatch):
         ClaudeCodePlanner(binary="claude").plan({"objective": 1.0})
 
 
+def test_codex_planner_uses_chatgpt_login_in_a_read_only_empty_folder(monkeypatch):
+    import subprocess
+
+    from mixmatch.planner import ACTION_SCHEMA, CodexPlanner
+
+    calls = []
+    plan = {"assessment": "ok", "done": True, "actions": [], "mix_intent": {
+        "priority": "none", "evidence": "measured", "preserve": "groove", "reference_relevance": "direction"}}
+
+    def fake_run(cmd, **kw):
+        schema = json.load(open(cmd[cmd.index("--output-schema") + 1]))
+        calls.append((cmd, kw, schema))
+        with open(cmd[cmd.index("--output-last-message") + 1], "w") as f:
+            json.dump(plan, f)
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    assert CodexPlanner(binary="codex").plan({"objective": 1.0}) == plan
+    cmd, kw, schema = calls[0]
+    assert cmd[0].endswith("codex") and cmd[1] == "exec" and "--sandbox" in cmd
+    assert cmd[cmd.index("--sandbox") + 1] == "read-only"
+    assert "--ephemeral" in cmd and "--ignore-user-config" in cmd and "mara-codex-" in kw["cwd"]
+    assert schema == ACTION_SCHEMA
+
+
 def test_effect_audit_bypasses_neutral_and_harmful_effects_reversibly(tmp_path):
     song, hub, env, live = demo_project()
     from mixmatch.actions import Executor
