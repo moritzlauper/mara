@@ -461,3 +461,11 @@ def test_a_broken_main_chain_is_repaired_and_impossible_values_are_reset():
     assert names.index("MixMatch Tap") < names.index("Classic Clipper") < names.index("Limiter")
     assert names.index("Limiter") < names.index("SPAN") < len(names) - 1 and names[-1] == "MixMatch Tap"
     assert agent.sanitize_chain() and abs(clip.p("Gain").value) < 0.1
+
+
+def test_a_thorough_run_adds_the_character_pass_and_finishes(tmp_path):
+    agent, logs, minutes, song = complete_run(tmp_path, depth="thorough")
+    text = "\n".join(logs)
+    assert "━━ Character: dynamics, width and the important channels" in text
+    assert "Dynamics:" in text and "Width:" in text
+    assert agent._mix_complete and minutes < 14
