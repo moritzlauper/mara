@@ -1027,11 +1027,7 @@ class Agent(SolverFlow):
         finally:
             if main_volume is not None and not externally_muted:
                 self.restore_main_when_quiet(main_volume)
-            if getattr(self, "_user_view", None) is not None:
-                try:
-                    self.live.request("view", selected_track=self._user_view.get("selected_track"))
-                except Exception:
-                    pass
+            self.give_back_live()
         try:
             self.ex.refresh()
             ab.save(self.snapshot_state(comparison_volume), self.s.log_dir, stamp, "after")
@@ -1460,6 +1456,25 @@ class Agent(SolverFlow):
         self.log(f"References changed: {', '.join(os.path.basename(p) for p in now)}. "
                  f"Target from here on: {self.target.description}, {self.target.loudness:.1f} LUFS")
         return True
+
+    def give_back_live(self) -> None:
+        """End of a run: Live as the user left it, apart from the mix. The hardware output reconnected (also when
+        effect tails kept Main closed), the cue level back, the user's track selected and no device appointed."""
+        from . import monitoring
+
+        master = next((t for t in self.live.get_set().get("tracks", []) if t["key"] == "m"), None)
+        if master is not None and master.get("output") == "Sends Only":
+            try:
+                monitoring.reconnect(self.live, self.s.log_dir)
+                self.log("Main output reconnected to the hardware.")
+            except Exception as e:
+                self.log(f"⚠ Main output could not be reconnected ({str(e)[:80]}); set it in Live (Main → Audio To).")
+        for request, kw in (("restore_cue", {}),
+                            ("view", {"selected_track": (getattr(self, "_user_view", None) or {}).get("selected_track")})):
+            try:
+                self.live.request(request, **kw)
+            except Exception:
+                pass
 
     def write_understanding(self, main: tuple, scan) -> None:
         """runs/understanding.json: what the analysis found, for the References step."""

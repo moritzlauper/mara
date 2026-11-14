@@ -69,7 +69,9 @@ const fileDrag=e=>[...(e.dataTransfer?.types || [])].includes('Files');
 for(const name of ['dragenter','dragover'])document.addEventListener(name,e=>{if(!fileDrag(e))return;e.preventDefault();e.dataTransfer.dropEffect=stage==='references' && !state?.active?'copy':'none';$('drop').classList.toggle('over',stage==='references' && !state?.active);});
 document.addEventListener('dragleave',e=>{if(!e.relatedTarget)$('drop').classList.remove('over');});
 document.addEventListener('drop',e=>{if(!fileDrag(e))return;e.preventDefault();$('drop').classList.remove('over');if(stage==='references')upload([...e.dataTransfer.files]);else message('Open References to add audio files.');});
-function runBody(extra={}){return {reference_mode:'selected',silent:true,mode:$('mode').value,...extra};}
+function runBody(extra={}){return {reference_mode:'selected',silent:true,mode:$('mode').value,depth:$('depth').value,...extra};}
+try{const d=localStorage.getItem('mara-depth');if(d)$('depth').value=d;}catch{}
+$('depth').onchange=()=>{try{localStorage.setItem('mara-depth',$('depth').value);}catch{}};
 function canAnalyse(){const s=state || {},live=s.open_set;return !s.active && !s.running && live && live.taps>0 && s.following_live!==false && !s.understanding && s.workflow?.status!=='ready';}
 $('discover').onclick=()=>action(async()=>{await api('/api/analyse',runBody({reference_mode:'discover'}));show('analysis');});
 $('go-references').onclick=()=>show('references');

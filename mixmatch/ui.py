@@ -1189,6 +1189,8 @@ def make_handler(runner: Runner, watcher: "DownloadWatcher | None" = None, live_
                         args += ["--silent"]
                     if body.get("audit"):
                         args += ["--audit"]
+                    if body.get("depth") == "thorough":
+                        args += ["--thorough"]
                     if body.get("continue"):
                         args += ["--continue"]
                     elif body.get("resume"):

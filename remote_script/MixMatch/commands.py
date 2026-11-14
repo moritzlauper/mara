@@ -656,7 +656,17 @@ class Commands:
         self.song.metronome = False
         cue = getattr(self.song.master_track.mixer_device, "cue_volume", None)
         if cue is not None:
+            if not hasattr(self, "_cue_before") and cue.value > cue.min:
+                self._cue_before = cue.value   # given back by «restore_cue» at the end of a run
             cue.value = cue.min
+
+    def restore_cue(self, _):
+        """The cue level the user had before MARA silenced it."""
+        cue = getattr(self.song.master_track.mixer_device, "cue_volume", None)
+        if cue is not None and hasattr(self, "_cue_before"):
+            cue.value = self._cue_before
+            del self._cue_before
+        return {"cue_volume": None if cue is None else cue.value}
 
     def transport(self, req):
         # Disable the click before MARA starts playback, including resumed runs.
