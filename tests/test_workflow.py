@@ -146,13 +146,13 @@ def test_before_is_never_recorded_with_main_at_minus_inf(tmp_path):
     assert volume == UNITY_VOLUME and any("0 dB" in l for l in logs)
 
 
-def test_a_reference_search_stays_on_the_references_stage(tmp_path):
+def test_the_analysis_shows_on_your_mix_and_its_suggestions_on_references(tmp_path):
     from mixmatch import workflow
 
     folder = str(tmp_path)
     stage = lambda: workflow.presentation(folder, {}, active=True, previews={}, checkpoint=None)["stage"]
     workflow.write(folder, {"schema": 1, "id": "a", "kind": "analysis", "status": "analysing", "purpose": "references"})
-    assert stage() == "references"
+    assert stage() == "analysis"
     workflow.write(folder, {"schema": 1, "id": "a", "kind": "analysis", "status": "ready", "purpose": "references"})
     assert stage() == "references"
     workflow.write(folder, {"schema": 1, "id": "b", "kind": "analysis", "status": "analysing"})

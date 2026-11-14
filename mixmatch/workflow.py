@@ -91,9 +91,10 @@ def presentation(folder: str, legacy: dict, *, active: bool, previews: dict, che
             state["review"] = review
     status = state["status"]
     state["stage"] = ("result" if status in {"finished", "preview_failed", "restored"} else
-                      # Finding references analyses the song in the background; the choice happens on References.
-                      "references" if state.get("purpose") == "references" and status in
-                      {"analysing", "preparing", "ready", "failed", "interrupted", "paused"} else
+                      # The analysis (with reference search) belongs to «Your mix»; once it is ready, «References».
+                      "references" if state.get("purpose") == "references" and status == "ready" else
+                      "analysis" if state.get("purpose") == "references" and status in
+                      {"analysing", "preparing", "failed", "interrupted", "paused"} else
                       "analysis" if status == "reviewing" or status in {"preparing", "analysing"} and not state.get("resumed") else
                       # A failed analysis (also reference discovery) never reached the mix: show it where it stopped.
                       "analysis" if status == "failed" and state.get("kind") == "analysis" else

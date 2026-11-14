@@ -37,7 +37,7 @@ $('monitor-before').onclick=()=>action(async()=>{if(!$('monitor-preview').hidden
 function updateCurrentMatch(match){$('current-equal-status').textContent=!$('current-equal').checked?'Original listening levels.':match?.ready?`Matched listening level · ${match.target_lufs.toFixed(1)} LUFS. Current uses the latest passage measurement (approximate).`:match?.reason || 'Matching will use the next available Current measurement.';}
 $('current-equal').onchange=()=>action(async()=>{const playing=!monitorPlayer.paused,position=monitorPlayer.currentTime;state.output=await api('/api/output',{silent:state.output?.silent!==false,equal:$('current-equal').checked});updateCurrentMatch(state.output.match);if(!$('monitor-preview').hidden && state.previews?.before){const p=state.previews.before;const src=state.output.match?.ready?state.output.match.before_url:`/api/preview-audio?which=before&id=${encodeURIComponent(p.id)}`;monitorPlayer.src=src;monitorPlayer.dataset.source=src;monitorPlayer.volume=1;monitorPlayer.onloadedmetadata=()=>{monitorPlayer.currentTime=Math.min(position,monitorPlayer.duration-.1);};if(playing)await monitorPlayer.play();}});
 $('description').oninput=$('mode').onchange=()=>{dirty=true;$('save-project').disabled=false;};
-$('save-project').onclick=()=>action(async()=>{const body={description:$('description').value};if(!state?.active)body.mode=$('mode').value;const r=await api('/api/project',body);dirty=false;if(state?.active)message(r.applies==='next_step'?'Goal saved. MARA uses it at the next planning step.':'Goal saved. This running version picks it up on resume or on the next run.');else show('references');});
+$('save-project').onclick=()=>action(async()=>{const body={description:$('description').value};if(!state?.active)body.mode=$('mode').value;const r=await api('/api/project',body);dirty=false;if(state?.active)message(r.applies==='next_step'?'Goal saved. MARA uses it at the next planning step.':'Goal saved. This running version picks it up on resume or on the next run.');else{show('analysis');if(canAnalyse())await api('/api/analyse',runBody({reference_mode:'discover'}));}});
 let plannerSettings, plannerDrafts={}, editingProvider;
 function plannerBody(){return {provider:$('planner-provider').value,model:$('planner-model').value==='__custom__'?$('planner-custom').value.trim():$('planner-model').value,base_url:$('planner-url').value.trim(),key:$('api-key').value.trim()};}
 function modelOptions(models, selected){const ids=[...new Set([...models,...(selected?[selected]:[])])];$('planner-model').innerHTML=ids.map(id=>`<option value="${esc(id)}">${esc(id==='claude-haiku-5-5'?'Claude Haiku 5.5 (default)':id)}</option>`).join('')+'<option value="__custom__">Enter model ID…</option>';$('planner-model').value=selected || ids[0] || '__custom__';$('planner-custom-field').hidden=$('planner-model').value!=='__custom__';}
@@ -70,10 +70,12 @@ for(const name of ['dragenter','dragover'])document.addEventListener(name,e=>{if
 document.addEventListener('dragleave',e=>{if(!e.relatedTarget)$('drop').classList.remove('over');});
 document.addEventListener('drop',e=>{if(!fileDrag(e))return;e.preventDefault();$('drop').classList.remove('over');if(stage==='references')upload([...e.dataTransfer.files]);else message('Open References to add audio files.');});
 function runBody(extra={}){return {reference_mode:'selected',silent:true,mode:$('mode').value,...extra};}
-$('discover').onclick=()=>action(async()=>{await api('/api/analyse',runBody({reference_mode:'discover'}));show('references');$('reference-library').open=true;});
+function canAnalyse(){const s=state || {},live=s.open_set;return !s.active && !s.running && live && live.taps>0 && s.following_live!==false && !s.understanding && s.workflow?.status!=='ready';}
+$('discover').onclick=()=>action(async()=>{await api('/api/analyse',runBody({reference_mode:'discover'}));show('analysis');});
+$('go-references').onclick=()=>show('references');
 // After a reference search the song is analysed already: continue to the instruments without a new run.
 $('analyse').onclick=()=>action(async()=>{if(state?.workflow?.status==='ready'){show('analysis');return;}await api('/api/analyse',runBody({auto_mix:true}));show('analysis');});
-$('start').onclick=()=>action(async()=>{await api('/api/run',runBody({continue:!!state.checkpoint}));show('mix');});
+$('start').onclick=()=>action(async()=>{if(rolesDirty)await saveRoles();await api('/api/run',runBody({continue:!!state.checkpoint}));show('mix');});
 $('resume').onclick=()=>action(async()=>{await api('/api/run',runBody({continue:true}));pausedRequested=false;show('mix');});
 $('pause').onclick=()=>action(async()=>{await api('/api/stop',{});pausedRequested=true;message('Pausing at the next safe checkpoint. Any current test will be restored first.');});
 $('repair').onclick=()=>action(async()=>{await api('/api/preview/repair',{});message('Recording missing previews. The mix stays unchanged.');});
@@ -84,27 +86,66 @@ $('cancel-new-run-final').onclick=()=>$('new-run-final-dialog').close();
 $('new-run-final').onclick=()=>{$('new-run-final-dialog').close();show('project');message('Review your goal and references before starting another run.');};
 function markup(id,html){const el=$(id);if(el.dataset.render!==html){el.innerHTML=html;el.dataset.render=html;}}
 function phaseOf(phase=''){phase=phase.toLowerCase();return phase.startsWith('final')?'final':phase.startsWith('channel')?'channels':phase.startsWith('effect')?'effects':phase.startsWith('master')?'master':'setup';}
+// A reference as one compact card: its own play button and seek bar, one small action, sources behind «⋯».
+function refCard({key,src,title,sub='',why='',badge='',action='',links=[]}){
+ const play=src?`<button class="play" data-audition="${esc(key)}" data-src="${esc(src)}" data-title="${esc(title)}" aria-label="Play ${esc(title)}">▶</button>`
+  :'<span class="play none" title="No preview available">♪</span>';
+ const more=links.length?`<details class="more"><summary aria-label="Where to get ${esc(title)}" title="Sources">⋯</summary><div class="menu">${links.map(([k,u])=>`<button data-open="${esc(u)}">${esc(k)}</button>`).join('')}</div></details>`:'';
+ return `<div class="ref-card" data-card="${esc(key)}">${play}<div class="ref-main"><div class="ref-head"><strong>${esc(title)}</strong>${sub?`<span class="muted">${esc(sub)}</span>`:''}${badge?`<span class="pill">${esc(badge)}</span>`:''}</div>`
+  +(why?`<p class="why">${esc(why)}</p>`:'')+`<div class="seek" data-seek="${esc(key)}" hidden><i></i><span class="time"></span></div></div><div class="ref-actions">${action}${more}</div></div>`;
+}
+const bare=name=>String(name).replace(/\.(wav|aiff?|flac|mp3|m4a|aac|ogg)$/i,'');
 function renderReferences(s){
- markup('reference-list',(s.reference_files || []).map(name=>`<div class="card ref"><div><strong>${esc(name)}</strong><p class="muted">Selected for this project</p></div><button data-listen-name="${esc(name)}" data-play-key="n:${esc(name)}">Listen</button><button data-remove="${esc(name)}">Remove</button></div>`).join('')+(s.project_references || []).map(r=>`<div class="card ref"><div><strong>${esc(r.file?.split(/[\\/]/).pop() || r.track || r)}</strong><p class="muted">Reference clip in Live · ${esc(r.track)}</p></div></div>`).join(''));
- markup('candidates',(s.reference_candidates || []).filter(r=>!r.hidden && r.name.toLowerCase().includes($('reference-search').value.toLowerCase())).map(r=>`<div class="fact"><span>${esc(r.name)}</span><span class="row"><button data-listen-reference="${esc(r.id)}" data-play-key="c:${esc(r.id)}">Listen</button><button data-reference="${esc(r.id)}">Add</button></span></div>`).join('') || '<p class="muted">No more files in the shared library.</p>');
- const suggestion=r=>{const links=r.links || {},pages=Object.entries(links).filter(([k])=>!['Preview','Download'].includes(k));
-  return `<div class="fact"><span>${esc(r.title || r.name)}${r.free?' <small>· free</small>':''}<br><small>${esc(r.why || '')}</small></span><span class="row">`
-   +(links.Preview?`<button data-preview="${esc(links.Preview)}" data-preview-name="${esc(r.title)}" data-play-key="p:${esc(links.Preview)}">Listen</button>`:'')
-   +(r.free && links.Download?`<button data-use="${esc(links.Download)}" data-use-name="${esc(r.title)}">Add</button>`:'')
-   +pages.map(([k,u])=>`<button class="subtle" data-open="${esc(u)}" title="Opens in your browser">${esc(k)}</button>`).join('')+'</span></div>';};
- syncPlayButtons();
- markup('suggestions',(s.to_get || []).map(suggestion).join('')+((s.to_get || []).length?`<p class="muted">Buy or download a track (WAV, FLAC, MP3 or ZIP): MARA picks it up from Downloads. <button data-import-downloads>Import from Downloads</button></p>`:''));
+ markup('reference-list',(s.reference_files || []).map(name=>refCard({key:'n:'+name,src:'/api/reference-audio?name='+encodeURIComponent(name),title:bare(name),badge:'selected',
+   action:`<button class="mini" data-remove="${esc(name)}">Remove</button>`})).join('')
+  +(s.project_references || []).map(r=>refCard({key:'l:'+(r.file || r.track),title:bare(r.file?.split(/[\\/]/).pop() || r.track || r),sub:'reference clip in Live',badge:'in Live'})).join('')
+  || '<p class="muted">Nothing selected yet. Add one or two of the suggestions above.</p>');
+ const q=$('reference-search').value.toLowerCase();
+ const chosen=new Set((s.reference_files || []).map(n=>n.toLowerCase()));
+ markup('candidates',(s.reference_candidates || []).filter(r=>!r.hidden && !chosen.has(r.name.toLowerCase()) && r.name.toLowerCase().includes(q)).map(r=>refCard({key:'c:'+r.id,
+   src:'/api/reference-audio?id='+encodeURIComponent(r.id),title:bare(r.name),badge:'in your library',action:`<button class="mini primary" data-reference="${esc(r.id)}">Add</button>`})).join(''));
+ markup('suggestions',(s.to_get || []).map(r=>{const links=r.links || {},[artist,title]=String(r.title || r.name).includes(' – ')?String(r.title).split(' – ',2):['',r.title || r.name];
+   return refCard({key:'p:'+(links.Preview || r.title),src:links.Preview || '',title,sub:artist,why:r.why,badge:r.free?'free':'to get',
+    action:r.free && links.Download?`<button class="mini primary" data-use="${esc(links.Download)}" data-use-name="${esc(r.title)}">Add</button>`:'',
+    links:Object.entries(links).filter(([k])=>!['Preview','Download'].includes(k))});}).join('')
+  +((s.to_get || []).length?`<p class="muted small">Bought or downloaded one (WAV, FLAC, MP3 or ZIP)? MARA picks it up from Downloads. <button class="mini" data-import-downloads>Import now</button></p>`:''));
  syncPlayButtons();
 }
 // One player for every reference: the row that plays shows Pause, a second click pauses, the dock below has seek.
-function syncPlayButtons(){const key=referencePlayer.dataset.key,on=!referencePlayer.paused;document.querySelectorAll('[data-play-key]').forEach(b=>{const mine=b.dataset.playKey===key;b.textContent=mine && on?'Pause':'Listen';b.setAttribute('aria-pressed',String(mine && on));});}
+function renderUnderstanding(s,w,status,active){
+ const u=s.understanding,discovering=w.purpose==='references' && active,failed=w.purpose==='references' && ['failed','interrupted'].includes(status);
+ $('discover').textContent=u?'Analyse again':'Analyse my mix';$('discover').disabled=active;
+ $('understanding-title').textContent=discovering?'MARA is listening to your song':u?'Your song':'Not analysed yet';
+ let html='';
+ if(discovering)html=`<p class="summary">${esc(w.activity?.text || 'Listening to your song')} …</p><div class="progress indeterminate"><div style="width:30%"></div></div><p class="muted">This takes a few minutes: one pass through the song, the instruments, a style estimate and reference suggestions. You can already pick references in the next step.</p>`;
+ else if(failed)html=`<p class="summary">The analysis stopped${w.error?': '+esc(w.error):'.'}</p><p class="muted">Start it again with «Analyse my mix».</p>`;
+ if(u && !discovering){const fam=(u.families || []).filter(f=>f.family!=='groups'),c=u.comparison;
+  const facts=[['Key',u.key],['Tempo',u.tempo?u.tempo+' BPM':null],['Sounds like',(u.sounds_like || []).slice(0,3).join(', ')],
+   ['Loudest part',u.loudest?`bars ${u.loudest.from}–${u.loudest.to} · ${u.loudest.lufs.toFixed(1)} LUFS`:null],
+   ['Instruments',fam.map(f=>`${f.family} ${f.count}`).join(' · ')],
+   ['Against the references',c?`${c.loudness_lu>0?'+':''}${c.loudness_lu} LU · PLR ${c.plr_db} vs ${c.reference_plr_db} dB`:null]].filter(([,v])=>v);
+  html+=`<p class="summary">${esc(u.text || '')}</p><div class="facts">${facts.map(([k,v])=>`<div class="fact"><span>${esc(k)}</span><strong>${esc(v)}</strong></div>`).join('')}</div>`
+   +(s.previews?.before?refCard({key:'before',src:`/api/preview-audio?which=before&id=${encodeURIComponent(s.previews.before.id)}`,title:'Your original',sub:'loudest part, as MARA recorded it'}):'');}
+ else if(!discovering && !failed)html='<p class="summary">MARA has not listened to this song yet. «Analyse my mix» plays it once with Live muted, describes what it hears and suggests references.</p>';
+ markup('understanding',html);
+ $('go-references').textContent=discovering?'Choose references now →':'Choose references →';
+ const anySuggestions=(s.to_get || []).length || (s.reference_candidates || []).some(r=>!r.hidden);$('suggestions-block').hidden=!anySuggestions;
+}
+function syncPlayButtons(){const key=referencePlayer.dataset.key,on=!referencePlayer.paused;
+ document.querySelectorAll('[data-audition]').forEach(b=>{const mine=b.dataset.audition===key;b.textContent=mine && on?'❚❚':'▶';b.classList.toggle('playing',mine && on);b.setAttribute('aria-pressed',String(mine && on));});
+ document.querySelectorAll('[data-seek]').forEach(el=>el.hidden=el.dataset.seek!==key);updateSeek();}
+const clock=t=>isFinite(t)?`${Math.floor(t/60)}:${String(Math.floor(t%60)).padStart(2,'0')}`:'0:00';
+function updateSeek(){const el=document.querySelector(`[data-seek="${CSS.escape(referencePlayer.dataset.key || '')}"]`);if(!el)return;const d=referencePlayer.duration,t=referencePlayer.currentTime;
+ el.querySelector('i').style.width=(d?100*t/d:0)+'%';el.querySelector('.time').textContent=`${clock(t)} / ${clock(d)}`;}
 function audition(key,src,label){if(referencePlayer.dataset.key===key){if(referencePlayer.paused)referencePlayer.play().catch(()=>{});else referencePlayer.pause();return;}
- referencePlayer.dataset.key=key;referencePlayer.src=src;$('reference-playing').textContent=label;$('reference-player-box').hidden=false;referencePlayer.play().catch(()=>message('Press Play to listen.'));}
-for(const ev of ['play','pause','ended','emptied'])referencePlayer.addEventListener(ev,syncPlayButtons);
-$('reference-close').onclick=()=>{referencePlayer.pause();referencePlayer.removeAttribute('src');referencePlayer.load();delete referencePlayer.dataset.key;$('reference-player-box').hidden=true;syncPlayButtons();};
+ referencePlayer.dataset.key=key;referencePlayer.src=src;$('reference-playing').textContent=label;referencePlayer.play().catch(()=>message('Press Play to listen.'));syncPlayButtons();}
+for(const ev of ['play','pause','ended','emptied','loadedmetadata'])referencePlayer.addEventListener(ev,syncPlayButtons);
+referencePlayer.addEventListener('timeupdate',updateSeek);
+$('reference-close').onclick=()=>{referencePlayer.pause();referencePlayer.removeAttribute('src');referencePlayer.load();delete referencePlayer.dataset.key;syncPlayButtons();};
+document.addEventListener('click',e=>{const seek=e.target.closest('[data-seek]');if(seek && referencePlayer.duration){const r=seek.getBoundingClientRect();referencePlayer.currentTime=referencePlayer.duration*Math.min(1,Math.max(0,(e.clientX-r.left)/r.width));}
+ const b=e.target.closest('button');if(b?.dataset.audition)audition(b.dataset.audition,b.dataset.src,b.dataset.title);if(b?.closest('details.more'))b.closest('details.more').open=false;});
 document.addEventListener('click',e=>{const b=e.target.closest('button');if(!b)return;
  if(b.dataset.open)action(()=>api('/api/open',{url:b.dataset.open}));
- if(b.dataset.preview)audition('p:'+b.dataset.preview,b.dataset.preview,b.dataset.previewName+' · preview');
  if(b.dataset.use)action(async()=>{const r=await api('/api/references/use',{url:b.dataset.use,name:b.dataset.useName});message('Added to your references: '+r.saved);});
  if(b.dataset.importDownloads!==undefined)action(async()=>{const r=await api('/api/references/import',{});message(r.added?.length?'Imported: '+r.added.join(', '):'Nothing new in Downloads from the last hour.');});
 });
@@ -167,7 +208,7 @@ function render(s){const w=s.workflow || {},status=w.status || 'idle',live=s.ope
  const projects=`<option value="__live__">${esc(s.engine?.track || s.open_set?.name || s.track || 'Open Live project')} (current)</option>`+(s.tracks || []).map(t=>`<option value="${esc(t.slug)}">${esc(t.name)}</option>`).join('');if($('project-switch').dataset.render!==projects){$('project-switch').innerHTML=projects;$('project-switch').dataset.render=projects;}$('project-switch').value=s.following_live?'__live__':s.project_id;$('project-switch').disabled=false;$('project-switch').title='Choose a project · the current run continues in its own project';
  const analysis=analysisFeedback(s);
  $('role-fields').disabled=active && !(analysis.review && analysis.held);
- $('start').hidden=status!=='ready';
+ $('start').hidden=false;
 
  $('project-name').textContent=s.track || 'No project yet';$('connection').textContent=live?'Live connected':'Waiting for Live';$('connection').classList.toggle('connected',!!live);$('status').textContent=pausedRequested && active?'Pausing safely':STATUS[status] || status;
  $('footer-project').textContent=live?.path || s.track || 'Open your set in Ableton Live';$('footer-state').textContent=active?s.activity?.text || w.activity?.text || s.phase || 'Working …':'Changes are saved with this project';
@@ -175,17 +216,14 @@ function render(s){const w=s.workflow || {},status=w.status || 'idle',live=s.ope
  markup('readiness',live?`<div class="fact"><span>Live project</span><strong>${esc(live.name || s.track)}</strong></div><div class="fact"><span>Measurement taps</span><span>${live.taps} of ${live.total} channels</span></div>`:'<p>Waiting for Ableton Live. Open your set; MARA connects automatically.</p>');
  $('set-taps').hidden=!!live && live.taps>=live.total;$('set-taps').disabled=active || !live;
  for(const id of ['install-bridge','discover','mode'])$(id).disabled=active;
- $('save-project').disabled=!s.track || (!dirty && active);$('save-project').textContent=active?'Save goal':'Save & choose references →';$('save-status').textContent=active?(s.workflow?.live_goal_updates?'Updates guide the next planning step.':'Saved updates apply when this run resumes or the next run starts.'):'Your description guides every run.';
+ $('save-project').disabled=!s.track || (!dirty && active);$('save-project').textContent=active?'Save goal':'Save & analyse my mix →';$('save-status').textContent=active?(s.workflow?.live_goal_updates?'Updates guide the next planning step.':'Saved updates apply when this run resumes or the next run starts.'):'Your description guides every run.';
  const refs=(s.reference_files?.length || 0)+(s.project_references?.length || 0),taps=live && live.taps>0,connected=!!live && s.following_live!==false;
  $('analyse').disabled=active || !connected || !taps || !refs;$('analyse').textContent=status==='ready'?'Continue to the instruments →':'Analyse & mix →';
- const discovering=w.purpose==='references',ds=$('discover-status');ds.hidden=!discovering || !['analysing','preparing','ready','failed','interrupted'].includes(status);
- if(!ds.hidden){const n=(s.to_get || []).length+(s.reference_candidates || []).filter(r=>!r.hidden).length;
-  ds.textContent=status==='ready'?`Suggestions are ready below (${n}). Listen, add the ones you want, then continue to the instruments. The song is analysed already.`:
-   status==='failed'?'The reference search stopped: '+(w.error || 'see Activity & diagnostics.'):status==='interrupted'?'The reference search was interrupted. Start it again when you are ready.':
-   'MARA is listening to your song and looking for references'+(w.activity?.text?' · '+w.activity.text:'')+'. You can keep adding or removing references meanwhile.';
-  if(status==='ready' && !ds.dataset.opened){ds.dataset.opened='1';$('reference-library').open=true;}}else delete ds.dataset.opened;
- $('start').disabled=active || !connected || !refs || !s.previews?.before || status!=='ready';
- $('references-context').textContent=active && !discovering?'You can change the references at any time. The running mix uses the new selection from its next phase.':'Choose references for the mix. Listen before adding a file to your selection.';
+ renderUnderstanding(s,w,status,active);
+ $('start').disabled=active || !connected || !taps || !refs;
+ $('start-hint').textContent=active?'':!connected?'Waiting for Ableton Live.':!taps?'Set the measurement taps first (Project).':!refs?'Choose at least one reference.':
+  (status==='ready' || s.understanding)?'Starts with the saved analysis.':'MARA analyses the song first, then mixes.';
+ $('references-context').textContent=active && w.purpose!=='references'?'You can change the references at any time. The running mix uses the new selection from its next phase.':'Choose references for the mix. Listen before adding a file to your selection.';
  $('change-references').hidden=true;
  renderReferences(s);renderAudio(s);renderChanges(s);renderLatestChanges(s);renderCharts(s);updatePlannerCost();
  $('unmute-current').textContent=s.output?.silent===false?'Mute Current':'Unmute Current';
@@ -206,7 +244,6 @@ function render(s){const w=s.workflow || {},status=w.status || 'idle',live=s.ope
  if(ap===null)$('analysis-meter').removeAttribute('aria-valuenow');else $('analysis-meter').setAttribute('aria-valuenow',ap);
  $('analysis-review-actions').hidden=!analysis.review;$('hold-review').hidden=analysis.held;
  $('continue-review').textContent=rolesDirty?'Save roles & continue →':'Continue now →';
- if(['reviewing','ready'].includes(status) || w.analysis_complete){const key=s.project_id+'|'+w.id;if($('roles-details').dataset.opened!==key){$('roles-details').open=true;$('roles-details').dataset.opened=key;}}
  const phase=analysis.running?'setup':status==='finalizing'?'preview':phaseOf(s.phase || w.phase || ''),index=Object.keys(PHASES).indexOf(phase);
  const phaseLabel=index>=0?`Phase ${index+1} of 5 · ${PHASES[phase]}`:'Preparing your mix';
  $('mix-stage').textContent=phaseLabel;$('mix-stage-purpose').textContent=PHASE_PURPOSE[phase] || analysis.hint;
