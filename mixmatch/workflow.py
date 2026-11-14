@@ -92,6 +92,8 @@ def presentation(folder: str, legacy: dict, *, active: bool, previews: dict, che
     status = state["status"]
     state["stage"] = ("result" if status in {"finished", "preview_failed", "restored"} else
                       "analysis" if status == "reviewing" or status in {"preparing", "analysing"} and not state.get("resumed") else
+                      # A failed analysis (also reference discovery) never reached the mix: show it where it stopped.
+                      "analysis" if status == "failed" and state.get("kind") == "analysis" else
                       "mix" if status in ACTIVE | {"paused", "interrupted", "failed"} else
                       "analysis" if status == "ready" else "project")
     return state

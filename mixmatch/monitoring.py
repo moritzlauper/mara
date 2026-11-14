@@ -22,7 +22,13 @@ def read(folder: str) -> dict:
 
 
 def begin(folder: str, volume: float, silent: bool) -> None:
-    saved = _saved_level(folder, {}, 1.0)
+    # A level the UI saved when it muted Main belongs to an earlier run id: keep it, or a run that starts with
+    # Main muted loses the user's listening level for good.
+    try:
+        previous = json.loads((Path(folder) / "monitor.json").read_text())
+    except (OSError, ValueError):
+        previous = {}
+    saved = _saved_level(folder, previous if isinstance(previous, dict) else {}, 1.0)
     _write(folder, {"run_id": workflow.read(folder).get("id"),
                     "volume": volume if _audible(volume, 1.0) else saved, "managed": silent})
 

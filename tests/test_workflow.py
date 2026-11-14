@@ -106,3 +106,41 @@ def test_review_excludes_automated_values_from_change_count(tmp_path):
     ab.save(before, str(tmp_path), '1', 'after')
     result = review.changes(str(tmp_path))
     assert result['ready'] and result['kept'] == []
+
+
+def test_a_failed_analysis_stays_on_the_analysis_stage(tmp_path):
+    from mixmatch import workflow
+
+    folder = str(tmp_path)
+    workflow.write(folder, {"schema": 1, "id": "a", "kind": "analysis", "status": "failed", "phase": "references",
+                            "error": "The original preview is missing."})
+    stage = lambda: workflow.presentation(folder, {}, active=False, previews={}, checkpoint=None)["stage"]
+    assert stage() == "analysis"
+    workflow.write(folder, {"schema": 1, "id": "b", "kind": "mix", "status": "failed"})
+    assert stage() == "mix"
+
+
+def test_a_run_that_starts_with_main_muted_keeps_the_saved_listening_level(tmp_path, monkeypatch):
+    import json
+    from mixmatch import monitoring, workflow
+
+    folder = str(tmp_path)
+    (tmp_path / "monitor.json").write_text(json.dumps({"run_id": "old", "volume": 0.8, "managed": True}))
+    workflow.write(folder, {"schema": 1, "id": "new", "kind": "analysis", "status": "preparing"})
+    monitoring.begin(folder, 0.0, True)
+    assert json.loads((tmp_path / "monitor.json").read_text())["volume"] == 0.8
+
+
+def test_before_is_never_recorded_with_main_at_minus_inf(tmp_path):
+    from mixmatch.agent import UNITY_VOLUME, Agent, Settings
+    from mixmatch.planner import RulePlanner
+    from mixmatch.sim import demo_project
+
+    song, hub, env, live = demo_project()
+    logs = []
+    agent = Agent(live, hub, RulePlanner(), Settings(log_dir=str(tmp_path)), env=env, log=logs.append)
+    live.set("m", "mixer", "Volume", value=0.0)
+    agent.ex.refresh()
+    state = agent.snapshot_state(0.0)
+    volume = next(p["value"] for t in state["tracks"] if t["key"] == "m" for p in t["mixer"] if p["name"] == "Volume")
+    assert volume == UNITY_VOLUME and any("0 dB" in l for l in logs)

@@ -117,6 +117,7 @@ class Round:
 
 
 TAP = "MixMatch Tap"
+UNITY_VOLUME = 0.85   # raw value of Live's mixer volume at 0 dB
 
 
 class PlannerFailed(Exception):
@@ -1051,10 +1052,19 @@ class Agent(SolverFlow):
         from copy import deepcopy
         from . import monitoring
 
-        if main_volume is None:
+        if main_volume is None or main_volume <= 1e-6:
             monitor = monitoring.read(self.s.log_dir)
-            if monitor.get("managed"):
+            if monitor.get("managed") and (monitor.get("volume") or 0) > 1e-6:
                 main_volume = monitor.get("volume")
+        current = next((p["value"] for t in self.ex.set_state.get("tracks", []) if t["key"] == "m"
+                        for p in t["mixer"] if p["name"] == "Volume"), None)
+        if (main_volume if main_volume is not None else current or 0.0) <= 1e-6:
+            # Main at -inf is no mix state, and Resampling sits behind that fader: the original preview would be
+            # silent. Without a known listening level, Before and After keep Main at 0 dB.
+            main_volume = UNITY_VOLUME
+            if not getattr(self, "_unity_logged", False):
+                self._unity_logged = True
+                self.log("Main was at -inf dB: Before and After are recorded with Main at 0 dB.")
 
         state = deepcopy(self.ex.set_state)
         if main_volume is not None:
@@ -1062,6 +1072,8 @@ class Agent(SolverFlow):
                 if t["key"] == "m":
                     for p in t["mixer"]:
                         if p["name"] == "Volume":
+                            if main_volume == UNITY_VOLUME and p["value"] != UNITY_VOLUME:
+                                p["display"] = "0.0 dB"
                             p["value"] = main_volume
         return state
 
