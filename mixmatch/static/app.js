@@ -1,8 +1,8 @@
 import {renderCharts,analysisFeedback} from '/app/charts.js';
 const $ = id => document.getElementById(id);
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-const PHASES = {master:'Master comparison',channels:'Channels, groups & returns',effects:'Effect checks',final:'Final master check',preview:'Record After & restore Live'};
-const PHASE_PURPOSE={master:'Compare the full mix with your reference.',channels:'Improve individual channels, groups and returns in the mix.',effects:'Test effects one at a time · keep useful effects, bypass those that do not help.',final:'Check the finished mix as a whole.',preview:'Record the result and restore normal Live playback.'};
+const PHASES = {master:'Master comparison',channels:'Channels, groups & returns',character:'Dynamics, width & key channels',effects:'Effect checks',final:'Final master check',preview:'Record After & restore Live'};
+const PHASE_PURPOSE={character:'Thorough mix: compression and width per channel, then the important channels.',master:'Compare the full mix with your reference.',channels:'Improve individual channels, groups and returns in the mix.',effects:'Test effects one at a time · keep useful effects, bypass those that do not help.',final:'Check the finished mix as a whole.',preview:'Record the result and restore normal Live playback.'};
 const STATUS = {idle:'Ready',preparing:'Preparing',analysing:'Analysing',reviewing:'Reviewing roles',ready:'Ready to mix',mixing:'Mixing',pausing:'Pausing safely',paused:'Paused',interrupted:'Interrupted',finalizing:'Preparing your result',repairing:'Repairing previews',finished:'Finished',preview_failed:'Preview needs attention',failed:'Needs attention',restored:'Original restored'};
 let state, projectId, workflowKey, stage='project', dirty=false, rolesDirty=false, rolesRevision, roles={}, rolesProject, pending=false, pausedRequested=false;
 let selected='before', baseAudio='', audioId='', hiddenAudio=false, changeTab='kept', reviewHash='', restoreToken;
@@ -93,7 +93,7 @@ $('confirm-new-run').onclick=()=>{$('new-run-dialog').close();$('new-run-final-d
 $('cancel-new-run-final').onclick=()=>$('new-run-final-dialog').close();
 $('new-run-final').onclick=()=>{$('new-run-final-dialog').close();show('project');message('Review your goal and references before starting another run.');};
 function markup(id,html){const el=$(id);if(el.dataset.render!==html){el.innerHTML=html;el.dataset.render=html;}}
-function phaseOf(phase=''){phase=phase.toLowerCase();return phase.startsWith('final')?'final':phase.startsWith('channel')?'channels':phase.startsWith('effect')?'effects':phase.startsWith('master')?'master':'setup';}
+function phaseOf(phase=''){phase=phase.toLowerCase();return phase.startsWith('character') || phase.startsWith('dynamics') || phase.startsWith('width')?'character':phase.startsWith('final')?'final':phase.startsWith('channel')?'channels':phase.startsWith('effect')?'effects':phase.startsWith('master')?'master':'setup';}
 // A reference as one compact card: its own play button and seek bar, one small action, sources behind «⋯».
 function refCard({key,src,title,sub='',why='',badge='',action='',links=[]}){
  const play=src?`<button class="play" data-audition="${esc(key)}" data-src="${esc(src)}" data-title="${esc(title)}" aria-label="Play ${esc(title)}">▶</button>`
@@ -265,10 +265,11 @@ function render(s){const w=s.workflow || {},status=w.status || 'idle',live=s.ope
  if(ap===null)$('analysis-meter').removeAttribute('aria-valuenow');else $('analysis-meter').setAttribute('aria-valuenow',ap);
  $('analysis-review-actions').hidden=!analysis.review;$('hold-review').hidden=analysis.held;
  $('continue-review').textContent=rolesDirty?'Save roles & continue →':'Continue now →';
- const phase=analysis.running?'setup':status==='finalizing'?'preview':phaseOf(s.phase || w.phase || ''),index=Object.keys(PHASES).indexOf(phase);
- const phaseLabel=index>=0?`Phase ${index+1} of 5 · ${PHASES[phase]}`:'Preparing your mix';
+ const phase=analysis.running?'setup':status==='finalizing'?'preview':phaseOf(s.phase || w.phase || '');
+ const shown=Object.entries(PHASES).filter(([k])=>k!=='character' || w.depth==='thorough' || phase==='character'),index=shown.findIndex(([k])=>k===phase);
+ const phaseLabel=index>=0?`Phase ${index+1} of ${shown.length} · ${PHASES[phase]}`:'Preparing your mix';
  $('mix-stage').textContent=phaseLabel;$('mix-stage-purpose').textContent=PHASE_PURPOSE[phase] || analysis.hint;
- markup('mix-phases',Object.entries(PHASES).map(([key,name],i)=>{const complete=status==='finished' || i<index,current=status!=='finished' && key===phase,label=complete?'Done':current?(status==='paused'?'Paused':status==='pausing'?'Pausing':status==='interrupted' || status==='failed'?'Needs attention':'In progress'):'Upcoming';return `<li class="phase-item ${complete?'complete':current?'current':'upcoming'}"${current?' aria-current="step"':''}><span class="phase-mark" aria-hidden="true">${complete?'✓':i+1}</span><span class="phase-name">${esc(name)}</span><span class="phase-state">${label}</span></li>`;}).join(''));
+ markup('mix-phases',shown.map(([key,name],i)=>{const complete=status==='finished' || i<index,current=status!=='finished' && key===phase,label=complete?'Done':current?(status==='paused'?'Paused':status==='pausing'?'Pausing':status==='interrupted' || status==='failed'?'Needs attention':'In progress'):'Upcoming';return `<li class="phase-item ${complete?'complete':current?'current':'upcoming'}"${current?' aria-current="step"':''}><span class="phase-mark" aria-hidden="true">${complete?'✓':i+1}</span><span class="phase-name">${esc(name)}</span><span class="phase-state">${label}</span></li>`;}).join(''));
 
  $('mix-title').textContent=status==='paused'?'Your run is paused.':status==='failed' || status==='interrupted'?'This run needs attention.':status==='finalizing'?'Preparing your result.':'MARA is working on your mix.';
  $('mix-description').textContent=w.error || s.activity?.text || w.activity?.text || s.phase || 'Your progress is saved at each safe checkpoint.';

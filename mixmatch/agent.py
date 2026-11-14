@@ -974,6 +974,7 @@ class Agent(SolverFlow):
         from . import ab
 
         stamp = time.strftime("%Y%m%d-%H%M%S")
+        workflow.update(depth=self.s.depth)
         try:   # what the user had selected in Live: given back at the end, without a device left appointed
             self._user_view = self.live.request("view")
         except Exception:
@@ -1821,7 +1822,9 @@ class Agent(SolverFlow):
         for change in rr.changes:
             track = self.ex.track(change.track)
             ids = _device_ids(track["devices"])
-            device = "Mixer" if change.device == "mixer" else ids[change.device] if change.device < len(ids) else "Unknown device"
+            device = ("Mixer" if change.device == "mixer" else
+                      "Removed device" if change.device is None else
+                      ids[change.device] if change.device < len(ids) else "Unknown device")
             result.append({"track": change.track, "device": device, "param": change.param,
                            "old_display": change.old_display, "new_display": change.new.get("display"),
                            "old_value": change.old_value, "new_value": change.new.get("value")})

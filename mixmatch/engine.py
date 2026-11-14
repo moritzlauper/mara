@@ -109,7 +109,13 @@ class SolverFlow:
             return
         if phase == "character":
             if self.s.complete and getattr(self.s, "depth", "fast") == "thorough":
-                self.character_pass(main, deadline)
+                try:
+                    self.character_pass(main, deadline)
+                except Exception as e:   # a pause (KeyboardInterrupt) still goes through
+                    # The thorough extras never stop a mix: what they changed is undone step by step inside, the
+                    # rest of the run (effects, loudness, final check) still happens.
+                    self.log(f"  ⚠ character pass stopped early ({str(e)[:120]}); the mix continues without it.")
+                    self.finish_step("character")
             phase = "effects"
             self._save_solver_checkpoint(phase)
         if self.env.now() >= deadline:
@@ -641,6 +647,7 @@ class SolverFlow:
     # ── 2b. character (thorough mode) ───────────────────────────────────────
     def character_pass(self, main: tuple, deadline: float) -> None:
         name, start, length = main
+        workflow.update(phase="character")
         self.log("\n━━ Character: dynamics, width and the important channels")
         self.begin_step(self.W_CHARACTER)
         self.play_loop(start, length)
@@ -706,6 +713,9 @@ class SolverFlow:
             self.log(f"    · compress {names[p['key']]}: {a['ratio']:g}:1, threshold {a['threshold_db']:.1f} dB, "
                      f"attack {a['attack_ms']:g} ms, makeup {a['makeup_db']:+.1f} dB · {a['reason']}")
             rr = self.ex.apply([a])
+            if rr.skipped:   # a half-set compressor never stays: take it out again right away
+                self.ex.undo(rr)
+                continue
             if rr.changes or rr.created_devices:
                 applied.append((p, rr))
         if not applied:
