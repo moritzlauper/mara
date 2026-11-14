@@ -1367,6 +1367,10 @@ def serve(workdir: str = ".", port: int = PORT, open_browser: bool = True) -> No
     from . import songs
 
     runner = Runner(os.path.abspath(workdir))
+    # A packaged MARA opened later must resume this same workspace, rather than
+    # silently creating an empty one in Application Support.
+    from .platforms import remember_workspace
+    remember_workspace(runner.root)
     moved = songs.migrate(runner.root)
     if moved:
         print(f"Roles and runs moved to songs/ for «{moved}». references/ remains the shared library.")

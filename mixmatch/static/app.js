@@ -226,6 +226,16 @@ $('confirm-restore').onclick=()=>{$('restore-dialog').close();$('restore-final-d
 $('cancel-restore-final').onclick=()=>$('restore-final-dialog').close();
 $('restore-final').onclick=()=>action(async()=>{await api('/api/restore',{token:restoreToken});$('restore-final-dialog').close();message('Original settings restored in Live.');});
 function timeLeft(progress,active){if(!active)return '';const minutes=progress?.eta_minutes;if(!minutes)return 'estimating time…';return minutes>=60?`about ${Math.floor(minutes/60)} h ${minutes%60} min left`:`about ${minutes} min left`;}
+// Internal work units are revised while MARA discovers how many channels, effects
+// and review rounds the project needs.  They are useful for the ETA, but an old
+// checkpoint can otherwise make the percentage look ahead of the visible phase.
+// Never let the public bar enter a later milestone before that milestone starts.
+const PHASE_PROGRESS_CAP={master:44,channels:64,character:74,effects:84,final:94,preview:99};
+function shownProgress(percent,phase,status){
+ if(status==='finished')return 100;
+ const cap=PHASE_PROGRESS_CAP[phase];
+ return cap===undefined?percent:Math.min(percent,cap);
+}
 
 function isConnectedProject(s){return !!s.open_set && s.following_live!==false;}
 function render(s){const w=s.workflow || {},status=w.status || 'idle',live=s.open_set,active=s.active || s.running;
@@ -269,14 +279,16 @@ function render(s){const w=s.workflow || {},status=w.status || 'idle',live=s.ope
  $('analysis-review-actions').hidden=!analysis.review;$('hold-review').hidden=analysis.held;
  $('continue-review').textContent=rolesDirty?'Save roles & continue →':'Continue now →';
  const phase=analysis.running?'setup':status==='finalizing'?'preview':phaseOf(s.phase || w.phase || '');
- const shown=Object.entries(PHASES).filter(([k])=>k!=='character' || w.depth==='thorough' || phase==='character'),index=shown.findIndex(([k])=>k===phase);
+ // Keep the complete workflow visible: the six milestones are a stable map of
+ // the run, even when the optional detailed character pass is skipped.
+ const shown=Object.entries(PHASES),index=shown.findIndex(([k])=>k===phase);
  const phaseLabel=index>=0?`Phase ${index+1} of ${shown.length} · ${PHASES[phase]}`:'Preparing your mix';
  $('mix-stage').textContent=phaseLabel;$('mix-stage-purpose').textContent=PHASE_PURPOSE[phase] || analysis.hint;
  markup('mix-phases',shown.map(([key,name],i)=>{const complete=status==='finished' || i<index,current=status!=='finished' && key===phase,label=complete?'Done':current?(status==='paused'?'Paused':status==='pausing'?'Pausing':status==='interrupted' || status==='failed'?'Needs attention':'In progress'):'Upcoming';return `<li class="phase-item ${complete?'complete':current?'current':'upcoming'}"${current?' aria-current="step"':''}><span class="phase-mark" aria-hidden="true">${complete?'✓':i+1}</span><span class="phase-name">${esc(name)}</span><span class="phase-state">${label}</span></li>`;}).join(''));
 
  $('mix-title').textContent=status==='paused'?'Your run is paused.':status==='failed' || status==='interrupted'?'This run needs attention.':status==='finalizing'?'Preparing your result.':'MARA is working on your mix.';
  $('mix-description').textContent=w.error || s.activity?.text || w.activity?.text || s.phase || 'Your progress is saved at each safe checkpoint.';
- const p=s.progress || w.progress,percent=s.display_progress?.percent ?? 0,hp=s.engine?.active?(s.engine.display_progress?.percent ?? percent):percent,finalising=phaseOf(s.engine?.phase || w.phase || '')==='final';$('header-progress-bar').style.width=hp+'%';const headerEta=finalising?'final validation in progress':timeLeft(s.engine?.active?s.engine.display_progress:s.display_progress,s.engine?.active || active);$('header-progress-label').textContent=hp+'%'+(headerEta?' · '+headerEta:'');$('header-progress').style.visibility=s.engine?.active || active || s.checkpoint || status==='finished'?'visible':'hidden';$('header-progress').setAttribute('aria-label',`${hp}% complete. Show mix progress.`);$('progress-bar').style.width=percent+'%';$('progress-bar').parentElement.setAttribute('aria-valuenow',percent);const eta=finalising?'final validation in progress':timeLeft(s.display_progress,active);$('progress-label').textContent=p?`${percent}%${eta?' · '+eta:''} · ${phaseLabel}`:'Waiting for the next step';
+ const p=s.progress || w.progress,rawPercent=s.display_progress?.percent ?? 0,percent=shownProgress(rawPercent,phase,status),rawHeaderPercent=s.engine?.active?(s.engine.display_progress?.percent ?? rawPercent):rawPercent,hp=shownProgress(rawHeaderPercent,phaseOf(s.engine?.phase || w.phase || phase),status),finalising=phaseOf(s.engine?.phase || w.phase || '')==='final';$('header-progress-bar').style.width=hp+'%';const headerEta=finalising?'final validation in progress':timeLeft(s.engine?.active?s.engine.display_progress:s.display_progress,s.engine?.active || active);$('header-progress-label').textContent=hp+'%'+(headerEta?' · '+headerEta:'');$('header-progress').style.visibility=s.engine?.active || active || s.checkpoint || status==='finished'?'visible':'hidden';$('header-progress').setAttribute('aria-label',`${hp}% complete. Show mix progress.`);$('progress-bar').style.width=percent+'%';$('progress-bar').parentElement.setAttribute('aria-valuenow',percent);const eta=finalising?'final validation in progress':timeLeft(s.display_progress,active);$('progress-label').textContent=p?`${percent}%${eta?' · '+eta:''} · ${phaseLabel}`:'Waiting for the next step';
  const headerState=s.engine?.active && s.following_live===false?{...s.engine,active:true}:s,headerAnalysis=analysisFeedback(headerState);
  $('header-progress-bar').parentElement.hidden=headerAnalysis.review;
  $('header-progress-bar').parentElement.classList.toggle('indeterminate',headerAnalysis.running && headerAnalysis.progress===null);

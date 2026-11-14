@@ -107,23 +107,21 @@ section[data-panel=mix]>.progress{margin-top:16px}#progress-label{margin-bottom:
 #mix-stage-purpose{margin:0 0 5px;font-size:12px}
 #mix-description{min-height:20px;margin:0 0 12px;font-size:12px}
 section[data-panel=mix]>.mix-dashboard{margin-top:18px}
-#mix-phases{list-style:none;display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:0;padding:0;margin:18px 0 22px}
-.phase-item{position:relative;min-width:0;display:grid;grid-template-rows:20px auto;align-content:start;justify-items:center;text-align:center;padding:0 5px;color:var(--muted)}
+#mix-phases{list-style:none;display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:0;padding:0;margin:18px 0 22px}
+.phase-item{position:relative;min-width:0;display:grid;grid-template-rows:20px auto;align-content:start;justify-items:center;text-align:center;padding:0 3px;color:var(--muted)}
 .phase-item:not(:last-child)::after{content:"";position:absolute;top:9px;left:calc(50% + 10px);width:calc(100% - 20px);height:2px;background:var(--lo);opacity:.5}
 .phase-item.complete::after{background:var(--ink);opacity:.45}
 .phase-mark{position:relative;z-index:1;width:20px;height:20px;display:grid;place-items:center;border:1px solid var(--lo);background:var(--panel);font:11px var(--mono);color:var(--muted)}
 .phase-item.complete .phase-mark{border-color:var(--ink);color:var(--ink)}
 .phase-item.current .phase-mark{background:var(--accent);color:var(--on-accent);border-color:var(--accent)}
-.phase-name{margin-top:6px;font:500 12px/1.35 var(--sans);max-width:155px}
+.phase-name{margin-top:6px;font:500 clamp(9px,1.15vw,12px)/1.35 var(--sans);max-width:155px;overflow-wrap:anywhere}
 .phase-item.complete .phase-name{color:var(--ink)}
 .phase-item.current .phase-name{color:var(--accent);font-weight:700}
 @media(max-width:700px){
  #mix-title{font-size:20px}
- #mix-phases{grid-template-columns:1fr;gap:0;margin:14px 0}
- .phase-item{grid-template-columns:20px minmax(0,1fr);grid-template-rows:auto;align-items:center;justify-items:start;text-align:left;gap:9px;padding:0 0 9px}
- .phase-item:last-child{padding-bottom:0}
- .phase-item:not(:last-child)::after{top:20px;left:9px;width:2px;height:calc(100% - 20px)}
- .phase-name{margin:0;max-width:none}
+ #mix-phases{margin:14px 0 18px}
+ .phase-item{padding:0 2px}
+ .phase-name{font-size:9px}
 }
 
 .latest-changes{margin:22px 0 18px;padding-top:14px;border-top:1px solid var(--line)}

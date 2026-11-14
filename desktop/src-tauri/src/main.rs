@@ -1,8 +1,15 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
-use std::{io::{BufRead, BufReader}, process::{Child, Command, Stdio}, sync::{Arc, Mutex, atomic::{AtomicBool, Ordering}}, time::Duration};
+use std::{io::{BufRead, BufReader}, path::PathBuf, process::{Child, Command, Stdio}, sync::{Arc, Mutex, atomic::{AtomicBool, Ordering}}, time::Duration};
 use tauri::{Manager, WindowEvent};
 #[derive(Default)]
 struct Engine { url: Option<String>, child: Option<Child> }
+fn remembered_workspace() -> Option<String> {
+ let home=std::env::var_os("HOME")?;
+ let file=PathBuf::from(home).join("Library/Application Support/MARA/last-workspace.json");
+ let data=std::fs::read_to_string(file).ok()?;
+ let workspace=serde_json::from_str::<serde_json::Value>(&data).ok()?["workspace"].as_str()?.to_owned();
+ PathBuf::from(&workspace).is_dir().then_some(workspace)
+}
 fn main() {
  let engine=Arc::new(Mutex::new(Engine::default()));
  let closing=Arc::new(AtomicBool::new(false));
@@ -14,7 +21,9 @@ fn main() {
     let client=reqwest::blocking::Client::builder().timeout(Duration::from_secs(2)).build()?;
     // Reuse this workspace’s running service, including an active run.
     let existing=client.get("http://127.0.0.1:8765/api/health").send().and_then(|r| r.json::<serde_json::Value>());
-    let mut inherited_workspace=None;
+    // The browser UI and native app share a durable workspace pointer. This
+    // prevents a reconnect from opening a fresh, empty Application Support folder.
+    let mut inherited_workspace=std::env::var("MARA_WORKSPACE").ok().or_else(remembered_workspace);
     if let Ok(h)=existing { if h["app"]=="MARA" && std::env::var("MARA_WORKSPACE").ok().map(|w| h["workspace"]==w).unwrap_or(true) {
      if h["build"]==env!("MARA_BUILD") {return Ok("http://127.0.0.1:8765".into());}
      let state=client.get("http://127.0.0.1:8765/api/state").send()?.json::<serde_json::Value>()?;

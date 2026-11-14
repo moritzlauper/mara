@@ -110,7 +110,13 @@ class SolverFlow:
         if phase == "character":
             if self.s.complete and getattr(self.s, "depth", "fast") == "thorough":
                 try:
-                    self.character_pass(main, deadline)
+                    # A restart can happen while the character pass is testing an
+                    # important channel.  Preserve the already booked share so a
+                    # resumed pass cannot consume the final-phase progress too.
+                    remaining = self._phase_budget(self.W_CHARACTER,
+                                                   self.W_PREP + self.W_SOLVE + self.W_COLLIDE)
+                    if remaining > 0:
+                        self.character_pass(main, deadline, budget=remaining)
                 except Exception as e:   # a pause (KeyboardInterrupt) still goes through
                     # The thorough extras never stop a mix: what they changed is undone step by step inside, the
                     # rest of the run (effects, loudness, final check) still happens.
@@ -131,7 +137,13 @@ class SolverFlow:
 
     def _save_solver_checkpoint(self, phase: str) -> None:
         self.save_checkpoint(phase=phase, next_channel=None, engine="solver", depth=self.s.depth,
-                             protected=sorted(self._constraints.frozen))
+                             protected=sorted(self._constraints.frozen), phase_progress_start=self._done)
+
+    def _phase_budget(self, full: float, legacy_start: float) -> float:
+        """Work left in a resumable phase, never including a later phase's share."""
+        start = float(getattr(self, "_ck", {}).get("phase_progress_start", legacy_start))
+        spent = max(0.0, min(full, getattr(self, "_done", 0.0) - start))
+        return full - spent
 
     def _advance(self, share: float, step: str) -> None:
         """Books a share of the current phase's progress units after a measured package."""
@@ -645,11 +657,11 @@ class SolverFlow:
         return after
 
     # ── 2b. character (thorough mode) ───────────────────────────────────────
-    def character_pass(self, main: tuple, deadline: float) -> None:
+    def character_pass(self, main: tuple, deadline: float, budget: float | None = None) -> None:
         name, start, length = main
         workflow.update(phase="character")
         self.log("\n━━ Character: dynamics, width and the important channels")
-        self.begin_step(self.W_CHARACTER)
+        self.begin_step(self.W_CHARACTER if budget is None else budget)
         self.play_loop(start, length)
         m = self.measure_verified("full")
         baseline = self.quality_anchors.get(self.quality_key(m, "full")) or mix_quality.anchor(m)

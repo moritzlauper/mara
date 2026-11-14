@@ -36,6 +36,21 @@ def workspace():
     return Path(os.environ.get("LOCALAPPDATA", str(Path.home() / ".local/share"))) / "MARA"
 
 
+def desktop_state_dir():
+    """Stable location shared by browser-launched and packaged desktop MARA."""
+    if sys.platform == "darwin":
+        return Path.home() / "Library/Application Support/MARA"
+    return Path(os.environ.get("LOCALAPPDATA", str(Path.home() / ".local/share"))) / "MARA"
+
+
+def remember_workspace(folder: str | Path):
+    """Let the packaged app resume the most recently used local workspace."""
+    root = Path(folder).resolve()
+    state = desktop_state_dir()
+    state.mkdir(parents=True, exist_ok=True)
+    (state / "last-workspace.json").write_text(json.dumps({"workspace": str(root)}))
+
+
 def resources():
     return Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent.parent))
 
