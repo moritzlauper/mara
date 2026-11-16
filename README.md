@@ -112,9 +112,9 @@ The standard workflow works with **Built-in rules**, which sends no mix-planning
 
 Provider choice changes how a plan is proposed, not how Live is controlled: every adjustment still goes through the same bounded action and verification steps. Optional reference discovery and style suggestions may use additional local models or online services. You can skip them and select reference files manually.
 
-## Mix with Claude Code or Codex instead
+## Mix with Claude, ChatGPT or Codex instead
 
-If you would rather talk to your own agent than run MARA's mix pass, [MARA Bridge](https://github.com/moritzlauper/mara-bridge) connects Claude Code, Codex, or any MCP client to your Live set through MARA's taps. The agent then hears every channel and Main, compares with reference tracks ("make it loud like this", "make the kick like this one"), and changes the set itself.
+If you would rather talk to your own agent than run MARA's mix pass, [mara-mcp](https://github.com/moritzlauper/mara-mcp) connects Claude, ChatGPT (via Codex), Cursor, or any other MCP client to your Live set through MARA's taps. The agent then hears every channel and Main, compares with reference tracks ("make it loud like this", "make the kick like this one"), and changes the set itself.
 
 ## Limits worth knowing
 
