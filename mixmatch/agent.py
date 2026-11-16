@@ -773,30 +773,8 @@ class Agent(SolverFlow):
         return clip is None or clip >= CLIPPER_MAX_GAIN_DB - 0.05
 
     def fader_gains(self) -> dict[str, float]:
-        """dB the mixer adds after each channel's tap: its own fader plus those of the groups it sits in.
-
-        The tap is the last device, so it measures before the fader; this turns its numbers into what reaches the mix.
-        """
-        tracks = self.live.get_set()["tracks"]
-        groups = {t["name"]: t for t in tracks if t.get("is_group")}
-
-        def volume(t):
-            if t.get("muted"):
-                return -math.inf
-            v = next((parse_display(p["display"]) for p in t["mixer"] if p["name"] == "Volume"), None)
-            return 0.0 if v is None else v
-
-        out = {}
-        for t in tracks:
-            if t["kind"] == "master":
-                continue
-            gain, seen, parent = volume(t), set(), groups.get(t.get("group"))
-            while parent is not None and parent["name"] not in seen:
-                seen.add(parent["name"])
-                gain += volume(parent)
-                parent = groups.get(parent.get("group"))
-            out[t["key"]] = gain
-        return out
+        """dB the mixer adds after each channel's tap: its own fader plus those of the groups it sits in."""
+        return fader_gains(self.live.get_set()["tracks"])
 
     def _group_members(self) -> dict[str, set[str]]:
         """Group track key → keys of every track inside it (also inside nested groups)."""
@@ -1858,6 +1836,32 @@ def _parts(parts: dict) -> str:
     """«tonal 0.9 · loudness 0.5 · …», largest first, small ones left out."""
     big = sorted(((v, k) for k, v in parts.items() if v >= 0.05), reverse=True)
     return " · ".join(f"{k} {v:.2f}" for v, k in big) or "nothing left"
+
+
+def fader_gains(tracks: list[dict]) -> dict[str, float]:
+    """dB the mixer adds after each channel's tap: its own fader plus those of the groups it sits in.
+
+    The tap is the last device, so it measures before the fader; this turns its numbers into what reaches the mix.
+    """
+    groups = {t["name"]: t for t in tracks if t.get("is_group")}
+
+    def volume(t):
+        if t.get("muted"):
+            return -math.inf
+        v = next((parse_display(p["display"]) for p in t["mixer"] if p["name"] == "Volume"), None)
+        return 0.0 if v is None else v
+
+    out = {}
+    for t in tracks:
+        if t["kind"] == "master":
+            continue
+        gain, seen, parent = volume(t), set(), groups.get(t.get("group"))
+        while parent is not None and parent["name"] not in seen:
+            seen.add(parent["name"])
+            gain += volume(parent)
+            parent = groups.get(parent.get("group"))
+        out[t["key"]] = gain
+    return out
 
 
 def post_fader(st, gain_db: float):
