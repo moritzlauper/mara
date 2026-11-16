@@ -8,7 +8,7 @@ export function analysisFeedback(s, now=Date.now()/1000) {
  let title='Preparing your mix',hint='MARA checks the arrangement and records an original preview before changing the mix.';
  if (/waiting.*audio|master.*silent/i.test(text)) {
   title='Waiting for audio from Live';
-  hint=now-(activity.started || now)>=30?'Still waiting? Check that Live’s audio engine is on and the MixMatch Tap devices are enabled on Main and the tracks. MARA continues when measurements arrive.':'MARA has started playback and is waiting for the measurement devices. Keep Live open; the next step starts automatically.';
+  hint=now-(activity.started || now)>=30?'Still waiting? Check that Live’s audio engine is on and the MARA Tap devices are enabled on Main and the tracks. MARA continues when measurements arrive.':'MARA has started playback and is waiting for the measurement devices. Keep Live open; the next step starts automatically.';
  } else if (/reference/i.test(text)) {
   title='Analysing reference audio';hint='MARA is measuring the selected reference files. Large files can take longer; no action is needed.';
  } else if (/whole song|arrangement/i.test(text)) {

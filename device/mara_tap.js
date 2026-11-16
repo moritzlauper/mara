@@ -1,4 +1,4 @@
-// MixMatch Tap: adds the track's identity to each measurement frame and
+// MARA Tap: adds the track's identity to each measurement frame and
 // passes it on to udpsend as an OSC message. Runs inside Max for Live.
 //
 // Identity is the device's own Live id, so two taps on one track (Main has a
@@ -9,7 +9,7 @@ autowatch = 1;
 inlets = 1;
 outlets = 1;
 
-var TAP = "MixMatch Tap";
+var TAP = "MARA Tap";
 var tapId = 0;
 var deviceId = 0;
 var trackName = "";
@@ -34,7 +34,7 @@ function init() {
     });
 }
 
-// True when another MixMatch Tap follows this one in the same chain.
+// True when another MARA Tap follows this one in the same chain.
 function tapAfterMe(api) {
     var ids = api.get("devices");   // ["id", 3, "id", 7, …]
     var seen = false;

@@ -6,13 +6,13 @@ def track(name, *devices):
 
 
 def test_automatic_names_defer_to_devices():
-    assert guess(track("2-Drum Rack", "Drum Rack", "Kick Toner", "Kick Tight", "MixMatch Tap"), None).role == "kick"
+    assert guess(track("2-Drum Rack", "Drum Rack", "Kick Toner", "Kick Tight", "MARA Tap"), None).role == "kick"
     assert guess(track("31-Audio", "2hollisvocalchain"), None).role == "lead_vocal"
     assert guess(track("8-Basic Electric Drive Bass", "Basic Electric Drive Bass"), None).role == "bass"
 
 
 def test_plain_drum_rack_does_not_imply_a_complete_kit():
-    r = guess(track("4-Drum Rack", "Drum Rack", "MixMatch Tap"), None)
+    r = guess(track("4-Drum Rack", "Drum Rack", "MARA Tap"), None)
     assert (r.role, r.source) == ("percussion", "devices")
 
 

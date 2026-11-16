@@ -118,7 +118,7 @@ class Round:
     parameters: list = field(default_factory=list)
 
 
-TAP = "MixMatch Tap"
+TAP = "MARA Tap"
 UNITY_VOLUME = 0.85   # raw value of Live's mixer volume at 0 dB
 
 
@@ -676,7 +676,7 @@ class Agent(SolverFlow):
     def measure(self, scoring: str = "full", retries: int = 6) -> dict:
         """`scoring` «balance» leaves out loudness and dynamics: a quiet part need not sound like the drop.
 
-        A silent master is never a result: MixMatch waits and measures again, and gives up with MasterSilent.
+        A silent master is never a result: MARA waits and measures again, and gives up with MasterSilent.
         """
         activity(self.log, "Listening and measuring the mix")
         for attempt in range(retries + 1):
@@ -942,8 +942,8 @@ class Agent(SolverFlow):
         self.understand()
         self.log(f"Mix policy: {mix_quality.VERSION} · reference as direction; verified mix benefit, protected punch and layers.")
         if not self.tap_of:
-            self.log("\nStopped: no channel reports through a MixMatch Tap, so there is nothing to measure. "
-                     "Put the taps in («Set taps» in the interface, or mixmatch taps) and start again.")
+            self.log("\nStopped: no channel reports through a MARA Tap, so there is nothing to measure. "
+                     "Put the taps in («Set taps» in the interface, or mara taps) and start again.")
             self.logfile.close()
             return self.history
         if not self.references and not self.target:
@@ -1074,7 +1074,7 @@ class Agent(SolverFlow):
         return state
 
     def mute_main(self) -> float | None:
-        """Silent mode: the Main fader all the way down, so nothing is heard while MixMatch works. Every tap,
+        """Silent mode: the Main fader all the way down, so nothing is heard while MARA works. Every tap,
         the master's too, sits before the Main fader and keeps measuring. Returns the old value."""
         master = next((t for t in self.ex.set_state["tracks"] if t["key"] == "m"), None)
         vol = next((p for p in master["mixer"] if p["name"] == "Volume"), None) if master else None
@@ -1085,7 +1085,7 @@ class Agent(SolverFlow):
         result = self.live.set("m", "mixer", "Volume", value=0.0)
         if result.get("value") != 0.0:
             raise RuntimeError("cannot mute the Main output: volume did not reach zero")
-        self.log("Silent: the Main fader is down while MixMatch works (it measures before the fader).")
+        self.log("Silent: the Main fader is down while MARA works (it measures before the fader).")
         return vol["value"]
 
     def restore_main_when_quiet(self, volume: float) -> bool:

@@ -318,7 +318,7 @@ def test_resume_retains_comparison_and_song_after_failed_tap_start(tmp_path):
     first.write_text("Taps: 3 channels\nKey: G minor\nsounds like: atmospheric house\n"
                      "━━ Master against the reference\n  distance 2.5   (tonal 2.5)\n")
     failed = tmp_path / "ui-20260101-110000.log"
-    failed.write_text("Taps: 0 channels\nStopped: no channel reports through a MixMatch Tap, "
+    failed.write_text("Taps: 0 channels\nStopped: no channel reports through a MARA Tap, "
                       "so there is nothing to measure.\n")
     resumed = tmp_path / "ui-20260101-120000.log"
     resumed.write_text("Taps: 3 channels\n↻ Continuing the run from 2026-01-01 10:00 at effects\n"

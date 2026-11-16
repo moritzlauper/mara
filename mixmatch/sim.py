@@ -20,7 +20,7 @@ from .bands import CENTRES
 from .taps import Frame, TapHub
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "remote_script"))
-from MixMatch.commands import Commands  # noqa: E402
+from MARA.commands import Commands  # noqa: E402
 
 F = np.array(CENTRES)
 
@@ -121,11 +121,11 @@ def compressor():
 
 
 def tap():
-    return Device("MixMatch Tap", "MxDeviceAudioEffect", [Param("Device On", 0, 1, 1, str, True, ["Off", "On"])])
+    return Device("MARA Tap", "MxDeviceAudioEffect", [Param("Device On", 0, 1, 1, str, True, ["Off", "On"])])
 
 
 FACTORIES = {"eq eight": eq_eight, "utility": utility, "limiter": limiter, "compressor": compressor,
-             "mixmatch tap.amxd": tap}
+             "mara tap.amxd": tap}
 
 
 class Mixer:
@@ -197,7 +197,7 @@ class Browser:
         self.audio_effects = Item("Audio Effects", [Item("EQ & Filters", [Item("EQ Eight")]),
                                                     Item("Utilities", [Item("Utility")]),
                                                     Item("Dynamics", [Item("Limiter"), Item("Compressor")])])
-        self.user_library = Item("User Library", [Item("MixMatch", [Item("MixMatch Tap.amxd")])])
+        self.user_library = Item("User Library", [Item("MARA", [Item("MARA Tap.amxd")])])
         self.plugins = Item("Plug-Ins", [])   # none installed in the simulator
 
     def load_item(self, item):
@@ -283,7 +283,7 @@ def master_chain(song: Song, refs: set[str]):
     width = float(np.mean([o[2] for o in outs]))
     low_side = float(max(o[3] for o in outs))
     peak_extra = 0.0
-    taps = [i for i, d in enumerate(song.master_track.devices) if d.name == "MixMatch Tap"]
+    taps = [i for i, d in enumerate(song.master_track.devices) if d.name == "MARA Tap"]
     pre = None
     for i, d in enumerate(song.master_track.devices):
         if len(taps) >= 2 and i == taps[0]:

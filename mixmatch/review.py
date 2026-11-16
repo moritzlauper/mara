@@ -75,7 +75,7 @@ def changes(folder: str) -> dict:
             continue
         devices = [("Mixer", old["mixer"], new["mixer"])]
         devices += [(device, old["devices"].get(device), new["devices"].get(device))
-                    for device in sorted(set(old["devices"]) | set(new["devices"])) if not device.startswith("MixMatch Tap#")]
+                    for device in sorted(set(old["devices"]) | set(new["devices"])) if not device.startswith(("MARA Tap#", "MixMatch Tap#"))]
         for device, a, b in devices:
             if a is None or b is None:
                 settings = []
@@ -122,7 +122,7 @@ def restore_plan(folder: str, current: dict) -> dict:
     # Measurement taps are managed by the engine and are not user mix edits.
     for snapshot in (before, after):
         for track in snapshot["tracks"].values():
-            track["devices"] = {key: value for key, value in track["devices"].items() if not key.startswith("MixMatch Tap#")}
+            track["devices"] = {key: value for key, value in track["devices"].items() if not key.startswith(("MARA Tap#", "MixMatch Tap#"))}
     for key, original in before["tracks"].items():
         if original["name"] in {"MixMatch Capture", "MARA Capture"}:
             continue
@@ -130,7 +130,7 @@ def restore_plan(folder: str, current: dict) -> dict:
         if live_track is None:
             raise ValueError("The tracks in Live no longer match this run.")
         available = set(ab._device_ids(live_track["devices"]))
-        if {d for d in original["devices"] if not d.startswith("MixMatch Tap#")} - available:
+        if {d for d in original["devices"] if not d.startswith(("MARA Tap#", "MixMatch Tap#"))} - available:
             raise ValueError("An original device is missing. A complete restore requires the original Live set file.")
     if ab.changes_to(after, current, bypass_new=True):
         raise ValueError("Parameters have changed since this run. MARA will not overwrite your manual edits.")

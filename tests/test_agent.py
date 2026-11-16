@@ -777,5 +777,5 @@ def test_a_run_without_taps_stops_at_once(tmp_path):
                                                      roles_file=str(tmp_path / "r.json")), env=env, log=lines.append)
     start = env.now()
     assert agent.run() == []
-    assert any("Stopped: no channel reports through a MixMatch Tap" in l for l in lines)
+    assert any("Stopped: no channel reports through a MARA Tap" in l for l in lines)
     assert env.now() - start < 30                      # no listening to the whole song first

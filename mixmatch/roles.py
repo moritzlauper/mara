@@ -106,8 +106,8 @@ def from_name(name: str) -> str | None:
     return None
 
 
-# Devices whose names say nothing about the sound: Live's own containers and MixMatch itself.
-NEUTRAL_DEVICES = {"drum rack", "ds drum rack", "instrument rack", "audio effect rack", "mixmatch tap", "drum buss"}
+# Devices whose names say nothing about the sound: Live's own containers and MARA itself.
+NEUTRAL_DEVICES = {"drum rack", "ds drum rack", "instrument rack", "audio effect rack", "mara tap", "mixmatch tap", "drum buss"}
 NEUTRAL_CLASSES = {"drumbuss", "eq8", "redux2", "compressor2", "gluecompressor", "stereogain"}
 
 
@@ -288,7 +288,7 @@ def _is_users(entry: dict) -> bool:
 def apply_overrides(roles: dict[str, Role], path: str) -> None:
     """roles.json: {"Track name": {"role": "pad", "priority": 2, "note": "…", "source": "user"}}.
 
-    Only the user's entries override; entries MixMatch wrote itself («auto») are guessed again each run.
+    Only the user's entries override; entries MARA wrote itself («auto») are guessed again each run.
     """
     if not os.path.exists(path):
         return

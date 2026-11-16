@@ -54,7 +54,7 @@ No model account is required: **Built-in rules** handles broad balance, limiter 
 
 1. Start MARA as described in [Get MARA](#get-mara).
 2. In **Project & goal**, choose **Set up the connection**, select your Ableton User Library, and choose **Install connection**.
-3. Restart Ableton Live. In **Settings → Link/Tempo/MIDI → Control Surface**, select **MixMatch**; set both Input and Output to **None**.
+3. Restart Ableton Live. In **Settings → Link/Tempo/MIDI → Control Surface**, select **MARA**; set both Input and Output to **None**.
 4. Return to MARA and choose **Set taps**. It places a transparent measurement device at the end of each relevant track, group, return, and Main chain.
 
 Run **Set taps** again after adding tracks. The tap passes audio unchanged and measures the signal before the fader.
@@ -85,7 +85,7 @@ The analysis gives reference suggestions their strongest stylistic signal. Your 
 
 ### 4. Follow the mix pass
 
-Before anything else, MARA sets a level base on Main: a trim Utility and a second tap in front of clipper and limiter put the input peaks on the limiter ceiling, so the limiter and clipper limits mean gain reduction in every project. The app then works in three phases. First it compares the full mix with your references and calculates, from every channel's measured spectrum, which channels cause each difference; the planner reviews that draft once against your goal and roles, and the whole package is applied and measured together. Each measured package calibrates the calculation for the next one. Then it treats the strongest collisions between channels, each fix simulated on the recorded audio frames first and kept only if its own pair measurably improves. Finally it sets limiter and clipper towards the references' loudness, no denser than they are, and checks the result against the original passage and against the other checked passages of the song. A package that does not pass the checks is reverted; accepted changes remain normal editable Live parameters. The older flow with one planner proposal per round is still available with `mixmatch run --engine rounds`.
+Before anything else, MARA sets a level base on Main: a trim Utility and a second tap in front of clipper and limiter put the input peaks on the limiter ceiling, so the limiter and clipper limits mean gain reduction in every project. The app then works in three phases. First it compares the full mix with your references and calculates, from every channel's measured spectrum, which channels cause each difference; the planner reviews that draft once against your goal and roles, and the whole package is applied and measured together. Each measured package calibrates the calculation for the next one. Then it treats the strongest collisions between channels, each fix simulated on the recorded audio frames first and kept only if its own pair measurably improves. Finally it sets limiter and clipper towards the references' loudness, no denser than they are, and checks the result against the original passage and against the other checked passages of the song. A package that does not pass the checks is reverted; accepted changes remain normal editable Live parameters. The older flow with one planner proposal per round is still available with `mara run --engine rounds`.
 
 You can pause at a safe checkpoint, alter the goal for subsequent work, or unmute the current signal to listen. The UI starts with Live output muted to avoid unexpected playback while it analyses and records.
 
@@ -131,7 +131,7 @@ For development, you need Python 3.10+, Ableton Live, and Max for Live:
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install -e .
-mixmatch ui
+mara ui
 ```
 
 Open [http://127.0.0.1:8765/workflow](http://127.0.0.1:8765/workflow). The desktop app opens this workflow directly.
@@ -139,12 +139,12 @@ Open [http://127.0.0.1:8765/workflow](http://127.0.0.1:8765/workflow). The deskt
 Useful command-line commands for advanced users:
 
 ```bash
-mixmatch taps                         # Insert measurement devices
-mixmatch refs ~/refs/song1.wav        # Prepare a reference
-mixmatch run --ref ~/refs/ --no-suggest
-mixmatch run --continue --ref ~/refs/ --no-suggest
-mixmatch ab before                    # Recall saved parameters in Live
-mixmatch ab after
+mara taps                         # Insert measurement devices
+mara refs ~/refs/song1.wav        # Prepare a reference
+mara run --ref ~/refs/ --no-suggest
+mara run --continue --ref ~/refs/ --no-suggest
+mara ab before                    # Recall saved parameters in Live
+mara ab after
 ```
 
 ## Demo UI
@@ -159,13 +159,13 @@ Open [the project screen](http://127.0.0.1:8876/workflow?demo=project). Change `
 
 ## Project structure
 
-The desktop interface is **MARA**. The Python package, CLI, and Ableton control surface are named **MixMatch**.
+Everything the user sees is called **MARA**: the app, the CLI (`mara`), the Ableton control surface and the **MARA Tap** device. Only the Python package is still imported as `mixmatch`.
 
 | Area | Starting point |
 | --- | --- |
 | Mixing flow and checks | [engine.py](mixmatch/engine.py), [solver.py](mixmatch/solver.py), [agent.py](mixmatch/agent.py), [mix_quality.py](mixmatch/mix_quality.py) |
 | Reference analysis | [reference.py](mixmatch/reference.py) |
-| Ableton connection and measurement tap | [Remote script](remote_script/MixMatch/commands.py), [Tap](device/MixMatch%20Tap.maxpat) |
+| Ableton connection and measurement tap | [Remote script](remote_script/MARA/commands.py), [Tap](device/MARA%20Tap.maxpat) |
 | Interface | [app.html](mixmatch/static/app.html), [app.js](mixmatch/static/app.js) |
 | Packaging | [desktop/](desktop/) |
 

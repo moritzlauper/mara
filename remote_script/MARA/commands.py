@@ -1,4 +1,4 @@
-"""Commands of the MixMatch protocol, independent of Live's ControlSurface.
+"""Commands of the MARA protocol, independent of Live's ControlSurface.
 
 `Commands` works on any object that looks like Live's `Song` (the real one
 inside Live, a fake one in the tests). Every command takes a dict and returns
@@ -47,7 +47,7 @@ def _display(param, value=None):
         return str(param.value if value is None else value)
 
 
-TAP = "MixMatch Tap"
+TAP = "MARA Tap"
 DUCKER = "MARA Duck"
 
 
@@ -73,7 +73,7 @@ def _routing_options(device, prop):
 
 
 def _stem(name):
-    """Browser item name without a device file extension, lower case: «MixMatch Tap.amxd» → «mixmatch tap»."""
+    """Browser item name without a device file extension, lower case: «MARA Tap.amxd» → «mara tap»."""
     name = name.lower()
     for ext in (".amxd", ".adv", ".adg", ".vst3", ".component", ".vst"):
         if name.endswith(ext):
@@ -287,11 +287,11 @@ class Commands:
         return {"value": p.value, "display": _display(p), "min": p.min, "max": p.max}
 
     def load_device(self, req):
-        """Load a device into a track's chain: at the end, but before the last «MixMatch Tap» so it keeps measuring
+        """Load a device into a track's chain: at the end, but before the last «MARA Tap» so it keeps measuring
         last (Main can have a second tap in front of its loudness chain).
 
         `source` is «audio_effects» (built-in devices such as «EQ Eight», the
-        default), «user_library» (e.g. the «MixMatch Tap» device itself) or
+        default), «user_library» (e.g. the «MARA Tap» device itself) or
         «plugins» (installed VST3/AU plugins such as «Pro-L 2»).
         """
         if self.browser is None:

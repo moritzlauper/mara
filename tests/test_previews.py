@@ -25,7 +25,7 @@ def prepared(tmp_path):
 
 
 def test_preview_routing_uses_fresh_channels_and_survives_command_reload():
-    from MixMatch.commands import Commands
+    from MARA.commands import Commands
 
     class Master:
         def __init__(self):
@@ -64,7 +64,7 @@ def test_preview_routing_uses_fresh_channels_and_survives_command_reload():
 
 
 def test_missing_output_keeps_recovery_state_for_reconnect(tmp_path):
-    from MixMatch.commands import CommandError
+    from MARA.commands import CommandError
 
     song, live, _ = prepared(tmp_path)
     master = song.master_track
@@ -239,7 +239,7 @@ def test_equal_loudness_needs_a_valid_pair_and_uses_perceived_level_not_peaks(tm
 
 
 def test_capture_positions_and_launches_atomically_without_global_quantization():
-    from MixMatch.commands import Commands
+    from MARA.commands import Commands
     fired = []
     cue = NS(value=.85, min=0)
     song = NS(tracks=[], is_playing=True, current_song_time=123, metronome=True,

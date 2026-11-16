@@ -1,4 +1,4 @@
-"""Client for the MixMatch remote script inside Live (TCP 127.0.0.1:9877)."""
+"""Client for the MARA remote script inside Live (TCP 127.0.0.1:47317)."""
 from __future__ import annotations
 
 import json
@@ -11,7 +11,7 @@ class LiveError(Exception):
 
 
 class LiveClient:
-    def __init__(self, host: str = "127.0.0.1", port: int = 9877, timeout: float = 5.0):
+    def __init__(self, host: str = "127.0.0.1", port: int = 47317, timeout: float = 5.0):
         self.addr = (host, port)
         self.timeout = timeout
         self.sock: socket.socket | None = None

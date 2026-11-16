@@ -355,10 +355,10 @@ def test_the_input_stage_sits_in_front_of_the_loudness_chain_and_new_devices_fin
     agent = Agent(live, hub, RulePlanner(), Settings(settle=1.0), env=env, log=lambda *_: None)
     assert agent.prepare_input_stage()
     names = lambda: [d.name for d in song.master_track.devices]
-    assert names() == ["MARA Trim", "MixMatch Tap", "Limiter", "MixMatch Tap"]
+    assert names() == ["MARA Trim", "MARA Tap", "Limiter", "MARA Tap"]
     assert hub.latest("master_in") is not None and hub.latest("master") is not None
     agent.ex.apply([{"type": "eq", "track": "m", "freq_hz": 300, "gain_db": -1.0, "q": 1.0, "shape": "bell"}])
-    assert names() == ["EQ Eight", "MARA Trim", "MixMatch Tap", "Limiter", "MixMatch Tap"]
+    assert names() == ["EQ Eight", "MARA Trim", "MARA Tap", "Limiter", "MARA Tap"]
     assert not agent.ex.ensure_input_stage()                     # nothing added twice
 
 
@@ -368,7 +368,7 @@ def test_without_input_measurement_the_input_stage_comes_off_again(monkeypatch):
     logs = []
     agent = Agent(live, hub, RulePlanner(), Settings(settle=1.0), env=env, log=logs.append)
     assert not agent.prepare_input_stage()
-    assert [d.name for d in song.master_track.devices] == ["MixMatch Tap"]
+    assert [d.name for d in song.master_track.devices] == ["MARA Tap"]
     assert any("Set up the connection" in l for l in logs)
 
 
@@ -405,13 +405,13 @@ def test_meters_on_main_move_behind_the_loudness_chain():
     assert agent.prepare_input_stage()
     agent.ex.apply([{"type": "limiter", "delta_db": 1.0, "track": None}])
     assert [d.name for d in song.master_track.devices] == [
-        "MARA Trim", "MixMatch Tap", "Limiter", "Youlean Loudness Meter 2", "SPAN", "MixMatch Tap"]
+        "MARA Trim", "MARA Tap", "Limiter", "Youlean Loudness Meter 2", "SPAN", "MARA Tap"]
 
 
 def test_time_displays_in_seconds_are_read_as_milliseconds():
     import sys
     sys.path.insert(0, "remote_script")
-    from MixMatch.commands import _number
+    from MARA.commands import _number
 
     assert _number("1.00 s") == 1000.0 and _number("2.00 ms") == 2.0 and _number("-1.5 dB") == -1.5
 
@@ -458,8 +458,8 @@ def test_a_broken_main_chain_is_repaired_and_impossible_values_are_reset():
     agent.ex.clipper = lambda: ("Classic Clipper", "Gain")
     agent.prepare_input_stage()
     names = [d.name for d in song.master_track.devices]
-    assert names.index("MixMatch Tap") < names.index("Classic Clipper") < names.index("Limiter")
-    assert names.index("Limiter") < names.index("SPAN") < len(names) - 1 and names[-1] == "MixMatch Tap"
+    assert names.index("MARA Tap") < names.index("Classic Clipper") < names.index("Limiter")
+    assert names.index("Limiter") < names.index("SPAN") < len(names) - 1 and names[-1] == "MARA Tap"
     assert agent.sanitize_chain() and abs(clip.p("Gain").value) < 0.1
 
 

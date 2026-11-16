@@ -1,10 +1,10 @@
 """Command line.
 
-    mixmatch run --ref a.wav --ref b.mp3 [--mode beat] [--planner auto|claude-code|api|rules] [--engine solver|rounds] [--minutes 10] [--assist]
-    mixmatch refs a.wav b.mp3 [--mode beat]        analyse references (and split vocals) ahead of time
-    mixmatch taps                                   put the «MixMatch Tap» on every channel and the master
-    mixmatch check                                  connection, taps, roles
-    mixmatch demo [--claude]                        run the loop on the built-in simulator
+    mara run --ref a.wav --ref b.mp3 [--mode beat] [--planner auto|claude-code|api|rules] [--engine solver|rounds] [--minutes 10] [--assist]
+    mara refs a.wav b.mp3 [--mode beat]        analyse references (and split vocals) ahead of time
+    mara taps                                   put the «MARA Tap» on every channel and the master
+    mara check                                  connection, taps, roles
+    mara demo [--claude]                        run the loop on the built-in simulator
 
 --ref takes files or folders and can be given several times.
 """
@@ -27,7 +27,7 @@ def _connect():
         live = LiveClient().connect()
         live.request("ping")
     except OSError:
-        sys.exit("Cannot reach Live on port 9877. Is «MixMatch» selected as a control surface in Live's settings?")
+        sys.exit("Cannot reach Live on port 47317. Is «MARA» selected as a control surface in Live's settings?")
     hub = TapHub()
     hub.listen()
     return live, hub
@@ -67,7 +67,8 @@ def cmd_refs(args):
         print(f"  loudness {t.loudness:.1f} LUFS, PLR {t.stats.plr:.1f} dB, width {t.stats.width_db:.1f} dB")
 
 
-TAP = "MixMatch Tap"
+TAP = "MARA Tap"
+LEGACY_TAP = "MixMatch Tap"   # the tap's name before the rename; «Set taps» replaces it, «remove» takes it out
 
 
 def add_taps(live, log=print, replace: bool = False) -> int:
@@ -81,10 +82,13 @@ def add_taps(live, log=print, replace: bool = False) -> int:
     for t in live.get_set()["tracks"]:
         if t["kind"] == "track" and is_reference_name(t["name"]):
             continue  # reference tracks are read from their files, not measured
+        legacy = [d["index"] for d in t["devices"] if d["name"] == LEGACY_TAP]
         old = [d["index"] for d in t["devices"] if d["name"] == TAP]
         if old and not replace:
+            for index in sorted(legacy, reverse=True):
+                live.delete_device(t["key"], index)
             continue
-        for index in sorted(old, reverse=True):
+        for index in sorted(old + legacy, reverse=True):
             live.delete_device(t["key"], index)
         live.load_device(t["key"], TAP, source="user_library")
         log(f"  + tap on {t['name']}")
@@ -96,10 +100,11 @@ def remove_taps(live, log=print) -> int:
     """Remove measurement taps only; preserve mix processing and parameter changes."""
     removed = 0
     for t in live.get_set()["tracks"]:
-        for d in sorted((d for d in t["devices"] if d["name"] == TAP), key=lambda d: -d["index"]):
+        taps = [d for d in t["devices"] if d["name"] in (TAP, LEGACY_TAP)]
+        for d in sorted(taps, key=lambda d: -d["index"]):
             live.delete_device(t["key"], d["index"])
             removed += 1
-        if any(d["name"] == TAP for d in t["devices"]):
+        if taps:
             log(f"  − tap on {t['name']}")
     return removed
 
@@ -121,7 +126,7 @@ def cmd_taps(args):
     try:
         live = LiveClient().connect()
     except OSError:
-        sys.exit("Cannot reach Live on port 9877. Is «MixMatch» selected as a control surface in Live's settings?")
+        sys.exit("Cannot reach Live on port 47317. Is «MARA» selected as a control surface in Live's settings?")
     if args.remove:
         n = remove_taps(live)
         print(f"{n} tap(s) removed." if n else "There are no taps in the set.")
@@ -129,7 +134,7 @@ def cmd_taps(args):
     try:
         n = add_taps(live, replace=args.replace)
     except LiveError as e:
-        sys.exit(f"{e}. Copy «{TAP}.amxd» and mixmatch_tap.js into a folder of your User Library.")
+        sys.exit(f"{e}. Copy «{TAP}.amxd» and mara_tap.js into a folder of your User Library.")
     set_taps_on(live, False)   # asleep until a run needs them: no processing load in between
     print(f"{n} tap(s) added (switched off until a run starts)." if n else "Every channel already has a tap.")
 
@@ -180,7 +185,7 @@ def cmd_ab(args):
     try:
         live = LiveClient().connect()
     except OSError:
-        sys.exit("Cannot reach Live on port 9877.")
+        sys.exit("Cannot reach Live on port 47317.")
     n = ab.switch(live, args.which)
     print(f"Set to «{args.which}» ({n} parameters changed).")
 
@@ -274,7 +279,7 @@ def _cmd_run(args):
         agent.run(main_volume=main_volume)
         completed = bool(getattr(agent, "_mix_complete", False)) and not getattr(agent, "_failure", None)
     finally:
-        # The loop brace back where the user had it (MixMatch moved it from part to part), playhead at its start.
+        # The loop brace back where the user had it (MARA moved it from part to part), playhead at its start.
         live.transport(play=False, loop_start=loop["start"], loop_length=loop["length"], loop=loop["on"],
                        time=loop["start"])
         monitor = monitoring.read("runs")
@@ -359,7 +364,7 @@ def main(argv=None):
     from .credentials import load as load_credentials
     load_credentials()
     _stoppable()
-    p = argparse.ArgumentParser(prog="mixmatch", description="Mixing agent for Ableton Live")
+    p = argparse.ArgumentParser(prog="mara", description="MARA: reference mixing for Ableton Live")
     sub = p.add_subparsers(dest="cmd", required=True)
     for name, fn in (("run", cmd_run), ("refs", cmd_refs), ("check", cmd_check), ("demo", cmd_demo),
                      ("taps", cmd_taps)):
@@ -379,7 +384,7 @@ def main(argv=None):
                        help="solver: calculate packages of changes from the measurements and verify them (default); "
                             "rounds: the older flow with one planner proposal per round")
     sub.choices["taps"].add_argument("--remove", action="store_true",
-                                     help="take every MixMatch tap out of the set")
+                                     help="take every MARA tap out of the set")
     sub.choices["taps"].add_argument("--replace", action="store_true",
                                      help="remove existing taps first and put fresh ones (after rebuilding the device)")
     sub.choices["run"].add_argument("--assist", action="store_true", help="ask before every round")
@@ -402,7 +407,7 @@ def main(argv=None):
     sub.choices["run"].add_argument("--review-seconds", type=float, default=0,
                                     help="optional instrument-role review before mixing; continues automatically")
     sub.choices["run"].add_argument("--silent", action="store_true",
-                                    help="Main fader down while running (MixMatch measures before it), back at the end")
+                                    help="Main fader down while running (MARA measures before it), back at the end")
     sub.choices["run"].add_argument("--finish", action="store_true",
                                     help="skip remaining validation and record the current accepted mix")
     sub.choices["run"].add_argument("--audit", action="store_true",

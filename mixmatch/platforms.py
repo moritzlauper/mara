@@ -72,12 +72,13 @@ def install_bridge(library):
     if not destination.is_dir():
         raise ValueError("Choose your existing Ableton User Library folder.")
     root = resources()
-    script = destination / "Remote Scripts/MixMatch"
-    # Earlier installs put the tap into «MixMatch»: update that folder instead of adding a second «MixMatch Tap»
-    # (Max loads a device's script from the device's own folder first, so a copy elsewhere would stay unused).
-    legacy = destination / "MixMatch"
-    device = legacy if (legacy / "MixMatch Tap.amxd").exists() else destination / "MARA"
-    for source, target in [(root / "remote_script/MixMatch", script), (root / "device", device)]:
+    script = destination / "Remote Scripts/MARA"
+    # Before the rename the control surface was called «MixMatch»: take that copy out, or Live lists both.
+    previous = destination / "Remote Scripts/MixMatch"
+    if (previous / "surface.py").exists() and (previous / "commands.py").exists():
+        shutil.rmtree(previous, ignore_errors=True)
+    device = destination / "MARA"
+    for source, target in [(root / "remote_script/MARA", script), (root / "device", device)]:
         target.mkdir(parents=True, exist_ok=True)
         for item in source.iterdir():
             if item.suffix in {".py", ".amxd", ".js"}:
@@ -85,4 +86,4 @@ def install_bridge(library):
                 if old.exists():
                     shutil.copy2(old, old.with_suffix(old.suffix + ".previous"))
                 shutil.copy2(item, old)
-    return {"library": str(destination), "message": "Installed. Restart Live and select MixMatch in Settings → Link/Tempo/MIDI → Control Surface. Then choose Set taps."}
+    return {"library": str(destination), "message": "Installed. Restart Live and select MARA in Settings → Link/Tempo/MIDI → Control Surface. Then choose Set taps."}

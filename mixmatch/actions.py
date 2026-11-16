@@ -136,7 +136,7 @@ LIMITER_MAX_GAIN_DB = 5.0   # about 4–5 dB of peak gain reduction: loud but st
 # Clippers before the master limiter, as (plugin, drive parameter); the first installed one is used.
 CLIPPERS = (("Classic Clipper", "Gain"),)
 CLIPPER_MAX_GAIN_DB = 4.0   # the clipper takes the transients, it copes with them better than the limiter
-TAP = "MixMatch Tap"
+TAP = "MARA Tap"
 TRIM = "MARA Trim"          # Utility in front of clipper and limiter on Main: the level base of the loudness chain
 TRIM_RANGE_DB = 24.0
 MAX_TRIM_STEP_DB = 12.0
@@ -251,7 +251,7 @@ class Executor:
         if (key, device, name) in self.locks:
             raise PermissionError(f"{key} {device} {name} is locked (changed by hand)")
         if p.get("automated"):
-            raise PermissionError(f"{key} {device} {name} is automated; MixMatch leaves automation alone")
+            raise PermissionError(f"{key} {device} {name} is automated; MARA leaves automation alone")
         res = self.live.set(key, device, name, target=target, value=value)
         change = Change(key, device, name, p["value"], res, p.get("display", str(p["value"])))
         rr.changes.append(change)
@@ -770,7 +770,7 @@ class Executor:
             got = _number_ms(res.get("display", ""))
             if got is None or abs(got - float(target)) > max(0.5, abs(float(target)) * 0.15):
                 raise RuntimeError(f"Compressor {param} reads {res.get('display')} instead of {target:g}; "
-                                   "restart Live so it loads the current MixMatch connection")
+                                   "restart Live so it loads the current MARA connection")
 
     def _do_param(self, rr, a):
         dev = self.track(a["track"])["devices"][int(a["device_index"])]
@@ -786,7 +786,7 @@ class Executor:
 
         key, source = a["track"], a["source_track"]
         if not self.set_state.get("capabilities", {}).get("sidechain_ducking"):
-            raise RuntimeError("update the MixMatch remote script to enable sidechain routing")
+            raise RuntimeError("update the MARA remote script to enable sidechain routing")
         if any(is_reference_name(self.track(k)["name"]) for k in (key, source)):
             raise ValueError("reference tracks cannot participate in ducking")
         # This action only creates a dedicated device. It never modifies or routes

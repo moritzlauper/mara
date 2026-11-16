@@ -136,7 +136,7 @@ def _sleep_taps(live) -> None:
     changes = []
     for track in live.get_set().get("tracks", []):
         for device in track.get("devices", []):
-            if device.get("name") != "MixMatch Tap":
+            if device.get("name") != "MARA Tap":
                 continue
             if any(p.get("name") == "Device On" and p.get("value", 0) >= .5 for p in device.get("params", [])):
                 changes.append({"track": track["key"], "device": device["index"], "param": "Device On", "value": 0.0})

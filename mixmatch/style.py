@@ -5,7 +5,7 @@ the style of a track is the closest description, and similar tracks are the
 closest audio. Embeddings of library files are cached, so a library is listened
 to once.
 
-Preferred: LAION's original music checkpoint, which MixMatch sets up by itself
+Preferred: LAION's original music checkpoint, which MARA sets up by itself
 on first use (its own Python 3.11 environment through uv, about 2.5 GB). The
 Hugging Face port of that checkpoint is broken on the text side, so it is not
 used. Without uv, or if the setup fails, the general model

@@ -6,7 +6,7 @@ request per line from stdin and answers one JSON line on stdout:
     {"text": ["hyperpop", ...]}          → {"emb": [[...512 floats], ...]}
     {"audio": "/path/to/clips.npy"}      → {"emb": [[...], ...]}   (clips: N × samples, 48 kHz, float32)
 
-Kept free of MixMatch imports: it runs with a different Python and packages.
+Kept free of MARA imports: it runs with a different Python and packages.
 """
 import json
 import sys

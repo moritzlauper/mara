@@ -15,19 +15,19 @@ def _fresh_commands():
     except Exception:
         return commands_module
 
-PORT = 9877
+PORT = 47317
 
 
-class MixMatchSurface(ControlSurface):
+class MARASurface(ControlSurface):
     def __init__(self, c_instance):
         ControlSurface.__init__(self, c_instance)
         self.commands = _fresh_commands().Commands(self.song(), self.application().browser, self.log_message)
         try:
             self.server = LineServer(self._handle, port=PORT, log=self.log_message)
-            self.show_message("MixMatch listening on port %d" % PORT)
+            self.show_message("MARA listening on port %d" % PORT)
         except OSError as e:
             self.server = None
-            self.show_message("MixMatch: port %d busy (%s)" % (PORT, e))
+            self.show_message("MARA: port %d busy (%s)" % (PORT, e))
 
     def _handle(self, req):
         """«reload» re-imports the commands, so a changed script works without restarting Live."""

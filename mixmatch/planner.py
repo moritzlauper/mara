@@ -75,7 +75,7 @@ ACTION_SCHEMA = {
     "additionalProperties": False,
 }
 
-SYSTEM = """You are the decision-making part of MixMatch, a mixing agent running inside an Ableton Live project.
+SYSTEM = """You are the decision-making part of MARA, a mixing agent running inside an Ableton Live project.
 You cannot hear. Software measures every channel, the master and the reference tracks while the song plays and gives you numbers. You diagnose what this mix needs, propose small steps, and the software checks the intended benefit with fresh measurements. Reference distance is a guide, not a perceptual quality score.
 
 Goal: improve this track on its own musical terms, using the references as an important direction for tonal balance, impact, loudness and space. Preserve its arrangement, timbres, groove, useful dynamics and foreground/background hierarchy. Decide which reference differences are relevant problems and which belong to this track. A lower reference distance alone does not prove a better mix.
@@ -320,7 +320,7 @@ class ClaudeCodePlanner:
 
     The few, consequential master decisions go to `master_model` (Opus), the many channel-pass rounds to
     `channel_model` (Haiku). Claude Code runs without tools, MCP servers or the user's settings and CLAUDE.md,
-    so a request carries only MixMatch's own prompt.
+    so a request carries only MARA's own prompt.
     """
 
     def __init__(self, master_model: str = "opus", channel_model: str = "haiku", binary: str = "claude",

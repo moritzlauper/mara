@@ -1,10 +1,10 @@
-"""Builds the «MixMatch Tap» Max for Live audio effect.
+"""Builds the «MARA Tap» Max for Live audio effect.
 
     python3 device/build_tap.py
 
-writes `device/MixMatch Tap.maxpat` (open in Max) and `device/MixMatch Tap.amxd`
+writes `device/MARA Tap.maxpat` (open in Max) and `device/MARA Tap.amxd`
 (drag into Live). The device passes audio through unchanged and every 100 ms
-sends one measurement frame to the MixMatch app (UDP 127.0.0.1:9878, OSC):
+sends one measurement frame to the MARA app (UDP 127.0.0.1:47318, OSC):
 
     /mm/tap  <track id> m_rms s_rms s_low_rms peak_l peak_r band1 … band31
     /mm/name <track id> <kind> <track name>
@@ -20,7 +20,7 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
 from mixmatch.bands import BAND_COUNT, BASE_HZ, RATIO, Q  # noqa: E402
-PORT = 9878
+PORT = 47318
 
 boxes, lines = [], []
 
@@ -73,7 +73,7 @@ def build():
     wire(metro, 0, trig, 0)
 
     pack = box("pack " + " ".join(["0."] * values), 140, 480, values, 1, w=1200)
-    js = box("js mixmatch_tap.js", 140, 520, 1, 1)
+    js = box("js mara_tap.js", 140, 520, 1, 1)
     udp = box("udpsend 127.0.0.1 %d" % PORT, 140, 560, 1, 0)
     # On load: start the metro, and tell the script to look up its track.
     init = "obj-%d" % (len(boxes) + 1)
@@ -129,7 +129,7 @@ def build():
         "default_fontsize": 10.0,
         "boxes": boxes,
         "lines": lines,
-        "dependency_cache": [{"name": "mixmatch_tap.js", "bootpath": ".", "type": "TEXT", "implicit": 1}],
+        "dependency_cache": [{"name": "mara_tap.js", "bootpath": ".", "type": "TEXT", "implicit": 1}],
         "autosave": 0,
     }}
 
@@ -146,7 +146,7 @@ def write_amxd(patch, path):
 
 if __name__ == "__main__":
     patch = build()
-    with open(os.path.join(HERE, "MixMatch Tap.maxpat"), "w") as f:
+    with open(os.path.join(HERE, "MARA Tap.maxpat"), "w") as f:
         json.dump(patch, f, indent=1)
-    write_amxd(patch, os.path.join(HERE, "MixMatch Tap.amxd"))
+    write_amxd(patch, os.path.join(HERE, "MARA Tap.amxd"))
     print("wrote %d objects, %d connections" % (len(boxes), len(lines)))

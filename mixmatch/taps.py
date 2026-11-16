@@ -1,4 +1,4 @@
-"""Receives the measurement frames from the «MixMatch Tap» devices (OSC over UDP 9878)."""
+"""Receives the measurement frames from the «MARA Tap» devices (OSC over UDP 47318)."""
 from __future__ import annotations
 
 import threading
@@ -90,7 +90,7 @@ class TapHub:
         """(kind, name) → tap, to match taps to the tracks the remote script reports."""
         return {(t.kind, t.name): t for t in self.snapshot() if t.name}
 
-    def listen(self, host: str = "127.0.0.1", port: int = 9878) -> None:
+    def listen(self, host: str = "127.0.0.1", port: int = 47318) -> None:
         from pythonosc.dispatcher import Dispatcher
         from pythonosc.osc_server import ThreadingOSCUDPServer
 

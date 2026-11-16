@@ -1,4 +1,4 @@
-"""Settings of the project that MixMatch keeps between runs (mixmatch.json next to roles.json)."""
+"""Settings of the project that MARA keeps between runs (mixmatch.json next to roles.json)."""
 from __future__ import annotations
 
 import json

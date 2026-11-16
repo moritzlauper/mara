@@ -1,6 +1,6 @@
 """Reads the numbers Live displays («-3.0 dB», «1.20 kHz», «50L»).
 
-Same logic as `remote_script/MixMatch/commands.py`, which cannot import this
+Same logic as `remote_script/MARA/commands.py`, which cannot import this
 package because it runs inside Live; a test keeps the two in step.
 """
 import math

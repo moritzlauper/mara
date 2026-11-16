@@ -5,7 +5,7 @@ A run saves a snapshot before it changes anything and one at the end
 parameter that differs, in one batch, while the song keeps playing. Devices
 are matched by name and order on their track (not by position, which moves
 when devices are added); devices that only exist in the current set, e.g. an
-EQ Eight MixMatch added, are bypassed for «before».
+EQ Eight MARA added, are bypassed for «before».
 """
 from __future__ import annotations
 
@@ -68,12 +68,12 @@ def changes_to(target: dict, set_state: dict, bypass_new: bool) -> list[dict]:
             if v is not None and abs(v - p["value"]) > 1e-6:
                 out.append({"track": t["key"], "device": "mixer", "param": p["name"], "value": v})
         for i, (dev_id, d) in enumerate(zip(_device_ids(t["devices"]), t["devices"])):
-            if d["name"] == "MixMatch Tap":
+            if d["name"] == "MARA Tap":
                 continue   # the taps are switched by the runs, not part of the mix
             protected = set(automated.get(dev_id, [])) | {p["name"] for p in d["params"] if p.get("automated")}
             params = {p["name"]: p["value"] for p in d["params"]}
             if dev_id not in want["devices"]:
-                if bypass_new and "Device On" not in protected and params.get("Device On", 0) >= 0.5 and d["name"] != "MixMatch Tap":
+                if bypass_new and "Device On" not in protected and params.get("Device On", 0) >= 0.5 and d["name"] != "MARA Tap":
                     out.append({"track": t["key"], "device": i, "param": "Device On", "value": 0.0})
                 continue
             for name, v in want["devices"][dev_id].items():

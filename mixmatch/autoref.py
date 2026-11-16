@@ -8,7 +8,7 @@
    that style (only where the artist allows the download; JAMENDO_CLIENT_ID).
 4. Keeps the few that sound closest to the project.
 5. Asks Claude for real tracks to get, with Bandcamp links (many releases there
-   are «name your price»). Getting them stays the user's click: MixMatch never
+   are «name your price»). Getting them stays the user's click: MARA never
    downloads commercial music.
 """
 from __future__ import annotations

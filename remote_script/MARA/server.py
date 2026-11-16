@@ -9,7 +9,7 @@ import socket
 
 
 class LineServer:
-    def __init__(self, handler, host="127.0.0.1", port=9877, log=None):
+    def __init__(self, handler, host="127.0.0.1", port=47317, log=None):
         self.handler = handler
         self.log = log or (lambda *_: None)
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)

@@ -327,7 +327,7 @@ def log_chain(path: str) -> list[str]:
         i -= 1
         # A failed connection/measurement startup never replaced the checkpoint.
         # When continuing it, walk past these attempts to the actual previous run.
-        while i > 0 and "Stopped: no channel reports through a MixMatch Tap" in open(logs[i]).read():
+        while i > 0 and "Stopped: no channel reports through a MARA Tap" in open(logs[i]).read():
             i -= 1
         chain.insert(0, logs[i])
     return chain
@@ -349,7 +349,7 @@ def live_set() -> dict | None:
     from . import songs
 
     need = [t for t in state["tracks"] if not (t["kind"] == "track" and is_reference_name(t["name"]))]
-    missing = [t["name"] for t in need if not any(d["name"] == "MixMatch Tap" for d in t["devices"])]
+    missing = [t["name"] for t in need if not any(d["name"] == "MARA Tap" for d in t["devices"])]
     from .live_identity import document_path
 
     path = state.get("file_path") or document_path()
@@ -562,7 +562,7 @@ def safe_reference(workdir: str, name: str) -> str:
     """Path of a file directly inside references/; refuses anything else (no ../, no other folders)."""
     base = os.path.basename(name or "")
     if not base or base != name or not base.lower().endswith(AUDIO + CONVERT):
-        raise ValueError(f"not an audio file MixMatch can read: {name!r} (WAV, AIFF, FLAC, MP3 or M4A)")
+        raise ValueError(f"not an audio file MARA can read: {name!r} (WAV, AIFF, FLAC, MP3 or M4A)")
     return os.path.join(workdir, "references", base)
 
 
@@ -1160,7 +1160,7 @@ def make_handler(runner: Runner, watcher: "DownloadWatcher | None" = None, live_
                     if not ts["set"]["same"]:
                         raise RuntimeError("The open Ableton project could not be identified. Save the Live set and allow MARA to read its document window.")
                     if ts["open_set"] and ts["open_set"]["taps"] == 0:
-                        raise RuntimeError("no MixMatch Tap in this set yet: «Set taps» first")
+                        raise RuntimeError("no MARA Tap in this set yet: «Set taps» first")
                     mode = body.get("reference_mode", "discover" if body.get("auto_ref") else "selected")
                     if mode not in ("selected", "discover"):
                         raise ValueError("choose your references or ask MARA to find suggestions")
@@ -1265,7 +1265,7 @@ def make_handler(runner: Runner, watcher: "DownloadWatcher | None" = None, live_
                 if self.path == "/api/taps":
                     return self._send(200, {"log": runner.start(["taps"])})
                 if self.path == "/api/taps/remove":
-                    from .cli import TAP, remove_taps
+                    from .cli import LEGACY_TAP, TAP, remove_taps
                     from .live_client import LiveClient
                     from .live_identity import matches_project
                     if pinned_project is not None:
@@ -1281,7 +1281,7 @@ def make_handler(runner: Runner, watcher: "DownloadWatcher | None" = None, live_
                             if not matches_project(live.get_set(), project):
                                 raise ValueError("Open this project's Live set before removing MARA devices.")
                             removed = remove_taps(live, log=lambda *_: None)
-                            if any(d["name"] == TAP for t in live.get_set()["tracks"] for d in t["devices"]):
+                            if any(d["name"] in (TAP, LEGACY_TAP) for t in live.get_set()["tracks"] for d in t["devices"]):
                                 raise RuntimeError("Some MARA measurement devices remain. Try removing them again.")
                             open_set.at = 0
                             return self._send(200, {"removed": removed})
@@ -1636,7 +1636,7 @@ ol.steps button{margin:4px 8px 0 0}
   <div class="row"><button id="ab_blind" aria-keyshortcuts="B">Blind random · B</button>
     <button id="ab_reveal" class="ghost small" disabled>Reveal</button></div>
   <p class="hint" id="ab_hint" aria-live="polite">Close your eyes and press B, or focus the blind button and press Space. Each press is random; repeats are possible.</p>
-  <div class="setup">Taps in Live: <button id="taps" class="link">set</button> · <button id="untaps" class="link" title="Takes every MixMatch tap out of the Live set">remove</button> <span id="taps_state"></span></div>
+  <div class="setup">Taps in Live: <button id="taps" class="link">set</button> · <button id="untaps" class="link" title="Takes every MARA tap out of the Live set">remove</button> <span id="taps_state"></span></div>
   <p class="muted" id="msg"></p>
 </section>
 <section>
@@ -1745,7 +1745,7 @@ $("choose_refs").onclick = () => $("references_panel").scrollIntoView({behavior:
 $("pick_files").onclick = () => $("reference_upload").click();
 $("reference_upload").onchange = async e => { await uploadReferences([...e.target.files]); e.target.value = ""; };
 $("taps").onclick = () => post("/api/taps");
-$("untaps").onclick = () => { if (confirm("Remove every MixMatch tap from the Live set? «Set taps» puts them back.")) post("/api/taps/remove"); };
+$("untaps").onclick = () => { if (confirm("Remove every MARA tap from the Live set? «Set taps» puts them back.")) post("/api/taps/remove"); };
 let previewVersions = {}, previewSelected = null, previewHidden = false, loudnessMatch = {ready: false};
 let previewBaseUrl = "";
 const player = $("ab_player");
@@ -2119,10 +2119,10 @@ function steps(s) {
   if (s.active) { $("steps").innerHTML = ""; $("taps_state").textContent = ""; return { ready: false }; }
   const out = [], o = s.open_set, refs = s.reference_files.length + s.project_references.length;
   out.push(s.live ? step("ok", "Live is connected")
-    : step("bad", "Live is not reachable", "Open the set in Live; «MixMatch» must be the control surface (Settings → Link, Tempo & MIDI)."));
+    : step("bad", "Live is not reachable", "Open the set in Live; «MARA» must be the control surface (Settings → Link, Tempo & MIDI)."));
   if (!o) out.push(step("info", "Taps: unknown until Live answers"));
   else if (o.taps === o.total) out.push(step("ok", `Taps are set in this set: all ${o.total} channels`));
-  else if (o.taps === 0) out.push(step("bad", "No taps in this set yet", "MARA measures every channel through a MixMatch Tap.",
+  else if (o.taps === 0) out.push(step("bad", "No taps in this set yet", "MARA measures every channel through a MARA Tap.",
     `<br><button data-act="taps">Set taps</button>`));
   else out.push(step("warn", `Taps on ${o.taps} of ${o.total} channels`, "Without a tap: " + o.missing.slice(0, 8).map(esc).join(", ") + (o.missing.length > 8 ? ` and ${o.missing.length - 8} more` : ""),
     `<br><button data-act="taps">Set the missing taps</button>`));
