@@ -15,7 +15,6 @@ dev = ["pytest", "pyinstaller>=6,<7"]
 
 [project.scripts]
 mixmatch = "mixmatch.cli:main"
-mara-bridge = "mixmatch.bridge:main"
 
 [tool.setuptools]
 packages = ["mixmatch"]

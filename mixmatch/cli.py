@@ -5,7 +5,6 @@
     mixmatch taps                                   put the «MixMatch Tap» on every channel and the master
     mixmatch check                                  connection, taps, roles
     mixmatch demo [--claude]                        run the loop on the built-in simulator
-    mixmatch bridge                                 MARA Bridge: MCP server for Claude Code, Codex (also: mara-bridge)
 
 --ref takes files or folders and can be given several times.
 """
@@ -435,8 +434,6 @@ def main(argv=None):
     ui.set_defaults(fn=lambda a: __import__("mixmatch.ui", fromlist=["serve"]).serve(".", a.port, not a.no_browser))
     ui.add_argument("--port", type=int, default=8765)
     ui.add_argument("--no-browser", action="store_true")
-    br = sub.add_parser("bridge", help="MARA Bridge: MCP server so Claude Code or Codex can hear and change the set")
-    br.set_defaults(fn=lambda a: __import__("mixmatch.bridge", fromlist=["serve"]).serve())
     sr = sub.add_parser("suggest-refs", help="style of your track, similar songs in your library, references to buy")
     sr.set_defaults(fn=cmd_suggest_refs)
     sr.add_argument("track", nargs="?", help="an export of your track (WAV, AIFF, FLAC, MP3)")
@@ -450,7 +447,7 @@ def main(argv=None):
         os.environ["MIXMATCH_PLANNER"] = "rules" if args.rules else args.planner
     if hasattr(args, "ref_files"):
         args.ref = args.ref + args.ref_files
-    if args.cmd not in ("ui", "bridge"):   # the bridge's stdout is the MCP protocol: no prints, no folder switch
+    if args.cmd != "ui":
         _enter_track()
     try:
         args.fn(args)

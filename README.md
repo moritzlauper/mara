@@ -112,33 +112,9 @@ The standard workflow works with **Built-in rules**, which sends no mix-planning
 
 Provider choice changes how a plan is proposed, not how Live is controlled: every adjustment still goes through the same bounded action and verification steps. Optional reference discovery and style suggestions may use additional local models or online services. You can skip them and select reference files manually.
 
-## MARA Bridge: mix with Claude Code or Codex
+## Mix with Claude Code or Codex instead
 
-If you would rather talk to your own agent than run MARA's mix pass, **MARA Bridge** connects Claude Code, Codex, or any MCP client directly to your Live set. The agent does the mixing; the bridge lets it hear. A chat model connected to Live's API alone sees only track names and parameter values. Through MARA's taps it also gets measurements: loudness, peaks, tonal balance, stereo width and mono low end of every channel and of Main, which channels mask each other and where, and how far the mix is from your references.
-
-Setup is the same as for MARA (connection installed, **MixMatch** selected as control surface). Close the MARA app while using the bridge: the taps can only report to one program. Then register the bridge once:
-
-```bash
-# Claude Code (after running the one-line installer once; from source: the venv's mara-bridge)
-claude mcp add mara-bridge -- ~/.mara/venv/bin/mara-bridge
-```
-
-```toml
-# Codex: ~/.codex/config.toml
-[mcp_servers.mara-bridge]
-command = "/Users/you/.mara/venv/bin/mara-bridge"
-```
-
-Then ask in plain words, for example:
-
-- "Listen to the drop at bar 33 and tell me what's muddy."
-- "Here is a reference: ~/Music/refs/song.wav. Make it loud like this." In Claude Code you can drag the file into the chat to get its path, or put the song on a track named `REF …` in Live.
-- "Make the kick like the one in this track."
-- "Mix it like this, but leave room for vocals."
-
-For references there are two tools. `load_references` makes songs the live target that every `listen` compares against. `record_and_compare` records a passage of Main in Live and analyses it the same way as the reference file: loudness (LUFS, true peak, PLR, loudness range, density), tonal balance, stereo, and the kick and bass as heard in the full mix (fundamental, decay, click and body, punch against the bass). There is no stem separation: kick and bass are read from their timing in 35–150 Hz, which works for most kick-driven music, but a bass louder than the kick hides hits.
-
-The bridge saves every parameter before the agent's first change; ask it to `restore` to go back. A device the agent removed is not loaded back. Tools: `status`, `get_set`, `listen`, `set_parameters`, `add_device`, `remove_device`, `transport`, `load_references`, `analyze_audio`, `record_and_compare`, `add_taps`, `snapshot`, `restore`, `list_snapshots`.
+If you would rather talk to your own agent than run MARA's mix pass, [MARA Bridge](https://github.com/moritzlauper/mara-bridge) connects Claude Code, Codex, or any MCP client to your Live set through MARA's taps. The agent then hears every channel and Main, compares with reference tracks ("make it loud like this", "make the kick like this one"), and changes the set itself.
 
 ## Limits worth knowing
 
@@ -188,8 +164,7 @@ The desktop interface is **MARA**. The Python package, CLI, and Ableton control 
 | Area | Starting point |
 | --- | --- |
 | Mixing flow and checks | [engine.py](mixmatch/engine.py), [solver.py](mixmatch/solver.py), [agent.py](mixmatch/agent.py), [mix_quality.py](mixmatch/mix_quality.py) |
-| Reference analysis | [reference.py](mixmatch/reference.py), [character.py](mixmatch/character.py) |
-| MARA Bridge (MCP server) | [bridge.py](mixmatch/bridge.py) |
+| Reference analysis | [reference.py](mixmatch/reference.py) |
 | Ableton connection and measurement tap | [Remote script](remote_script/MixMatch/commands.py), [Tap](device/MixMatch%20Tap.maxpat) |
 | Interface | [app.html](mixmatch/static/app.html), [app.js](mixmatch/static/app.js) |
 | Packaging | [desktop/](desktop/) |
