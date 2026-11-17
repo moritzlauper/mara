@@ -350,12 +350,16 @@ def live_set() -> dict | None:
 
     need = [t for t in state["tracks"] if not (t["kind"] == "track" and is_reference_name(t["name"]))]
     missing = [t["name"] for t in need if not any(d["name"] == "MARA Tap" for d in t["devices"])]
-    from .live_identity import document_path
+    from .live_identity import identify
 
-    path = state.get("file_path") or document_path()
+    path, problem = state.get("file_path", ""), ""
     name = os.path.splitext(os.path.basename(path))[0] if path else state.get("name", "")
+    if not path:
+        doc = identify()
+        path, problem = doc["path"], doc["problem"]
+        name = doc["name"] or name
     return {"name": name, "path": path, "channels": songs.channel_names(state), "taps": len(need) - len(missing), "total": len(need),
-            "missing": missing, "playing": bool(state.get("is_playing"))}
+            "missing": missing, "playing": bool(state.get("is_playing")), "identity_problem": "" if name else problem}
 
 
 def run_process_alive() -> bool:
@@ -1157,8 +1161,12 @@ def make_handler(runner: Runner, watcher: "DownloadWatcher | None" = None, live_
                     ts = track_state(False)
                     if not ts["following_live"]:
                         raise RuntimeError("switch back to the connected Live project before starting a run")
+                    if not ts["open_set"]:
+                        raise RuntimeError("MARA cannot reach Ableton Live. Open Live, choose MARA as a Control Surface "
+                                           "in Settings → Link/Tempo/MIDI and try again.")
                     if not ts["set"]["same"]:
-                        raise RuntimeError("The open Ableton project could not be identified. Save the Live set and allow MARA to read its document window.")
+                        from .live_identity import unidentified_message
+                        raise RuntimeError(unidentified_message(ts["open_set"].get("identity_problem", "")))
                     if ts["open_set"] and ts["open_set"]["taps"] == 0:
                         raise RuntimeError("no MARA Tap in this set yet: «Set taps» first")
                     mode = body.get("reference_mode", "discover" if body.get("auto_ref") else "selected")
