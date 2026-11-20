@@ -15,3 +15,6 @@ desktop/src-tauri/target/
 desktop/src-tauri/binaries/
 desktop/dist/
 desktop/src-tauri/gen/
+
+# Laufzeitdatei der Engine, wenn das Repo als Workspace dient
+/desktop-service.json
