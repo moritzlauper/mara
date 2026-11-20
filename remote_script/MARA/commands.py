@@ -211,6 +211,34 @@ class Commands:
             tracks[key] = {"devices": [d for d in devices if d], "played_notes": counts}
         return {"tracks": tracks}
 
+    def _arrangement(self):
+        """Where the song's arrangement has unmuted clips, and how many session clips exist.
+
+        MARA plays the arrangement; clips that only sit in Session View stay silent there.
+        None when this Live exposes no arrangement clips (unknown, not empty).
+        """
+        spans, session, known = [], 0, False
+        for _, kind, track in self._tracks():
+            if kind != "track" or re.search(r"(^|[^a-z])ref(erence)?([^a-z]|$)", track.name.strip().lower()):
+                continue
+            try:
+                if hasattr(track, "arrangement_clips"):
+                    known = True
+                    spans += [(float(c.start_time), float(c.end_time)) for c in track.arrangement_clips
+                              if not getattr(c, "muted", False) and c.end_time > c.start_time]
+                session += sum(1 for s in getattr(track, "clip_slots", []) if getattr(s, "has_clip", False))
+            except Exception:
+                continue
+        if not known:
+            return None
+        merged = []
+        for start, end in sorted(spans):
+            if merged and start <= merged[-1][1]:
+                merged[-1][1] = max(merged[-1][1], end)
+            else:
+                merged.append([start, end])
+        return {"spans": merged, "session_clips": session}
+
     def get_set(self, _):
         tracks = []
         for key, kind, t in self._tracks():
@@ -252,6 +280,7 @@ class Commands:
                 [{"name": c.name, "time": c.time} for c in getattr(self.song, "cue_points", [])],
                 key=lambda c: c["time"],
             ),
+            "arrangement": self._arrangement(),
             "tracks": tracks,
         }
 

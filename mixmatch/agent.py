@@ -130,6 +130,28 @@ class MasterSilent(Exception):
     """The master tap reports nothing: Live is not playing, exporting, or its audio engine is off."""
 
 
+def arrangement_problem(set_state: dict, sections: list[tuple[str, float, float]]) -> str | None:
+    """Why the range MARA plays would stay silent, before anything is played; None when clips are there.
+
+    MARA plays the Arrangement. Clips that only sit in Session View are never heard there.
+    """
+    arrangement = set_state.get("arrangement")
+    if not arrangement or not sections:
+        return None   # an older MARA script or Live without this information: nothing to judge
+    spans = arrangement.get("spans") or []
+    start = min(s[1] for s in sections)
+    end = max(s[1] + s[2] for s in sections)
+    if any(a < end and b > start for a, b in spans):
+        return None
+    if not spans and arrangement.get("session_clips"):
+        return ("Your clips are only in Session View, but MARA plays the Arrangement. Drag the clips into "
+                "Arrangement View (or record the session into it) and start again.")
+    if not spans:
+        return "The Arrangement has no clips. Put the song into Arrangement View and start again."
+    return (f"No clips play in bars {int(start // 4) + 1}–{math.ceil(end / 4)}, the range MARA plays (loop or locators). "
+            "Set the loop over the song in Arrangement View and start again.")
+
+
 class Agent(SolverFlow):
     def __init__(self, live, hub, planner, settings: Settings | None = None, env=None, log=print, ask=input,
                  references=None):
@@ -944,6 +966,13 @@ class Agent(SolverFlow):
         if not self.tap_of:
             self.log("\nStopped: no channel reports through a MARA Tap, so there is nothing to measure. "
                      "Put the taps in («Set taps» in the interface, or mara taps) and start again.")
+            self.logfile.close()
+            return self.history
+        problem = arrangement_problem(self.ex.set_state, self.sections())
+        if problem:
+            self._failure = problem
+            workflow.update(status="failed", error=problem)
+            self.log(f"\nStopped: {problem}")
             self.logfile.close()
             return self.history
         if not self.references and not self.target:
