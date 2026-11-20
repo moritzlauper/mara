@@ -146,9 +146,12 @@ class _Laion:
         import tempfile
 
         worker = os.path.join(os.path.dirname(os.path.abspath(__file__)), "laion_worker.py")
-        self.proc = subprocess.Popen([python, worker, LAION_CKPT], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                     stderr=subprocess.DEVNULL, text=True, bufsize=1)
+        if not os.path.exists(worker):
+            raise RuntimeError(f"worker script missing at {worker}")
         self.tmp = tempfile.mkdtemp(prefix="mixmatch-clap-")
+        self.errors = open(os.path.join(self.tmp, "worker.log"), "w+")
+        self.proc = subprocess.Popen([python, worker, LAION_CKPT], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                     stderr=self.errors, text=True, bufsize=1)
         first = self._read()
         if not first.get("ready"):
             raise RuntimeError(f"LAION worker did not start: {first}")
@@ -157,7 +160,9 @@ class _Laion:
         while True:
             line = self.proc.stdout.readline()
             if not line:
-                raise RuntimeError("LAION worker stopped")
+                self.errors.seek(0)
+                last = [l.strip() for l in self.errors.read().splitlines() if l.strip()][-1:]
+                raise RuntimeError("LAION worker stopped" + (f": {last[0]}" if last else ""))
             if line.startswith("{"):
                 return json.loads(line)
 
@@ -207,6 +212,10 @@ class _HF:
             return self._np(self.model.get_audio_features(**inputs))
 
 
+class StyleModelUnavailable(RuntimeError):
+    """Neither the LAION music model nor the general CLAP model can run here."""
+
+
 class Listener:
     """Embeds audio files (cached) and text with the best CLAP model available here."""
 
@@ -224,7 +233,10 @@ class Listener:
                 except Exception as e:
                     log(f"  LAION music model failed to start ({str(e)[:100]}); using the general CLAP model")
         if self.backend is None:
-            self.backend = _HF()
+            try:
+                self.backend = _HF()
+            except ImportError as e:   # the desktop engine ships without torch: only LAION is available there
+                raise StyleModelUnavailable(f"no audio analysis model available ({e})") from e
 
     @staticmethod
     def _unit(x: np.ndarray) -> np.ndarray:

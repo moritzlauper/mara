@@ -526,7 +526,7 @@ class Agent(SolverFlow):
     def suggest_references(self, part: tuple[str, float, float]) -> None:
         """Without --auto-ref: still records the loudest part once and writes suggestions (to get and free)."""
         from . import autoref
-        from .style import Listener
+        from .style import Listener, StyleModelUnavailable
 
         _, start, length = part
         tempo = self.ex.set_state.get("tempo") or 120
@@ -534,7 +534,11 @@ class Agent(SolverFlow):
         with autoref.audible_main(self.live, getattr(self, "_listen_volume", None)):
             recording = autoref.capture(self.live, start, min(length, 64.0), tempo, self.log)
         if recording:
-            listener = Listener(log=self.log)
+            try:
+                listener = Listener(log=self.log)
+            except StyleModelUnavailable as e:
+                self.log(f"  suggestions skipped: {e}")
+                return
             known = [os.path.splitext(os.path.basename(p))[0] for p in (self.refset.paths if self.refset else [])]
             self.write_suggestions(autoref.buy_list(recording, listener, self.harmony, note=self.description, known=known,
                                                     log=self.log), time.strftime("%Y%m%d-%H%M%S"))

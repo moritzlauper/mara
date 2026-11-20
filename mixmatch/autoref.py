@@ -20,7 +20,7 @@ import time
 import urllib.parse
 import urllib.request
 
-from .style import BASE, Listener, library_files, styles
+from .style import BASE, Listener, StyleModelUnavailable, library_files, styles
 
 JAMENDO_API = "https://api.jamendo.com/v3.0/tracks/"
 JAMENDO_CACHE = os.path.join(BASE, "jamendo")
@@ -270,7 +270,11 @@ def find(live, start: float, length: float, tempo: float, library: str | None = 
     if silent_file(recording):
         log("  the recording of the song is silent (Main fader down without silent routing?): no search on silence")
         return [], {"style": "", "buy": [], "free": []}
-    listener = Listener(log=log)
+    try:
+        listener = Listener(log=log)
+    except StyleModelUnavailable as e:
+        log(f"  reference search skipped: {e}. Add references yourself (REF tracks or the References page).")
+        return [], {"style": "", "buy": [], "free": []}
     project = listener.file(recording)
     top = styles(listener, project, 5)
     log("  sounds like: " + ", ".join(f"{s} ({v:.2f})" for s, v in top))

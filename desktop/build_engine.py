@@ -15,6 +15,8 @@ subprocess.run([sys.executable,'-m','PyInstaller','--noconfirm','--clean','--one
  '--paths',str(root),'--collect-submodules','mixmatch','--collect-data','mixmatch','--collect-all','imageio_ffmpeg',
  '--collect-submodules','keyring.backends','--copy-metadata','keyring','--collect-all','soundfile','--collect-all','pyloudnorm','--copy-metadata','anthropic',
  '--exclude-module','torch','--exclude-module','transformers','--exclude-module','pytest','--exclude-module','matplotlib',
+ # laion_worker.py runs with the LAION environment's own Python, so it must exist as a file, not only in the archive.
+ '--add-data',str(root/'mixmatch/laion_worker.py')+os.pathsep+'mixmatch',
  '--add-data',str(root/'remote_script')+os.pathsep+'remote_script','--add-data',str(root/'device')+os.pathsep+'device',
  str(root/'desktop/engine_entry.py')],cwd=root,check=True)
 suffix='.exe' if sys.platform=='win32' else ''
