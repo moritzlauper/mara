@@ -131,9 +131,10 @@ class MasterSilent(Exception):
 
 
 def arrangement_problem(set_state: dict, sections: list[tuple[str, float, float]]) -> str | None:
-    """Why the range MARA plays would stay silent, before anything is played; None when clips are there.
+    """Why the range MARA plays would not sound like the arrangement, before anything is played; None when fine.
 
-    MARA plays the Arrangement. Clips that only sit in Session View are never heard there.
+    MARA plays the Arrangement. Clips that only sit in Session View are never heard there, and a session
+    clip that was launched or stopped takes a track out of the arrangement until «Back to Arrangement».
     """
     arrangement = set_state.get("arrangement")
     if not arrangement or not sections:
@@ -142,6 +143,9 @@ def arrangement_problem(set_state: dict, sections: list[tuple[str, float, float]
     start = min(s[1] for s in sections)
     end = max(s[1] + s[2] for s in sections)
     if any(a < end and b > start for a, b in spans):
+        if arrangement.get("back_to_arranger"):
+            return ("Some tracks play Session View clips instead of the Arrangement (the Back to Arrangement "
+                    "button in Live is lit). Click it and start again.")
         return None
     if not spans and arrangement.get("session_clips"):
         return ("Your clips are only in Session View, but MARA plays the Arrangement. Drag the clips into "

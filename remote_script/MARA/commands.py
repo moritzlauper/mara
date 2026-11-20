@@ -237,7 +237,9 @@ class Commands:
                 merged[-1][1] = max(merged[-1][1], end)
             else:
                 merged.append([start, end])
-        return {"spans": merged, "session_clips": session}
+        # Lit «Back to Arrangement»: a launched or stopped session clip overrides the arrangement on some track.
+        return {"spans": merged, "session_clips": session,
+                "back_to_arranger": bool(getattr(self.song, "back_to_arranger", False))}
 
     def get_set(self, _):
         tracks = []
