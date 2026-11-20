@@ -3,9 +3,14 @@ use std::{io::{BufRead, BufReader}, path::PathBuf, process::{Child, Command, Std
 use tauri::{Manager, WindowEvent};
 #[derive(Default)]
 struct Engine { url: Option<String>, child: Option<Child> }
+// Same location as mixmatch/platforms.py.
+fn data_dir() -> Option<PathBuf> {
+ if cfg!(target_os="macos") {return Some(PathBuf::from(std::env::var_os("HOME")?).join("Library/Application Support/MARA"));}
+ let base=std::env::var_os("LOCALAPPDATA").map(PathBuf::from).or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share")))?;
+ Some(base.join("MARA"))
+}
 fn remembered_workspace() -> Option<String> {
- let home=std::env::var_os("HOME")?;
- let file=PathBuf::from(home).join("Library/Application Support/MARA/last-workspace.json");
+ let file=data_dir()?.join("last-workspace.json");
  let data=std::fs::read_to_string(file).ok()?;
  let workspace=serde_json::from_str::<serde_json::Value>(&data).ok()?["workspace"].as_str()?.to_owned();
  PathBuf::from(&workspace).is_dir().then_some(workspace)
@@ -34,13 +39,17 @@ fn main() {
      inherited_workspace=h["workspace"].as_str().map(str::to_owned);
     } }
     let exe=std::env::current_exe()?.parent().ok_or("Missing app directory")?.join(if cfg!(windows){"mara-engine.exe"}else{"mara-engine"});
-    let mut cmd=Command::new(exe);cmd.args(["desktop-service"]).stdout(Stdio::piped()).stderr(Stdio::inherit());
+    // A Finder launch discards inherited stderr, so engine failures go to engine.log.
+    let log=data_dir().map(|d| d.join("engine.log"));
+    let stderr=log.as_ref().and_then(|p| {std::fs::create_dir_all(p.parent()?).ok()?;std::fs::File::create(p).ok()}).map(Stdio::from).unwrap_or_else(Stdio::inherit);
+    let mut cmd=Command::new(exe);cmd.args(["desktop-service"]).stdout(Stdio::piped()).stderr(stderr);
     if let Some(workspace)=inherited_workspace {cmd.env("MARA_WORKSPACE",workspace);}
     #[cfg(windows)] {use std::os::windows::process::CommandExt;cmd.creation_flags(0x08000000);}
     let mut child=cmd.spawn()?;let out=child.stdout.take().ok_or("Missing engine output")?;
     boot.lock().unwrap().child=Some(child);
     for line in BufReader::new(out).lines() {let line=line?;if let Some(rest)=line.strip_prefix("MARA: ").or_else(||line.strip_prefix("MARA is already running: ")) {if let Some(url)=rest.split_whitespace().next(){if url.starts_with("http://127.0.0.1:"){return Ok(url.to_owned());}}}}
-    Err("The audio engine stopped before it was ready. Check the engine log in your MARA data folder.".into())
+    let hint=log.map(|p| format!(" Details: {}",p.display())).unwrap_or_default();
+    Err(format!("The audio engine stopped before it was ready.{hint}").into())
    })();
    if let Some(window)=handle.get_webview_window("main") {match result {Ok(url)=>{boot.lock().unwrap().url=Some(url.clone());let _=window.navigate(format!("{url}/workflow").parse().unwrap());},Err(err)=>{let text=serde_json::to_string(&format!("Could not start MARA: {err}")).unwrap();let _=window.eval(&format!("document.getElementById('startup').textContent={text}"));}}}
   });Ok(())
