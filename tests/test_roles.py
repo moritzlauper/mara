@@ -131,3 +131,36 @@ def test_drum_buss_effect_is_not_instrument_evidence_and_groups_stay_groups():
 
 def test_drum_rack_with_reverb_is_not_classified_as_ambience():
     assert guess(track("23-DS Drum Rack", "DS Drum Rack", "Reverb"), None).role == "percussion"
+
+
+def _line_stats(peak_hz, spread_db=24.0):
+    """A single synth line: its energy falls off away from `peak_hz`, as from a fundamental."""
+    import numpy as np
+    from mixmatch.analysis import Stats
+    from mixmatch.bands import CENTRES
+    octaves = np.abs(np.log2(np.array(CENTRES) / peak_hz))
+    bands = -20 - spread_db * octaves
+    return Stats(frames=100, loudness=-14, bands_db=bands, shape_db=bands + 14, peak_db=-6, plr=8.0,
+                 width_db=-20, low_side_db=-30, active=0.9)
+
+
+def test_serum_line_written_high_is_bass_when_it_sounds_low():
+    # 3-, 4- and 5-Serum 2 in a real set: notes 48–54 and 64–67 as written, oscillators octaves down
+    line = [["t0", 52 + i % 3, i * 0.5, 0.25, 100] for i in range(50)]
+    high = [["t0", 64 + i % 3, i * 0.5, 0.25, 100] for i in range(50)]
+    serum = track("5-Serum 2", "Serum 2", "Cartessian SiDeCHain", "MARA Tap")
+    assert guess(serum, _line_stats(45, spread_db=40), line).role == "sub"
+    assert guess(serum, _line_stats(110), high).role == "bass"
+    assert guess(serum, _line_stats(110), line).source == "midi and sound"
+
+
+def test_low_written_line_that_sounds_high_is_a_lead():
+    line = [["t0", 50 + i % 3, i * 0.5, 0.25, 100] for i in range(50)]
+    assert guess(track("3-Serum 2", "Serum 2"), _line_stats(1500), line).role == "lead_synth"
+
+
+def test_without_sound_the_written_pitch_decides():
+    line = [["t0", 52 + i % 3, i * 0.5, 0.25, 100] for i in range(50)]
+    hook = [["t0", 72 + i % 3, i * 0.5, 0.25, 100] for i in range(50)]
+    assert guess(track("3-Serum 2", "Serum 2"), None, line).role == "bass"
+    assert guess(track("3-Serum 2", "Serum 2"), None, hook).role == "lead_synth"

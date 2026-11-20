@@ -235,7 +235,8 @@ def from_sound(st: Stats | None) -> str | None:
 def from_midi(notes: list | None) -> str | None:
     """What a part plays, from its MIDI notes ([track, pitch, start, duration, velocity]).
 
-    Low single notes: bass. Chords held for a bar or so: pad. Short chords: pluck (stabs). Single notes higher
+    Low single notes: bass (the sound decides in guess(), since a synth's octave setting moves the pitch
+    that is heard away from the written one). Chords held for a bar or so: pad. Short chords: pluck (stabs). Single notes higher
     up: a lead or hook. Anything with too few notes says nothing.
     """
     if not notes or len(notes) < 8:
@@ -244,13 +245,37 @@ def from_midi(notes: list | None) -> str | None:
     durations = np.array([n[3] for n in notes], dtype=float)
     poly = len(notes) / max(1, len({round(float(n[2]), 2) for n in notes}))   # notes per onset
     pitch, length = float(np.median(pitches)), float(np.median(durations))
-    if pitch < 40 and poly < 1.3:
+    if pitch < 55 and poly < 1.3:   # below G3 (196 Hz) as written; the synth's octave can still move it
         return "bass"
     if poly >= 2.0:
         return "pad" if length >= 1.5 else "pluck"
     if poly < 1.5:
         return "pad" if length >= 2.0 else "lead_synth"
     return "keys"
+
+
+def register(st: Stats | None) -> str | None:
+    """Where a single-note line sounds, from its spectrum: «sub», «bass», «high», or None when unclear.
+
+    The MIDI note says little about a synth line: Serum or Operator an octave or two down turns a
+    note written at E3 into a sub bass. The fundamental of a single line carries most of its energy.
+    """
+    if st is None or st.active < 0.2:
+        return None
+    power = 10 ** (st.bands_db / 10)
+    total = power.sum()
+    if total <= 0:
+        return None
+    centres = np.array(CENTRES)
+    below_100, below_200 = power[centres < 100].sum() / total, power[centres < 200].sum() / total
+    above_1k = power[centres > 1000].sum() / total
+    if below_100 >= 0.7 and above_1k < 0.05:
+        return "sub"
+    if below_200 >= 0.4:
+        return "bass"
+    if below_200 < 0.15:
+        return "high"
+    return None
 
 
 def guess(track: dict, st: Stats | None, notes: list | None = None) -> Role:
@@ -262,13 +287,18 @@ def guess(track: dict, st: Stats | None, notes: list | None = None) -> Role:
     if track.get("is_group"):
         role = "drums_bus" if name_role in set(ROLE_GROUPS["drums"]) else "bus"
         return Role(track["key"], track["name"], role, DEFAULT_PRIORITY[role], "group")
+    midi_source = ("midi", from_midi(notes) if not rack else None)
+    if midi_source[1] in ("bass", "lead_synth"):   # a single line: the sound tells its register
+        heard = register(st)
+        if heard:
+            midi_source = ("midi and sound", {"sub": "sub", "bass": "bass", "high": "lead_synth"}[heard])
     # An automatic container name and an effect called "Drum Buss" are weak evidence.
     specific_name = name_role if name_role not in {"drums_bus", "bus"} else None
     sources = [("name", specific_name),
                ("drum pads" if rack else "devices", content_role),
                ("devices", from_devices([d for d in detail if not rack or
                    (d.get("type") != 2 and from_name(d.get("name", "")) not in {"ambience", "fx"})])),
-               ("midi", from_midi(notes) if not rack else None),
+               midi_source,
                ("sound", from_sound(st)),
                ("devices", "percussion" if rack else None),
                ("name", name_role)]
