@@ -779,3 +779,18 @@ def test_a_run_without_taps_stops_at_once(tmp_path):
     assert agent.run() == []
     assert any("Stopped: no channel reports through a MARA Tap" in l for l in lines)
     assert env.now() - start < 30                      # no listening to the whole song first
+    assert agent._failure                               # shown in the interface, not a silent «paused»
+
+
+def test_tap_problem_names_the_cause():
+    from mixmatch.taps import TapHub, tap_problem
+
+    tracks = [{"key": "t0", "kind": "track", "name": "Kick", "devices": [{"name": "MARA Tap"}]},
+              {"key": "m", "kind": "master", "name": "Main", "devices": [{"name": "MARA Tap"}]}]
+    assert "Set taps" in tap_problem(TapHub(), [dict(tracks[0], devices=[])])
+    hub = TapHub()
+    assert "No measurement data arrived" in tap_problem(hub, tracks)
+    hub.on_frame(7, *[0.1] * 36)
+    assert "no track names" in tap_problem(hub, tracks)
+    hub.on_name(7, "track", "Kick", "2")
+    assert "«Kick 2»" in tap_problem(hub, tracks) and "«Kick»" in tap_problem(hub, tracks)

@@ -50,6 +50,8 @@
 
     # The environment lives outside app\, so updates only reinstall what changed.
     $env:UV_PROJECT_ENVIRONMENT = Join-Path $root 'venv'
+    # Run logs contain non-ASCII symbols: without UTF-8 mode Python writes them in the Windows code page and fails.
+    $env:PYTHONUTF8 = '1'
     Say "Starting (data: $workspace). Your browser opens MARA; stop it with Ctrl+C."
     Push-Location $workspace
     try { uv run --quiet --python 3.12 --project $app mixmatch ui @args }

@@ -24,7 +24,7 @@ from . import roles as roles_mod
 from .actions import CLIPPER_MAX_GAIN_DB, CLIPPERS, LIMITER_MAX_GAIN_DB, LIMITERS, Executor, RoundResult, neutral_device
 from .analysis import TONAL_BANDS, Comparison, compare, masking, masking_alignment, masking_frames, objective, objective_parts, stats
 from .bands import CENTRES
-from .taps import is_reference_name
+from .taps import is_reference_name, tap_problem
 from .display import parse_display
 from .planner import device_summary
 from .activity import report as activity
@@ -972,8 +972,10 @@ class Agent(SolverFlow):
         self.understand()
         self.log(f"Mix policy: {mix_quality.VERSION} · reference as direction; verified mix benefit, protected punch and layers.")
         if not self.tap_of:
-            self.log("\nStopped: no channel reports through a MARA Tap, so there is nothing to measure. "
-                     "Put the taps in («Set taps» in the interface, or mara taps) and start again.")
+            # Without this the run ends as «paused» and the interface still shows the song as not analysed.
+            self._failure = tap_problem(self.hub, self.ex.set_state["tracks"])
+            workflow.update(status="failed", error=self._failure)
+            self.log(f"\nStopped: no channel reports through a MARA Tap, so there is nothing to measure. {self._failure}")
             self.logfile.close()
             return self.history
         problem = arrangement_problem(self.ex.set_state, self.sections())

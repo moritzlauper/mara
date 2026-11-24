@@ -105,3 +105,23 @@ class TapHub:
             self.server.shutdown()
             self.server.server_close()
 
+
+
+def tap_problem(hub: TapHub, tracks: list[dict]) -> str:
+    """Why no channel of the set reports through a tap, in words the user can act on."""
+    channels = [t for t in tracks if t["kind"] != "master" and not is_reference_name(t["name"])]
+    if not any(d["name"] == "MARA Tap" for t in channels for d in t.get("devices", [])):
+        return "There is no MARA Tap on the channels. Put the taps in («Set taps») and start again."
+    taps = [t for t in hub.snapshot() if t.kind != "master" and t.kind != "master_in"]
+    if not hub.snapshot():
+        return ("No measurement data arrived from the MARA Tap devices. Check in Live that the taps load without an "
+                "error message, that «mara_tap.js» sits next to «MARA Tap.amxd» in the User Library folder MARA "
+                "(install the Live connection again if unsure), and that no firewall or security software blocks "
+                "local UDP traffic to port 47318.")
+    named = sorted({t.name for t in taps if t.name})
+    if not named:
+        return "The taps send measurements but no track names. Replace them («Set taps») and start again."
+    live = sorted({t["name"] for t in channels})
+    return ("The taps report under names that match no track in Live (taps: "
+            + ", ".join(f"«{n}»" for n in named[:6]) + "; Live: " + ", ".join(f"«{n}»" for n in live[:6])
+            + "). Replace the taps («Set taps») and start again.")

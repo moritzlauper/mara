@@ -120,6 +120,19 @@ def set_taps_on(live, on: bool) -> int:
     return len(changes)
 
 
+def wait_for_taps(live, hub, seconds: float) -> bool:
+    """Max for Live can take a while to start the taps (first load, a busy or slower system): wait until at least
+    one channel of the set reports under its name instead of giving up after the fixed lead-in."""
+    channels = {(t["kind"], t["name"]) for t in live.get_set()["tracks"] if t["kind"] != "master"}
+    deadline = time.time() + seconds
+    while True:
+        if channels & set(hub.by_name()):
+            return True
+        if time.time() >= deadline:
+            return False
+        time.sleep(0.5)
+
+
 def cmd_taps(args):
     from .live_client import LiveClient, LiveError
 
@@ -276,6 +289,8 @@ def _cmd_run(args):
         live.transport(time=loop["start"], play=True)
         activity(print, "Waiting for the audio measurements to arrive")
         time.sleep(args.wait)
+        if args.wait > 0 and not wait_for_taps(live, hub, 20):
+            print("No tap reported within the waiting time.")
         agent.run(main_volume=main_volume)
         completed = bool(getattr(agent, "_mix_complete", False)) and not getattr(agent, "_failure", None)
     finally:

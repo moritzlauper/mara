@@ -167,7 +167,7 @@ class Runner:
                 log.flush()
             if args[:1] == ["run"] and "--planner" not in args:
                 args = [*args, "--planner", "auto"]  # UI uses its saved provider, independently of CLI env defaults.
-            env = {**os.environ, "PYTHONUNBUFFERED": "1"}
+            env = {**os.environ, "PYTHONUNBUFFERED": "1", "PYTHONUTF8": "1"}   # UTF-8 log also on Windows
             from .platforms import engine_command
             self.proc = subprocess.Popen(engine_command(args), cwd=self.workdir,
                                          stdout=log, stderr=subprocess.STDOUT, env=env)
